@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hybrid-aif: hybrid continuous-discrete active inference in JAX</title>
+<meta name="description" content="hybrid-aif is a JAX library for active inference over models that mix discrete and continuous state. This page replays a precomputed run of a two-tier rover agent.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%231f5fbf' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%231f5fbf'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="wrap">
+  <h1>hybrid-aif</h1>
+  <p class="sub">Hybrid continuous-discrete-amortized active inference in JAX</p>
+  <p class="byline">Noumenal Labs &middot; <span id="version">v0.19.0</span> &middot; MIT</p>
+  <nav class="links" aria-label="Links">
+    <a href="https://github.com/noumenal-labs/hybrid-aif">Repository</a>
+    <a href="https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/demo.ipynb">Demo notebook</a>
+    <a href="https://github.com/noumenal-labs/hybrid-aif/blob/main/docs/capabilities.md">Capabilities</a>
+    <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">Design records</a>
+  </nav>
+  <div class="tldr">
+    <p><strong>TLDR.</strong> <code>hybrid-aif</code> is a JAX library for active inference over models that mix discrete and continuous state, and that allow for combining various inference methods and approximations (e.g. closed-form messages alongside amortized recognition densities; conjugate parameter updates alongside gradient-based learning; planning over discrete and continuous variables). Other core features of the package:</p>
+    <ul>
+      <li><strong>Closed-loop active inference on mixture models.</strong> For example, switching linear-Gaussian dynamics can be planned through, with mixtures collapsing to a fixed number of components each step. Scores on analytically intractable factors come back as intervals rather than point estimates: the mixture-entropy terms are bounded above and below in closed form, with planning ranking policies based on the midpoints of the bounds. The package supports growing mixtures for "structure learning", as in <a href="https://arxiv.org/abs/2505.24784">AXIOM</a>.</li>
+      <li><strong>Expressive model and objective construction.</strong> The usual expected free energy objective of active inference is a default, but information gain terms can be switched on or off per variable, and different objective terms such as entropy bonuses or cross-entropies with arbitrary sign can be used. Preferences or end-state constraints can be placed on any variable, including control states, and conditioned on any variable. Latent control variables and realized actions are distinct nodes in the graph, and any variable may play multiple roles simultaneously, e.g. a control state may be observed.</li>
+      <li><strong>Robust agent/environment composition, hierarchical models, and scheduling.</strong> One declaration serves as agent and as environment, two declared systems can be merged into one with a shared clock or separate ones, and subsystems interact only through Markov blankets. This page replays a precomputed run of a two-tiered rover model so you can watch all of that happen without installing anything.</li>
+      <li><strong>Model description.</strong> Expected free energy can not only be "ablated" per term and per variable, but its components are (optionally) returned in every log. Each model can be scored (data-independently or on a dataset) for its free energy and minimum description length. Models can be rendered as JSON documents for easy modification and scoring using software agents. Bound pairs are returned in logs where available, and each number carries a derivation status (approximations are flagged as such, and categorized by quality and guarantee).</li>
+    </ul>
+  </div>
+</header>
+
+<main class="wrap">
+<section id="hero">
+  <h2>A rover, a beacon and a dock</h2>
+  <p class="lead">Two minds share one body. A slow mission tier decides which rock to visit, whether to sample it, or when to return to the dock, and holds that choice for the option's duration. A fast rover tier steers every tick: it infers a hidden terrain regime (sticky, three levels) that switches the dynamics of a four-dimensional position and velocity state, carries that state as a Gaussian mixture, chooses a continuous velocity and a sensor exposure, and reads a position fix whose noise depends on where it is and how long it looked. It also reads a camera image, inverted through a neural decoder. Drag the tick, switch the setting, and compare the epistemic terms on and off: with them on the rover looks before it samples; with them off it samples blind.</p>
+  <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
+  <div class="controls" role="group" aria-label="Playback">
+    <button id="play" type="button" aria-label="Play">Play</button>
+    <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
+    <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+  </div>
+  <div class="hero-grid">
+    <figure class="graphfig">
+      <svg id="graph" role="img" aria-label="Graphical model" viewBox="0 0 480 760"></svg>
+      <figcaption>The model: two tiers; circles are state factors, squares are observation modalities, rounded tags are controls. Durations are shown on the slow control. The image modality is a neural likelihood; in the encoder setting a recognition network over it supplies a measurement of position instead of its inversion.</figcaption>
+    </figure>
+    <figure class="fieldfig">
+      <div class="canvaswrap"><canvas id="field" width="520" height="420" role="img" aria-label="Rover field"></canvas></div>
+      <div class="badges" id="badges" aria-live="off"></div>
+      <div class="hud" id="hud"></div>
+      <figcaption>True path (line), belief over position (one ellipse per mixture component, opacity by weight), latest fix (cross). Rocks are coloured by the mission tier's belief about their quality; the dashed ring marks the zone the current option heads for; the beacon is where the fix is sharp.</figcaption>
+    </figure>
+  </div>
+  <figure class="camerafig" id="camerafig">
+    <div class="camgrid" id="camgrid"></div>
+    <figcaption id="camcap">The camera: the observed 8&times;8 image (left), the decoder's prediction at the current belief (middle), and the field as the image sees it (right). The rover's blob is brighter than the terrain under it.</figcaption>
+  </figure>
+</section>
+
+<section id="timescales">
+  <h2>Two timescales</h2>
+  <p class="lead">The mission tier decides once per option and the rover tier acts every tick. The timeline shows both: option bands above, per-tick beliefs below, with the shared tick as the cursor. The slow tier's state is energy (four bands, depleting per option and refilling at the dock), one quality belief per rock, and the zone the rover is in. Nothing in the slow tier knows where the beacon is; the beacon is a fast-tier fact, a region where the position fix is sharp.</p>
+  <figure>
+    <div id="timeline" class="chartbox"></div>
+    <div class="legend" id="tlegend"></div>
+    <figcaption>Top to bottom: option bands (width is the span until the next decision), energy band (solid: true, dashed: believed), each rock's belief over good, bad and sampled, and the exposure chosen each tick (tall: long exposure, short: short exposure).</figcaption>
+  </figure>
+</section>
+
+<section id="objective">
+  <h2>Objectives as intervals</h2>
+  <p class="lead">Every policy is scored by every objective term, and every score is an interval. The bar spans the lower and upper bound and the mark is the midpoint, which is what the planner ranks on. Terms over tabular variables are exact, so their bars collapse to points; terms that read a Gaussian mixture, such as the risk and entropy terms over the rover's position, carry a bracket from closed-form entropy bounds. Terms that read the camera go through the decoder's linearisation at the belief and are marked approximate. Switch tiers to see the mission tier's exact enumeration beside the rover tier's bracketed scores.</p>
+  <p class="lead" id="objnote"></p>
+  <div class="controls">
+    <label>Tier <select id="objtier"><option value="rover">Rover tier</option><option value="mission">Mission tier</option></select></label>
+    <label>View <select id="objmode"><option value="total">G per policy</option><option value="terms">By term</option></select></label>
+    <button id="objall" type="button" hidden></button>
+    <span class="legend" id="objlegend"></span>
+  </div>
+  <figure><div id="objective-chart" class="chartbox"></div>
+  <figcaption id="objcap"></figcaption></figure>
+  <div id="tip" class="tip" role="status" hidden></div>
+</section>
+
+<section id="planner">
+  <h2>Planning in the field</h2>
+  <p class="lead">The rover's planner is a mixed one: a gradient step over continuous velocity plans and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows each scored plan's trajectory from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
+  <figure class="plannerfig">
+    <div class="canvaswrap"><canvas id="plan" width="520" height="420" role="img" aria-label="Planned trajectories"></canvas></div>
+    <figcaption>Lines are rover policy rollouts under the mean dynamics at the most likely terrain, from the belief mean position and velocity (chosen one bold). Filled dots mark long-exposure sensor steps, hollow dots short exposure.</figcaption>
+  </figure>
+  <h3>Mission plan</h3>
+  <ol id="missionplan" class="chips"></ol>
+  <p class="note" id="missionnote"></p>
+</section>
+
+<section id="mdl">
+  <h2>Description length</h2>
+  <p class="lead">What each part of the model costs to write down, in nats, for both tiers. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table or density, with no prior over its parameters, is priced by its family alone and flagged approximate; only the graph and the control entries are exact, so the exact total is a small part of the whole.</p>
+  <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">nats</th><th>Status</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div>
+</section>
+
+<section id="start">
+  <h2>Install and quickstart</h2>
+<pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
+.venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
+  <p class="lead"><strong>Quickstart.</strong> A boat in an unknown current. A hidden current (sticky, two levels) drives a position carried as a Gaussian mixture; one control with three levels (anchor, drift, run); a noisy position sensor; the dock as the preference. Thirty lines declare it, one call infers, one call plans.</p>
+<pre><code>import jax
+import jax.numpy as jnp
+
+from hybrid_aif.distributions import (
+    Categorical, ConditionalCategorical, ConditionalGaussian, Gaussian, MixtureGaussian,
+)
+from hybrid_aif.factors import LinearGaussianObservation, LinearGaussianTransition
+from hybrid_aif.system import System, SystemParams
+
+current = jnp.asarray([-1.0, 1.0])            # mode 0 flows left, mode 1 right
+push = jnp.asarray([0.0, 1.1, 2.2])            # anchor, drift, run
+system = System(
+    A_deps=((1,),),                            # the sensor reads x
+    B_deps=((0,), (0,)),                       # the current is sticky; x rides it
+    controlled=(False, True),
+    policy_len=3,
+    mixture_k=8,
+    mixture_schedule="mode_aligned",
+    modality_names=("y",),
+    factor_names=("current", "x"),
+)
+params = SystemParams(
+    likelihood={
+        "y": LinearGaussianObservation(H=jnp.eye(1), c=jnp.zeros(1), noise=0.3 * jnp.eye(1)),
+    },
+    transition={
+        "current": ConditionalCategorical(
+            log_table=jnp.log(jnp.asarray([[0.9975, 0.0025], [0.0025, 0.9975]]))[:, :, None],
+            parent_ndims=2,
+        ),
+        "x": LinearGaussianTransition(
+            F=jnp.broadcast_to(jnp.asarray([0.25, 0.85, 1.0])[None, :, None, None], (2, 3, 1, 1)),
+            innovations=ConditionalGaussian(
+                loc=(current[:, None] * push[None, :])[..., None],
+                chol=jnp.full((2, 3, 1, 1), 0.2),
+                parent_ndims=2,
+            ),
+        ),
+    },
+    initial_state_prior={
+        "current": Categorical(logits=jnp.zeros(2)),
+        "x": MixtureGaussian(
+            log_weights=jnp.log(jnp.asarray([0.5, 0.5])),
+            means=jnp.zeros((2, 1)),
+            chols=0.5 * jnp.ones((2, 1, 1)),
+        ),
+    },
+    state_targets={"x": Gaussian(loc=jnp.zeros(1), chol=0.55 * jnp.eye(1))},
+)
+
+beliefs, _ = system.infer_states(params, {"y": jnp.asarray([0.4])})
+action, _, tree = system.act(jax.random.PRNGKey(0), params, beliefs, selection="deterministic")
+print(int(action["a_x"]))                       # 1: drift, to read the current
+for term, leaves in tree.items():
+    for leaf, interval in leaves.items():
+        print(term, leaf, interval.lower, interval.upper)   # one bracket per policy</code></pre>
+</section>
+
+<section id="cite">
+  <h2>Citation</h2>
+<pre><code>@software{hybrid_aif_2026,
+  title   = {hybrid-aif: hybrid continuous-discrete active inference in {JAX}},
+  author  = {Kiefer, Alex and {Noumenal Labs}},
+  year    = {2026},
+  version = {0.19.0},
+  url     = {https://github.com/noumenal-labs/hybrid-aif},
+  license = {MIT}
+}</code></pre>
+</section>
+</main>
+<footer class="wrap"><p>Noumenal Labs, 2026. Most of this code was written by Claude through Claude Code under the direction of the maintainers; the design records in <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">docs/design/</a> show how each decision was reached. Licensed MIT.</p></footer>
+<noscript><div class="wrap static"><p>This page replays precomputed data and needs JavaScript. Without it, here are the rendered views of one setting.</p>
+<img src="static/hero.png" alt="The rover field and the two-tier model graph at one tick of the replay">
+<img src="static/timeline.png" alt="The timeline of option bands, energy, rock beliefs and exposure over the run">
+<img src="static/objective.png" alt="Expected free energy per policy as intervals">
+</div></noscript>
+<script src="app.js" defer></script>
+</body>
+</html>
