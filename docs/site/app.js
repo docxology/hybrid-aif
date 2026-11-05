@@ -257,9 +257,10 @@
     var c = $("field"), m = setupCanvas(c), g = m.g, r = run().ticks, t = r[S.t];
     drawGrid(m); drawZones(m, t);
     t.belief.components.forEach(function (cm) { ellipse(m, cm, css("--c1"), cm.w); });
-    g.strokeStyle = css("--fg"); g.lineWidth = 2; g.beginPath();
+    g.save(); g.setLineDash([2, 5]); g.lineCap = "round"; g.globalAlpha = 0.7; g.strokeStyle = css("--fg"); g.lineWidth = 1.5; g.beginPath();
     for (var i = 0; i <= S.t; i++) { var p = r[i].true_x; i ? g.lineTo(m.X(p[0]), m.Y(p[1])) : g.moveTo(m.X(p[0]), m.Y(p[1])); }
-    g.stroke();
+    g.stroke(); g.restore();
+    drawPlans(m, t);
     if (t.fix) {
       var fx = m.X(t.fix[0]), fy = m.Y(t.fix[1]);
       g.strokeStyle = css("--c2"); g.lineWidth = 2; g.beginPath();
@@ -274,6 +275,31 @@
       t.belief.components.length + "</b></span>" + (v ? "<span>belief velocity: <b>" + v[0].toFixed(2) + ", " + v[1].toFixed(2) + "</b></span>" : "") +
       (t.free_energy != null ? "<span>free energy: <b>" + t.free_energy.toFixed(2) + "</b></span>" : "");
     drawCamera(t);
+  }
+  // the planner's rollouts on the field: the top policies by weight from the belief mean, the chosen one in colour
+  function drawPlans(m, t) {
+    var g = m.g, dyn = B.meta.dynamics, terr = argmax(t.belief.terrain), v0 = t.belief.velocity || [0, 0];
+    var longIdx = Math.max(0, names("sensor").findIndex(function (s) { return /long/i.test(s); }));
+    function path(p, color, wLong, wShort, alpha) {
+      var x = p.start[0], y = p.start[1], vx = v0[0], vy = v0[1];
+      g.globalAlpha = alpha; g.strokeStyle = color; g.fillStyle = color; g.lineCap = "round";
+      p.v_plan.forEach(function (a, k) {
+        var lg = p.sensor_plan[k] === longIdx, lv = p.sensor_plan[k] ? 1 : 0, drift = dyn.drift[terr], x0 = x, y0 = y;
+        x += dyn.dt * vx; y += dyn.dt * vy;
+        vx = dyn.keep[lv] * vx + dyn.gain[lv] * a[0] + drift[0]; vy = dyn.keep[lv] * vy + dyn.gain[lv] * a[1] + drift[1];
+        g.lineWidth = lg ? wLong : wShort; g.beginPath(); g.moveTo(m.X(x0), m.Y(y0)); g.lineTo(m.X(x), m.Y(y)); g.stroke();
+        if (lg) { g.beginPath(); g.arc(m.X(x), m.Y(y), wLong * 0.85 + 1, 0, 2 * Math.PI); g.fill(); }
+      });
+      g.globalAlpha = 1;
+    }
+    var order = t.policies.map(function (p, i) { return i; }).sort(function (a, b) { return t.policies[b].q_pi - t.policies[a].q_pi; }).slice(0, 4);
+    if (order.indexOf(t.chosen) < 0) order.push(t.chosen);
+    order.forEach(function (i) { if (i !== t.chosen) path(t.policies[i], css("--muted"), 2.8, 1, 0.6); });
+    var ch = t.policies[t.chosen]; path(ch, css("--accent"), 5, 1.6, 1);
+    g.beginPath(); g.arc(m.X(ch.start[0]), m.Y(ch.start[1]), 3.5, 0, 2 * Math.PI); g.fillStyle = css("--panel"); g.fill(); g.strokeStyle = css("--accent"); g.lineWidth = 1.5; g.stroke();
+    var lw = function (c, w, dot, dash) { return "<svg class='lsw' viewBox='0 0 28 10'><line x1='2' x2='" + (dot ? 21 : 26) + "' y1='5' y2='5' stroke='" + c + "' stroke-width='" + w + "' stroke-linecap='round'" + (dash ? " stroke-dasharray='2 4'" : "") + "/>" + (dot ? "<circle cx='23' cy='5' r='3.5' fill='" + c + "'/>" : "") + "</svg>"; };
+    $("fieldlegend").innerHTML = "<span>" + lw(css("--fg"), 1.5, false, true) + "true path</span><span><i style='background:" + css("--accent") + "'></i>chosen policy</span><span><i style='background:" + css("--muted") + "'></i>other top policies</span><span>" +
+      lw(css("--fg"), 4, true) + esc(nm("sensor", longIdx)) + " step: thick, dot at its end</span><span>" + lw(css("--fg"), 1.2, false) + "short exposure step: thin</span>";
   }
   function imageRows(x) {
     // an image as rows of 0..255: either rows already, or a base64 string of the pixel bytes
@@ -598,33 +624,8 @@
     if (mode === "terms" && anyApprox()) lg.innerHTML += "<span class='approx'>≈ approximate leaves (hover)</span>";
   }
 
-  // ---- planner ----
-  function drawPlanner() {
-    var c = $("plan"), m = setupCanvas(c), g = m.g, t = tick();
-    drawGrid(m); drawZones(m, t);
-    var dyn = B.meta.dynamics, terr = argmax(t.belief.terrain), v0 = t.belief.velocity || [0, 0];
-    var longIdx = Math.max(0, names("sensor").findIndex(function (s) { return /long/i.test(s); }));
-    function path(p, color, wLong, wShort, alpha) {
-      var x = p.start[0], y = p.start[1], vx = v0[0], vy = v0[1];
-      g.globalAlpha = alpha; g.strokeStyle = color; g.fillStyle = color; g.lineCap = "round";
-      p.v_plan.forEach(function (a, k) {
-        var lg = p.sensor_plan[k] === longIdx, lv = p.sensor_plan[k] ? 1 : 0, drift = dyn.drift[terr], x0 = x, y0 = y;
-        x += dyn.dt * vx; y += dyn.dt * vy;
-        vx = dyn.keep[lv] * vx + dyn.gain[lv] * a[0] + drift[0]; vy = dyn.keep[lv] * vy + dyn.gain[lv] * a[1] + drift[1];
-        g.lineWidth = lg ? wLong : wShort; g.beginPath(); g.moveTo(m.X(x0), m.Y(y0)); g.lineTo(m.X(x), m.Y(y)); g.stroke();
-        if (lg) { g.beginPath(); g.arc(m.X(x), m.Y(y), wLong * 0.85 + 1, 0, 2 * Math.PI); g.fill(); }
-      });
-      g.globalAlpha = 1;
-    }
-    var order = t.policies.map(function (p, i) { return i; }).sort(function (a, b) { return t.policies[b].q_pi - t.policies[a].q_pi; }).slice(0, 4);
-    if (order.indexOf(t.chosen) < 0) order.push(t.chosen);
-    order.forEach(function (i) { if (i !== t.chosen) path(t.policies[i], css("--muted"), 2.8, 1, 0.6); });
-    var ch = t.policies[t.chosen]; path(ch, css("--accent"), 5, 1.6, 1);
-    g.beginPath(); g.arc(m.X(ch.start[0]), m.Y(ch.start[1]), 6, 0, 2 * Math.PI); g.fillStyle = css("--fg"); g.fill();
-    var lw = function (c, w, dot) { return "<svg class='lsw' viewBox='0 0 28 10'><line x1='2' x2='" + (dot ? 21 : 26) + "' y1='5' y2='5' stroke='" + c + "' stroke-width='" + w + "' stroke-linecap='round'/>" + (dot ? "<circle cx='23' cy='5' r='3.5' fill='" + c + "'/>" : "") + "</svg>"; };
-    $("planlegend").innerHTML = "<span>" + lw(css("--fg"), 4, true) + esc(nm("sensor", longIdx)) + " step: thick, dot at its end</span><span>" +
-      lw(css("--fg"), 1.2, false) + "short exposure step: thin</span><span><i style='background:" + css("--accent") + "'></i>chosen policy</span><span><i style='background:" + css("--muted") + "'></i>other top policies</span>";
-    // mission plan
+  // ---- mission plan ----
+  function drawMissionPlan() {
     var d = decTick(), ul = $("missionplan"); ul.innerHTML = "";
     if (!d) { $("missionnote").textContent = ""; return; }
     var sp = d.slow_policies[d.slow_chosen];
@@ -673,7 +674,7 @@
   // ---- state / wiring ----
   function render() {
     $("tick").value = S.t; $("tickout").textContent = S.t;
-    drawField(); updateGraph(); drawTimeline(); drawObjective(); drawPlanner();
+    drawField(); updateGraph(); drawTimeline(); drawObjective(); drawMissionPlan();
   }
   function setPlaying(on) {
     S.playing = on; $("play").textContent = on ? "Pause" : "Play"; $("play").setAttribute("aria-label", on ? "Pause" : "Play");

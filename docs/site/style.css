@@ -45,7 +45,6 @@ svg,canvas{width:100%;height:auto;display:block}
 .graphfig svg{border:1px solid var(--line);border-radius:4px;background:var(--panel)}
 .hud{font:.85rem var(--mono);margin-top:.4rem;display:flex;flex-wrap:wrap;gap:.2rem 1rem}
 .hud b{font-weight:600}
-.plannerfig{max-width:560px}
 .chartbox{border:1px solid var(--line);border-radius:4px;background:var(--panel);padding:.5rem}
 .row{cursor:default}
 .row:hover .rowbg,.row:focus .rowbg{fill:var(--line);opacity:.5}

@@ -51,7 +51,8 @@
       <div class="canvaswrap"><canvas id="field" width="520" height="420" role="img" aria-label="Rover field"></canvas></div>
       <div class="mstate" id="badges" aria-live="off"></div>
       <div class="hud" id="hud"></div>
-      <figcaption>True path (line), belief over position (one ellipse per mixture component, opacity by weight), latest fix (cross). Rocks are coloured by the mission tier's belief about their quality; the dashed ring marks the zone the current option heads for; the triangle marks the ridge, where the position fix is sharpest.</figcaption>
+      <div class="legend" id="fieldlegend"></div>
+      <figcaption>Dotted line: the true path; dot: the rover now; cross: the latest fix. Belief over position: one 2&sigma; ellipse per mixture component, centred on the component's mean, opacity by weight. From the belief mean, the planner's rollouts: the chosen policy in colour, the other top policies in grey, long-exposure steps thick with a dot at their end. Rocks are coloured by the mission tier's belief about their quality; the dashed ring marks the zone the current option heads for; the triangle marks the ridge, where the position fix is sharpest. The ellipse is elongated because the camera constrains position across its texture only (on firm ground, across the one diagonal of the faint mottle the decoder learned); in the recogniser setting the image reports terrain alone and the belief is round.</figcaption>
     </figure>
   </div>
   <figure class="camerafig" id="camerafig">
@@ -89,12 +90,7 @@
 
 <section id="planner">
   <h2>Planning in the field</h2>
-  <p class="lead">The rover's planner is a mixed one: gradient descent over continuous velocity plans from four warm starts per exposure plan, keeping the best, and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows the trajectories of the highest-weighted plans from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
-  <figure class="plannerfig">
-    <div class="canvaswrap"><canvas id="plan" width="520" height="420" role="img" aria-label="Planned trajectories"></canvas></div>
-    <div class="legend" id="planlegend"></div>
-    <figcaption>Lines are rover policy rollouts under the mean dynamics at the most likely terrain, from the belief mean position and velocity. The paths differ mainly in exposure choice. Only the top four policies by posterior weight are shown, plus the chosen one if it is not among them.</figcaption>
-  </figure>
+  <p class="lead">The rover's planner is a mixed one: gradient descent over continuous velocity plans from four warm starts per exposure plan, keeping the best, and an enumeration over the discrete exposure choice, rolled out from the current belief. The map at the top shows the rollouts of the top four policies by posterior weight, plus the chosen one if it is not among them, under the mean dynamics at the most likely terrain, from the belief mean position and velocity; the paths differ mainly in exposure choice. Here, the mission plan: the option sequence the slow tier scored best, with durations.</p>
   <h3>Mission plan</h3>
   <ol id="missionplan" class="chips"></ol>
   <p class="note" id="missionnote"></p>
@@ -112,63 +108,43 @@
   <h2>Install and quickstart</h2>
 <pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
 .venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
-  <p class="lead"><strong>Quickstart.</strong> A boat in an unknown current. A hidden current (sticky, two levels) drives a position carried as a Gaussian mixture; one control with three levels (anchor, drift, run); a noisy position sensor; the dock as the preference. Forty lines declare it, one call infers, one call plans.</p>
-<pre><code>import jax
-import jax.numpy as jnp
-
-from hybrid_aif.distributions import (
-    Categorical, ConditionalCategorical, ConditionalGaussian, Gaussian, MixtureGaussian,
-)
-from hybrid_aif.factors import LinearGaussianObservation, LinearGaussianTransition
-from hybrid_aif.system import System, SystemParams
-
-current = jnp.asarray([-1.0, 1.0])            # mode 0 flows left, mode 1 right
-push = jnp.asarray([0.0, 1.1, 2.2])            # anchor, drift, run
-system = System(
-    A_deps=((1,),),                            # the sensor reads x
-    B_deps=((0,), (0,)),                       # the current is sticky; x rides it
-    controlled=(False, True),
+  <p class="lead"><strong>The rover tier, as declared.</strong> This is the declaration behind the map above, from <code>examples/showcase_rover_model.py</code>: five state factors (terrain, the four-dimensional position and velocity, the velocity command, the exposure level and the mission's option), two modalities, and the objective terms the planner scores. The parameters follow in the same file: the terrain-switched dynamics, the fix's noise map over position, the camera's decoder and the option-conditional position target.</p>
+<pre><code>system = System(
+    A_deps=((1, 6), (1, 0)),               # the fix reads x and the exposure node; the image reads x and terrain
+    B_deps=((0,), (0, 2, 3), (), (), ()),  # terrain is sticky; x rides terrain, the command and the exposure
+    controls=(2, 3, 4),
+    action_names=("a_v", "a_sensor", "a_opt"),
+    factor_names=("terrain", "x", "v", "sensor", "u_opt"),
+    modality_names=("fix", "img"),
+    C_deps={"x": ("u_opt",)},              # the position target depends on the mission's option
     policy_len=3,
-    mixture_k=8,
+    mixture_k=3,                           # one position component per terrain mode
     mixture_schedule="mode_aligned",
-    modality_names=("y",),
-    factor_names=("current", "x"),
-)
-params = SystemParams(
-    likelihood={
-        "y": LinearGaussianObservation(H=jnp.eye(1), c=jnp.zeros(1), noise=0.3 * jnp.eye(1)),
-    },
-    transition={
-        "current": ConditionalCategorical(
-            log_table=jnp.log(jnp.asarray([[0.9975, 0.0025], [0.0025, 0.9975]]))[:, :, None],
-            parent_ndims=2,
-        ),
-        "x": LinearGaussianTransition(
-            F=jnp.broadcast_to(jnp.asarray([0.25, 0.85, 1.0])[None, :, None, None], (2, 3, 1, 1)),
-            innovations=ConditionalGaussian(
-                loc=(current[:, None] * push[None, :])[..., None],
-                chol=jnp.full((2, 3, 1, 1), 0.2),
-                parent_ndims=2,
-            ),
-        ),
-    },
-    initial_state_prior={
-        "current": Categorical(logits=jnp.zeros(2)),
-        "x": MixtureGaussian(
-            log_weights=jnp.log(jnp.asarray([0.5, 0.5])),
-            means=jnp.zeros((2, 1)),
-            chols=0.5 * jnp.ones((2, 1, 1)),
-        ),
-    },
-    state_targets={"x": Gaussian(loc=jnp.zeros(1), chol=0.55 * jnp.eye(1))},
-)
+    planning_belief="prior",
+    epistemic=("obs:fix", "obs:img"),      # the modalities whose information gain is scored
+    terms=("uncertainty:x",),
+    recognition=(Recognition("terrain", ("obs:img",)),),   # the encoder setting only
+)</code></pre>
+  <p class="lead"><strong>Running it.</strong> The camera's decoder is a trained network (the showcase trains and caches it on its first run), so the quickest run leaves the camera out: the same rover tier with the fix as its only modality, coupled to the mission tier through the shared option and pinned at one option, infers on a fix and plans in a fraction of a second once compiled. From the <code>examples</code> folder:</p>
+<pre><code>import dataclasses
+import jax.numpy as jnp
+import showcase_mission as mm, showcase_rover_model as rm
+from hybrid_aif.composition.merge import ActionControl, merge, subsystem
+from hybrid_aif.planning import make_mixed_planner
 
-beliefs, _ = system.infer_states(params, {"y": jnp.asarray([0.4])})
-action, _, tree = system.act(jax.random.PRNGKey(0), params, beliefs, selection="deterministic")
-print(int(action["a_x"]))                       # 1: drift, to read the current
+ms, mp = mm.mission("steep", epistemic=True)
+rs, rp = rm.rover(None, camera=False)                       # the rover tier, fix only
+cs, cp = merge({"mission": ms, "rover": rs}, {"mission": mp, "rover": rp},
+               [ActionControl("mission.u_option", "rover.u_opt")])   # the two tiers share the option
+view, vp = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": 0})   # pinned at visit_1
+view = dataclasses.replace(view, planner="mixed")
+faces = view.compiled()
+beliefs, _ = faces.infer_states(vp, {"rover.fix": jnp.asarray([0.3, -0.1])}, previous={"rover.a_sensor": 0})
+q_pi, tree = faces.infer_policies(vp, beliefs, planner=make_mixed_planner(steps=40, starts=4))
 for term, leaves in tree.items():
     for leaf, interval in leaves.items():
-        print(term, leaf, interval.lower, interval.upper)   # one bracket per policy</code></pre>
+        print(term, leaf, interval.lower, interval.upper)   # one bracket per exposure plan</code></pre>
+  <p class="lead">The whole showcase, both tiers over every setting on this page, is <code>python examples/showcase_rover.py --out OUT_DIR</code>; <code>docs/site/README.md</code> says how the page's data is rebuilt from it.</p>
 </section>
 
 <section id="cite">
