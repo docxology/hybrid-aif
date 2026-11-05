@@ -93,3 +93,35 @@ laptop CPU session; first call including compilation about 0.9 s throughout):
 | 2 | 9 | 6 ms |
 | 3 | 27 | 16 ms |
 | 4 | 81 | 40 ms |
+
+## Warm starts (2026-11-04)
+
+With one shared continuous start, a smooth `G` can send every discrete policy's descent to the same
+local optimum of the continuous plan, even where `G` has several. `mixed_plan(starts=n)` descends
+each discrete policy from `n` continuous warm starts and keeps the best.
+
+- The starts are deterministic and take no key: the first is `init` (or the box centre) and the
+  other `n - 1` form a Latin hypercube over the flattened plan, mapped to the box
+  (`planning.gradient.spread_starts`). Every coordinate takes exactly the values
+  `(r + 0.5) / (n - 1)` of the box, `r = 0 .. n - 2`, in a different order per coordinate; the
+  order is that of the Kronecker sequence of the generalised golden ratio,
+  `frac(0.5 + i * alpha_j)` with `alpha_j = phi_d^-(j+1)`, `phi_d` the positive root of
+  `x^(d+1) = x + 1` and `d = policy_len * action_dim`, which decorrelates the coordinates. The
+  sequence alone was not used because its leading coordinates move by small steps, so a few
+  starts cluster at the centre; a prime-base sequence bunches its later coordinates toward one
+  edge. With `n = 2` the one extra start is the three-quarter point of the box on every
+  coordinate (not the centre, which is the default `init`). `init` may instead carry a leading
+  `(starts, policy_len, action_dim)` axis to give the starts explicitly.
+- The starts are an optimisation device, not extra policies. A discrete policy keeps the plan of
+  the start whose descent scored lowest, as `gradient_plan` does, so its `G` is the best its
+  descents found; `P` stays the number of discrete policies, the posterior is the softmax of
+  `-gamma G` plus the log prior over them, and the policy set of the registered planner is
+  unchanged in shape. `MixedResult.start_scores` `(P, starts)` and `start_plans`
+  `(P, starts, policy_len, action_dim)` keep every start's outcome; `trace`, `gradient_trace` and
+  `best_step` are the chosen start's. The descents stay one `jax.vmap` over all (policy, start)
+  pairs. With `starts=1` every output is bitwise that of the single shared start.
+- `gradient_plan(starts=n)` descends the same starts together and returns the one whose final
+  score is lowest, with its trace; `GradientResult.start_scores` `(starts,)` holds every start's
+  final score (`(1,)` for one start). A NaN score never wins; when every start's is NaN the first
+  start's is returned.
+- `make_mixed_planner(starts=...)` and `make_gradient_planner(starts=...)` pass it through.

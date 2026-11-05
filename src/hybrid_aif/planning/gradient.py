@@ -36,6 +36,15 @@ curvature that is not positive definite is refused, eagerly with a sentence and 
 ``(1, policy_len, action_dim)``, wrapped in a :class:`PlanPosterior` under ``"laplace"`` so that
 ``act`` can draw the emitted action from it.
 
+Warm starts. ``starts > 1`` descends from that many continuous plans together (one vmapped
+descent): the first is ``init`` (or the box midpoint), the rest form a Latin hypercube
+over the whole plan ``(policy_len, action_dim)``, mapped to the box (:func:`spread_starts`).
+The construction is deterministic and needs no
+key. The plan returned is the descent whose final score is lowest, with its trace, and
+``start_scores`` holds every descent's final score, ``(starts,)``, so the spread across local
+optima can be read. ``init`` may carry a leading ``(starts, policy_len, action_dim)`` axis to
+supply the starts explicitly.
+
 Design: docs/design/control-states.md C4 (The planner for the LQ demo), C5
 """
 
@@ -45,6 +54,7 @@ from typing import Literal, NamedTuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from hybrid_aif.distributions import Categorical, Gaussian, TruncatedGaussian
@@ -97,7 +107,10 @@ class GradientResult(NamedTuple):
     plan coordinates before each step, and ``best_step`` is the int32 index of the plan returned:
     ``t`` for the plan held before step ``t`` (``0`` is the warm start) and ``steps`` for the
     final plan. ``plan`` is the best plan scored over the descent (the warm start and the final
-    plan included), ``G`` and ``tree`` are its own, and ``curvature`` is taken at it."""
+    plan included), ``G`` and ``tree`` are its own, and ``curvature`` is taken at it. With
+    several starts, ``plan`` is the best start's and ``trace``, ``gradient_trace`` and
+    ``best_step`` are its own; ``start_scores`` ``(starts,)`` is each start's final score (the
+    descended point of ``G``; ``(1,)`` for one start)."""
 
     q_pi: Categorical
     tree: TermTree | None
@@ -108,6 +121,62 @@ class GradientResult(NamedTuple):
     trace: Array
     gradient_trace: Array
     best_step: Array
+    start_scores: Array
+
+
+def _plastic_alphas(dim: int) -> np.ndarray:
+    """The increments ``phi_d^-(j+1)``, ``j = 0 .. dim - 1``, of the generalised golden ratio
+    ``phi_d``, the positive root of ``x^(dim+1) = x + 1`` (Newton's method)."""
+    phi = 2.0
+    for _ in range(60):
+        phi -= (phi ** (dim + 1) - phi - 1.0) / ((dim + 1) * phi**dim - 1.0)
+    return phi ** -(np.arange(dim) + 1.0)
+
+
+def spread_starts(count: int, horizon: int, low: Array, high: Array) -> Array:
+    """``count`` deterministic, well-spread plans ``(count, horizon, dim)`` strictly inside the box
+    ``[low, high]``: a Latin hypercube over the flattened plan (time-major). The order of the
+    points on each coordinate is that of the Kronecker sequence of the generalised golden ratio,
+    ``frac(0.5 + i * alpha_j)`` for ``i = 1 .. count`` (which decorrelates the coordinates), and
+    each coordinate's values are then replaced by ``(rank + 0.5) / count`` of the box, so every
+    coordinate takes exactly those ``count`` values, in a different order per coordinate. For
+    ``count = 1`` the point is the three-quarter point (``0.75``) of the box on every coordinate,
+    not the centre, which is the default ``init``. No key is needed."""
+    dim = horizon * low.shape[0]
+    alphas = _plastic_alphas(dim)
+    index = np.arange(1, count + 1, dtype=np.float64)[:, None]
+    sequence = np.mod(0.5 + index * alphas[None, :], 1.0)
+    ranks = np.argsort(np.argsort(sequence, axis=0, kind="stable"), axis=0, kind="stable")
+    unit = (ranks + (0.75 if count == 1 else 0.5)) / count
+    unit = jnp.asarray(unit, low.dtype).reshape(count, horizon, low.shape[0])
+    return low + unit * (high - low)
+
+
+def warm_starts(init: Array | None, starts: int, horizon: int, low: Array, high: Array) -> Array:
+    """The warm-start plans ``(S, horizon, dim)`` of a descent: ``init`` (``(horizon, dim)``,
+    ``(dim,)`` broadcast over the steps, or the box midpoint) first and ``starts - 1`` spread
+    points after it (:func:`spread_starts`); an ``init`` with a leading axis ``(S, horizon,
+    dim)`` is taken as the starts themselves, and ``starts`` must then be ``S`` or left at 1.
+    Every start is clipped to the box."""
+    if starts < 1:
+        raise ValueError(f"starts must be at least 1, got {starts}")
+    dim = low.shape[0]
+    if init is not None and jnp.ndim(init) == 3:
+        given = jnp.asarray(init, low.dtype)
+        if given.shape[1:] != (horizon, dim) or starts not in (1, given.shape[0]):
+            raise ValueError(
+                f"init has shape {tuple(given.shape)} and starts={starts}; an init with a "
+                f"leading axis is (starts, {horizon}, {dim}) and starts, when given, matches it"
+            )
+        return jnp.clip(given, low, high)
+    first = jnp.broadcast_to(
+        0.5 * (low + high) if init is None else jnp.asarray(init, low.dtype), (horizon, dim)
+    )
+    plans = first[None]
+    if starts > 1:
+        rest = spread_starts(starts - 1, horizon, low, high)
+        plans = jnp.concatenate([plans, rest])
+    return jnp.clip(plans, low, high)
 
 
 def _point(G: Interval, use_bound: UseBound) -> Array:
@@ -153,6 +222,21 @@ def descend(
     linearly to zero over ``steps`` and its normalisation is floored at ``sqrt(machine epsilon)
     · RMS(gradient)``. This is the descent :func:`gradient_plan` runs; see the module docstring.
     """
+    return descend_scored(score, plan0, low, high, rate, steps=steps, optimizer=optimizer)[:4]
+
+
+def descend_scored(
+    score: Callable[[Array], Array],
+    plan0: Array,
+    low: Array,
+    high: Array,
+    rate: Array,
+    *,
+    steps: int,
+    optimizer: Optimizer,
+) -> tuple[Array, Array, Array, Array, Array]:
+    """:func:`descend` with the score of the returned plan appended: ``(plan, best_step, trace,
+    gradient_trace, final_score)``."""
     value_and_grad = jax.value_and_grad(score)
 
     def step(carry, t):
@@ -185,7 +269,8 @@ def descend(
     final_best = ~jnp.isfinite(last_g) | (last_g <= best_g)
     plan = jnp.where(final_best, last, best_plan)
     best_step = jnp.where(final_best, jnp.int32(steps), best_t)
-    return plan, best_step, trace, gradient_trace
+    final_score = jnp.where(final_best, last_g, best_g)
+    return plan, best_step, trace, gradient_trace, final_score
 
 
 def gradient_plan(
@@ -195,6 +280,7 @@ def gradient_plan(
     lr: float | Array | None = None,
     optimizer: Optimizer = "adam",
     init: Array | None = None,
+    starts: int = 1,
     posterior: Posterior = "mode",
     use_bound: UseBound = "midpoint",
     metrics: bool = True,
@@ -202,7 +288,10 @@ def gradient_plan(
     """Descend ``G`` over the float plan against ``ctx``; see the module docstring.
 
     ``init`` is the starting plan, ``(policy_len, action_dim)`` or ``(action_dim,)`` broadcast
-    over the steps (default: the box midpoint). ``steps`` and ``lr`` set the descent;
+    over the steps (default: the box midpoint). ``starts`` descends from that many warm starts
+    together (``init`` first, then spread points of the box; or ``init`` with a leading ``(starts,
+    policy_len, action_dim)`` axis) and returns the best final plan, with every start's final
+    score in ``start_scores``. ``steps`` and ``lr`` set the descent;
     ``optimizer`` is ``"adam"`` or ``"gradient"``. Adam's ``lr`` is its first step, decayed
     linearly to zero (default :data:`DEFAULT_LR_FRACTION` of the box width per dimension); a
     plain gradient step's size depends on ``G``'s scale, so ``"gradient"`` takes an explicit
@@ -210,7 +299,9 @@ def gradient_plan(
     Adam's normalisation is floored at ``sqrt(machine epsilon of the plan's dtype) ·
     RMS(gradient)``, and the plan returned is the one with the lowest scored ``G`` over the warm
     start, the iterates and the final plan, unless the final plan's score is not finite (see
-    the module docstring). Convergence is read from the last entries of ``trace`` and
+    the module docstring). With several starts the best final score wins; a NaN score never
+    wins, and when every start's is NaN the first start's is returned. Convergence is read from
+    the last entries of ``trace`` and
     ``gradient_trace``, since a descent from a warm start can raise ``G`` over its first steps
     before settling, and ``best_step`` names the iterate returned.
     """
@@ -223,15 +314,10 @@ def gradient_plan(
             'float-reading transition, or plan with the "enumeration" planner'
         )
     check_descent(steps, lr, optimizer, posterior)
-    horizon, dim = ctx.policy_len, layout.action_dim
+    horizon = ctx.policy_len
     low, high = layout.bounds
     rate = DEFAULT_LR_FRACTION * (high - low) if lr is None else jnp.asarray(lr, low.dtype)
-    plan0 = (
-        jnp.broadcast_to(0.5 * (low + high), (horizon, dim))
-        if init is None
-        else jnp.broadcast_to(jnp.asarray(init, low.dtype), (horizon, dim))
-    )
-    plan0 = jnp.clip(plan0, low, high)
+    plan0 = warm_starts(init, starts, horizon, low, high)
 
     def score(plan: Array) -> Array:
         G = evaluate_policies_total(
@@ -243,9 +329,18 @@ def gradient_plan(
         )
         return _point(G, use_bound)[0]
 
-    plan, best_step, trace, gradient_trace = descend(
-        score, plan0, low, high, rate, steps=steps, optimizer=optimizer
-    )
+    if plan0.shape[0] == 1:
+        plan, best_step, trace, gradient_trace, final = descend_scored(
+            score, plan0[0], low, high, rate, steps=steps, optimizer=optimizer
+        )
+        start_scores = final[None]
+    else:
+        plans, best_steps, traces, gradient_traces, start_scores = jax.vmap(
+            lambda p0: descend_scored(score, p0, low, high, rate, steps=steps, optimizer=optimizer)
+        )(plan0)
+        pick = jnp.argmin(jnp.where(jnp.isnan(start_scores), jnp.inf, start_scores))
+        plan, best_step = plans[pick], best_steps[pick]
+        trace, gradient_trace = traces[pick], gradient_traces[pick]
 
     if metrics:
         tree = evaluate_policies(
@@ -284,6 +379,7 @@ def gradient_plan(
         trace=trace,
         gradient_trace=gradient_trace,
         best_step=best_step,
+        start_scores=start_scores,
     )
 
 

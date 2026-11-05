@@ -180,7 +180,7 @@ def legal_logits(
         ok = jnp.asarray(legal, bool)
         if ok.shape != (n_pol,):
             raise ValueError(
-                f"{lead}legal= as a bare array is one bool per enumerated policy, shape "
+                f"{lead}legal= as a bare array is one bool per policy of the planner's set, shape "
                 f"({n_pol},); got {tuple(ok.shape)}. A mask over a control node's levels is "
                 "keyed by the node"
             )

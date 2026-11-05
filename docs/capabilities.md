@@ -202,8 +202,23 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
 - Every Interval carries **`derived`** — whether a derivation guarantees
   its enclosure — and a tree with any net-estimated leaf folds to
   `derived=False`: the honesty flag, never a warning.
-- **Compiling an agent loop** (`design/recompilation.md`): the faces are eager and pure, so the
-  tick (`infer_states`, `act`, `update_empirical_prior`, and `learn` where a slot learns) is
+- **Compiling an agent loop** (`design/recompilation.md`): call the faces through
+  `system.compiled()`, which returns the System's `infer_states`, `infer_policies`, `act`,
+  `update_empirical_prior` and `learn` as compiled functions of the same signatures. The System
+  and the planner are static, and the inputs are canonicalised first: parameters, beliefs and
+  priors keep their dtypes but become strong-typed JAX arrays; observations, `previous` and
+  `externals` become arrays (an integer in the default integer dtype, a float at least float32);
+  Python numbers in `lr`, `decay` and `alpha` become arrays (a Python `lr` of `0.0` and `decay`
+  of `1.0` stay static); `legal` masks become bool arrays and a mask the eager faces refuse is
+  refused before the boundary with the same sentence; `priors=None` becomes `initial_priors`
+  completed with the control-node and action-node entries the push returns; typed PRNG keys
+  become raw key data. A wrong-shaped observation is refused with a sentence. A second trace of
+  a face emits a `hybrid_aif.debug.RetraceWarning` naming what changed (`hybrid_aif.debug.watch`
+  does the same for any `eqx.filter_jit` function). Called eagerly, a face re-traces and
+  dispatches operation by operation on every call (a mixed-planner call that takes 40 ms
+  compiled takes about 4 s), and an eager face called more than ten times on one System warns
+  once. The hand-wrapped way: the faces are eager and pure, so the tick (`infer_states`, `act`,
+  `update_empirical_prior`, and `learn` where a slot learns) is
   wrapped once per model shape in `eqx.filter_jit` or `jax.jit`, with the System passed as an
   argument and only values changing between ticks, and each face then traces once. Every field
   of `System` is static (`planner`, `policy_len`, `gamma`, ...), so a different value is a

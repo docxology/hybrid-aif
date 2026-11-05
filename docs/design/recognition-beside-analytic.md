@@ -422,3 +422,43 @@ neural modality moves the plan toward the preferred image; the two 0.19 showcase
 unchanged where no neural modality is declared; `describe`/`build` round-trip `propagation`
 and the target; `learn` lowers the free energy of a decoder; the status is `approximate`
 exactly on the leaves L7 names and nowhere else; the demo notebook re-executes.
+
+## Amendment 2026-11-04: the information gain at many pixels
+
+**L9, the predictive entropy in low-rank form.** The information-gain leaf of a neural
+modality is `H[q(y)]` minus the conditional entropy, and `H[q(y)]` is the
+Kolchinsky-Tracey pair on the `K·M` predictive mixture. Built densely, each component carries
+a `p` by `p` covariance (`p` the observation dimension) and the pair costs `O(N² p³)` for
+`N = K·M` components, which at 64 pixels dominates the whole plan. With the decoder's noise
+diagonal, a predictive component is `S_i = diag(D_i) + U_i U_iᵀ` with `U_i = H_i L_i`, `L_i`
+the component's state Cholesky factor and `r = d` columns. The matrix determinant lemma gives
+`log|S_i|`, and the Woodbury identity gives every trace and quadratic form in the pairwise KL
+(`tr(S_j⁻¹ S_i)` and the mean term). The pairwise Bhattacharyya distance uses the averaged
+covariance `(D_i + D_j)/2 + W Wᵀ` with `W = [U_i, U_j]/√2` of rank `2r`, by the same lemmas.
+Only `r` by `r` and `2r` by `2r` matrices are factored, so the cost is `O(N² p r²)`, linear
+in `p`, and no `p` by `p` array is formed. `LowRankMixture` (distributions/mixture.py) holds
+the log weights, means, diagonals and factors and returns the same interval as
+`MixtureGaussian.entropy()`; the gradient with respect to `H` and the means flows through
+unchanged. `ComponentHead` carries the noise's standard deviations as `R_diag` beside
+`R_chol`; `predictive_entropy` and `conditional_obs_entropy` take the low-rank and diagonal
+forms when it is present.
+
+**Where the forms apply.** `neural_model` sets `R_diag` under first-order propagation, where
+the noise is the decoder's scale at the mean. Every objective term that reads the head
+takes the diagonal forms: the information-gain leaf, and under `risk_ambiguity` an
+undesignated neural modality's flat risk leaf (`-predictive_entropy`) and its ambiguity leaf
+(`conditional_obs_entropy`). A plain Gaussian belief gets a `DiagonalNoiseObservation`, a
+`LinearGaussianObservation` that also carries the noise's standard deviations, and its exact
+predictive entropy is `log|D + U Uᵀ|` by the determinant lemma, with no `p` by `p` array.
+`R_diag` and `R_chol` describe the same noise; `R_chol` stays the field every dense reader
+uses, and unused it is removed by compilation.
+In float32 the pairwise KL is formed from the differences `D_i - D_j` and `U_i - U_j` rather
+than from `tr(S_j⁻¹ S_i) - p`, whose terms are of order `Uᵀ D⁻¹ U` and cancel to order `r`;
+the diagonals of both pairwise matrices are exact zeros.
+
+**When the dense path remains.** Under unscented propagation the noise adds the residual
+covariance of the sigma points, which is not diagonal, so the head carries no `R_diag` and the
+dense path runs. A head with a `GridNoiseMap` or a dense `R_chol` is not diagonal and is
+unchanged. The predictive that the risk and utility terms score against a preference target
+(`predictive_obs`) remains dense. A partial parent selection on a neural modality is refused
+as before.

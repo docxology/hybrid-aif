@@ -22,7 +22,7 @@ Design: docs/design/system.md; see docs/composing-systems.md.
 import dataclasses
 import functools
 from collections.abc import Callable, Iterable, Mapping
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -48,6 +48,7 @@ from hybrid_aif.controls import (
     target_on_box,
     validate_control_deps,
 )
+from hybrid_aif.debug import eager_face as _eager_face
 from hybrid_aif.distributions import (
     Categorical,
     ConditionalCategorical,
@@ -95,6 +96,9 @@ from hybrid_aif.planning.enumerate import (
 )
 from hybrid_aif.system import keyed, selectors, validation
 from hybrid_aif.system.selectors import _KEY_KINDS, _EpistemicVar
+
+if TYPE_CHECKING:
+    from hybrid_aif.system.compiled import CompiledSystem
 
 Belief = Categorical | Gaussian | MixtureGaussian
 
@@ -1537,6 +1541,16 @@ class System(eqx.Module):
             self._facs,
         )
 
+    def compiled(self, *, watch: bool = True) -> "CompiledSystem":
+        """This System's faces compiled once, behind input canonicalisation.
+
+        Returns a :class:`~hybrid_aif.system.compiled.CompiledSystem` with the same face methods
+        as the System. ``watch=False`` turns off the retrace warning.
+        """
+        from hybrid_aif.system.compiled import CompiledSystem
+
+        return CompiledSystem(self, watch=watch)
+
     def initial_priors(self, params: SystemParams) -> dict[str, Belief]:
         """Ancestral mean-field marginals of the initial priors, ``D_deps`` resolved, by factor.
 
@@ -1660,6 +1674,7 @@ class System(eqx.Module):
 
     # ------------------------------------------------------------- backward faces
 
+    @_eager_face
     def infer_states(
         self,
         params: SystemParams,
@@ -1835,6 +1850,7 @@ class System(eqx.Module):
 
     # -------------------------------------------------------------- learning face
 
+    @_eager_face
     def learn(
         self,
         params: SystemParams,
@@ -2456,6 +2472,7 @@ class System(eqx.Module):
             present,
         )
 
+    @_eager_face
     def infer_policies(
         self,
         params: SystemParams,
@@ -2466,8 +2483,12 @@ class System(eqx.Module):
         plan_key: Array | None = None,
         legal: "Mapping[str, Array] | Array | None" = None,
         present: Mapping[str, bool | Array] | None = None,
-    ) -> tuple[Categorical, TermTree | None]:
-        """Policy posterior and the EFE term tree: ``(q_pi, tree)``.
+        return_policies: bool = False,
+    ):
+        """Policy posterior and the EFE term tree: ``(q_pi, tree)``, or ``(q_pi, tree,
+        policies)`` with ``return_policies``, the planner's clamped policy set as a
+        :class:`~hybrid_aif.controls.ControlStep` with one entry per control node and leading
+        axes ``(P, policy_len)``, in the order ``q_pi`` and the tree's leaves follow.
 
         ``planner`` is a callable, or ``None`` for the System's registry planner. ``metrics=False``
         skips the tree (``None``); the posterior is the same up to float reassociation. A planner
@@ -2494,6 +2515,7 @@ class System(eqx.Module):
             plan_key,
             legal,
             present,
+            return_policies,
         )
 
     def score_policies(
@@ -2553,6 +2575,7 @@ class System(eqx.Module):
     def _check_plan(self, plan: Array, what: str, params: SystemParams) -> Array:
         return validation._check_plan(self, plan, what, params)
 
+    @_eager_face
     def act(
         self,
         key: Array,
@@ -2647,6 +2670,7 @@ class System(eqx.Module):
         """
         return _infer_face.predict_beliefs(self, params, beliefs, policy, key)
 
+    @_eager_face
     def update_empirical_prior(
         self,
         params: SystemParams,

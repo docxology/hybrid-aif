@@ -71,6 +71,7 @@ from hybrid_aif.objectives import registry
 from hybrid_aif.objectives.base import INFOGAIN, TermTree, merge
 from hybrid_aif.objectives.continuous import (
     ComponentHead,
+    DiagonalNoiseObservation,
     conditional_correlation,
     emission_entropies,
     lg_ambiguity,
@@ -879,9 +880,16 @@ def neural_model(head: NeuralHead, q: Gaussian | MixtureGaussian):
     configuration) over a mixture."""
     sizes = tuple(head.decl.parent_dims[1:])
     H, c, R_chol = neural_read(head.decl, q, sizes, head.levels)
+    # first order reads the decoder's diagonal noise at the mean; the unscented noise is dense
+    diag = (
+        jnp.diagonal(R_chol, axis1=-2, axis2=-1)
+        if getattr(head.decl, "propagation", "first_order") == "first_order"
+        else None
+    )
     if isinstance(q, MixtureGaussian):
-        return ComponentHead(H, c, R_chol)
-    return LinearGaussianObservation(H=H, c=c, noise=R_chol)
+        return ComponentHead(H, c, R_chol, diag)
+    obs = DiagonalNoiseObservation(H=H, c=c, noise=R_chol, scale=diag)
+    return obs
 
 
 def neural_conditioner(

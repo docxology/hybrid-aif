@@ -994,12 +994,15 @@ def infer_policies(
     plan_key: Array | None = None,
     legal: "Mapping[str, Array] | Array | None" = None,
     present: Mapping[str, bool | Array] | None = None,
-) -> tuple[Categorical, TermTree | None]:
+    return_policies: bool = False,
+):
     params = system._params_in(params, "infer_policies")
     qs = system._beliefs_in(params, beliefs, "infer_policies")
-    q_pi, tree, _ = system._plan(
+    q_pi, tree, policies = system._plan(
         params, qs, planner, use_bound, metrics, plan_key, legal, "infer_policies", present
     )
+    if return_policies:
+        return q_pi, tree, policies
     return q_pi, tree
 
 

@@ -1,6 +1,7 @@
 # Recompilation under the intended agent loop
 
-Status: audit 2026-10-23; R1–R5 SETTLED (Alex, 2026-10-23); R6–R7 deferred.
+Status: audit 2026-10-23; R1–R5 SETTLED (Alex, 2026-10-23); R6–R7 BUILT 2026-11-04 (see the
+build notes at the end).
 
 ## The audit
 
@@ -52,15 +53,18 @@ the other numeric fields of `System` fix shapes or schedules (`num_iters`, `mixt
 traced when passed as arrays; planner options bound by `make_*_planner` are closure constants, a
 different planner when changed.
 
-## Deferred
+## Built
 
-**R6 — A library-owned compiled step** (`System.stepper(...)`): a `jit` boundary the library owns,
+**R6: a library-owned compiled step** (`System.compiled()`): a `jit` boundary the library owns,
 with inputs canonicalised in front of it, so the input-type traps above cannot occur. The
-composition driver's internal one-tick function already follows this pattern.
+composition driver's internal one-tick function already follows this pattern. Status: built
+2026-11-04.
 
-**R7 — An opt-in retrace watcher** (`hybrid_aif.debug.watch`): warns on a repeat trace with the
-same static configuration, naming the argument whose structure, dtype or shape changed, or the
-System field that changed, which `jax_explain_cache_misses` does not do under `eqx.filter_jit`.
+**R7: a retrace watcher** (`hybrid_aif.debug.watch`): warns on a repeat trace with the same
+static configuration, naming the argument whose structure, dtype or shape changed, or the System
+field that changed, which `jax_explain_cache_misses` does not do under `eqx.filter_jit`. Status:
+built 2026-11-04; on by default in the compiled object, opt-in for any other `eqx.filter_jit`
+function.
 
 ## Build notes (2026-10-23)
 
@@ -119,3 +123,84 @@ precision: components that all declare it with one value give the composite's, a
 declared and undeclared, or different values, raises; `subsystem` views take the composite's.
 `tests/test_scoring_slot.py` and `tests/test_learn.py`, which list the fields of `SystemParams`,
 gain `precision` (scoring material).
+
+## Build notes (2026-11-04)
+
+**R6.** `System.compiled(watch=True)` returns a `CompiledSystem` (`system/compiled.py`; the name
+follows the object's job, a System with its faces compiled, where `stepper` would suggest one
+fused tick, which it is not: the faces stay separate, as the loops that call them are). It exposes
+`infer_states`, `infer_policies`, `act`, `update_empirical_prior` and `learn` with the eager
+signatures and return structures, each an `eqx.filter_jit` boundary with the System, the planner
+callable and the non-array arguments (`metrics`, `detail`, `selection`, `mode`, `use_bound`,
+`support_floor`) static and only arrays traced; any other attribute (`names`, `initial_priors`,
+`as_env`, ...) is the System's. The eager faces are unchanged. Canonicalisation, ahead of the
+boundary (the module docstring is the precise statement):
+
+- parameters, beliefs, priors and learn carries: NumPy leaves become JAX arrays and weak types
+  become strong, each leaf keeping its dtype (so NumPy, committed and weak-typed parameters share
+  one program).
+- observations, `previous`, `externals`, `action`: strong arrays; an integer takes the default
+  integer dtype, a float keeps its dtype unless narrower than float32, a Python float takes the
+  default float dtype (so x64 keeps its precision). An observation of the wrong form is refused
+  eagerly by the eager faces' own check (`validation._check_observations`), naming the modality.
+- `lr`, `decay`, `alpha` and the per-slot rates: Python numbers become arrays of the default
+  float dtype, except a Python `lr` of `0.0` and a Python `decay` of `1.0`, which `learn` reads
+  at trace time (a slot skipped, no decay and so no anchor) and which stay static, as `replay`
+  keeps its `0.0`.
+- `legal`: a list is read as the eager faces read it, each mask becomes a bool array (an integer
+  mask as bool; a float mask is refused with a sentence, where the eager faces fail with a NumPy
+  error), and a concrete mask the eager faces refuse (no legal level at some step, a bare mask of
+  the wrong length) is refused before the boundary with the eager sentence, as
+  `composition/driver.py` does, because under the trace the concrete refusals cannot run. That
+  pre-check runs when every control node is discrete and, for a bare mask, the planner is the
+  System's enumeration; under a planner with a policy set of its own a bare mask is not checked
+  before the boundary. `present` flags become bool arrays.
+- PRNG keys: typed keys become raw `uint32` key data.
+- `priors=None` becomes `initial_priors(params)`, completed to the key set
+  `update_empirical_prior` returns: each discrete control node's entry (uniform) and each observed
+  action node's entry (the one-hot at `previous[name]` when `previous` names it, else uniform),
+  which `initial_priors` omits. Without the completion a model with a modality on an action node,
+  or a prior missing a control node's entry, traced twice, because the first tick's pytree had
+  fewer keys than the later ones. A mixture prior declared below `mixture_k` still differs from
+  a pushed one, as it does eagerly, and the remedy is unchanged (`pad_mixture`); it is a separate
+  cause from the missing keys.
+
+The jitted face functions are module-level, so equal Systems share compiled programs: two
+compiled objects of one System compile once, and an object's trace counts count the traces its
+own calls caused (a counter bumped by the traced body, read before and after each call; a NumPy
+against a JAX argument, a committed array, or another dispatch signature is a dispatch-cache entry
+and not a trace). The watcher keeps the last traced signature per face and System by value in a
+module table, so a real retrace through any compiled object is named against the last trace
+anyone made of that face. `infer_policies` takes the eager face's trailing `return_policies`.
+
+Measured (`tests/test_compiled_system.py`, twenty ticks, a counter on `System.infer_states`,
+`infer_policies`, `act`, `update_empirical_prior` and `learn` that counts calls with a tracer
+among the arguments): the T-maze, the payoff model under the mixed planner and `small_lg` under
+the gradient planner each trace every face once; the learnable T-maze traces `learn` once over
+nineteen calls with `lr` a Python float taking four values. Beliefs, policy posteriors, actions
+and priors equal the eager faces' to `atol=2e-4` (the gradient planner's iterates differ in the
+fifth digit between eager and compiled execution). A view from `subsystem` and its composite,
+with a modality observing an action node, run from `priors=None` with one trace of each face.
+
+**R7.** `hybrid_aif.debug` (`src/hybrid_aif/debug.py`): `RetraceWarning(RuntimeWarning)` and
+`watch(fn)`, which wraps an `eqx.filter_jit` function and counts traces: a jaxpr trace announced
+to `jax.monitoring` during the call (a cache-size read stands in where that is unavailable;
+`Watched.traces`; the compiled object passes its own trace counter as `clock`). On the second and
+later trace it warns, naming the first difference from the previous trace in this order: a static
+field of an argument that is an `equinox.Module` (`static field 'gamma' of 'system' changed`, a
+callable such as the planner by identity), an argument that was `None` and is not (or the
+converse), the first path whose pytree structure differs, then the first leaf whose shape, dtype
+or weak type differs (`observations['cue'] changed from int32[] to float32[3]`) or whose static
+value differs; when none differs it says that the compilation cache was cleared or the program
+evicted, or that a static argument or field changed in a way it does not name. The compiled
+object watches every face by default (`compiled(watch=False)` counts without warning).
+
+The eager nudge: a face (`infer_states`, `infer_policies`, `act`, `update_empirical_prior`,
+`learn`) called eagerly more than ten times on one System object, counted per face and only for
+the outermost call outside any trace, emits one `RetraceWarning` per System object, saying that
+eager dispatch re-traces and runs operation by operation every call and pointing to
+`System.compiled()`. (Measured 2026-11-04: a mixed-planner call took 40 ms compiled and 4 s
+eagerly, flat in the number of gradient steps.) The count lives in a module-level table keyed by
+object identity with a weak reference (the System's hash is by value, so equal Systems are counted
+apart) and the System is not mutated. pytest does not turn warnings into errors in this
+repository, so no configuration changed.

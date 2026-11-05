@@ -35,6 +35,7 @@ from hybrid_aif.distributions import (
     ConditionalGaussian,
     Distribution,
     Gaussian,
+    LowRankMixture,
     MixtureGaussian,
 )
 from hybrid_aif.factors import (
@@ -48,6 +49,7 @@ from hybrid_aif.objectives.discrete import _block_names, _check_mask, _full, ris
 
 __all__ = [
     "ComponentHead",
+    "DiagonalNoiseObservation",
     "ambiguity",
     "conditional_correlation",
     "conditional_obs_entropy",
@@ -546,11 +548,17 @@ class ComponentHead(NamedTuple):
     head per component and per joint mode configuration of its categorical parents. ``H`` is
     ``(K, M, d_obs, d)``, ``c`` ``(K, M, d_obs)`` and ``R_chol`` ``(K, M, d_obs, d_obs)``, ``M``
     the number of mode configurations (``1`` without categorical parents), the configurations
-    flattened row-major. Design: docs/design/recognition-beside-analytic.md L4."""
+    flattened row-major. ``R_diag`` ``(K, M, d_obs)``, when given, is the noise's standard
+    deviations for a diagonal noise (``R_chol`` is then ``diag(R_diag)``), and the predictive
+    entropy takes the low-rank form. ``R_diag`` and ``R_chol`` must describe the same noise:
+    ``R_chol`` stays the field every dense reader uses, and the diagonal form is read only by
+    the objective terms that route on it. Design: docs/design/recognition-beside-analytic.md L4,
+    L9."""
 
     H: Array
     c: Array
     R_chol: Array
+    R_diag: Array | None = None
 
 
 def _predictive_obs(
@@ -571,6 +579,47 @@ def _predictive_obs(
     return MixtureGaussian(log_weights=m.log_weights, means=means, chols=jnp.linalg.cholesky(S))
 
 
+class DiagonalNoiseObservation(LinearGaussianObservation):
+    """A :class:`~hybrid_aif.factors.LinearGaussianObservation` that also carries its noise's
+    standard deviations ``scale`` when the noise is diagonal (``noise`` is then ``diag(scale)``;
+    the two must agree). The exact predictive entropy of a Gaussian belief reads ``scale`` to
+    avoid forming a ``d_obs`` by ``d_obs`` covariance; every other consumer reads it as the plain
+    observation, and a copy rebuilt without ``scale`` is the plain observation."""
+
+    scale: Array | None
+
+    def __init__(self, head=None, noise=None, scale=None, *, H=None, c=None):
+        super().__init__(head, noise, H=H, c=c)
+        self.scale = scale
+
+
+def _predictive_lowrank(
+    q: Gaussian | MixtureGaussian, head: ComponentHead, mode_logq: Array
+) -> LowRankMixture:
+    """The ``K·M`` predictive of a diagonal-noise :class:`ComponentHead` as a
+    :class:`LowRankMixture`: component ``(k, j)`` is ``N(H_kj mu_k + c_kj, diag(sigma_kj²) +
+    U U^T)`` with ``U = H_kj L_k``, weight ``w_k q(mode = j)``, component-major like
+    :func:`_predictive_obs_switching`. No ``d_obs`` by ``d_obs`` array is formed."""
+    m = q if isinstance(q, MixtureGaussian) else MixtureGaussian.from_gaussian(q)
+    comps = m.components
+    mu = comps.loc[..., :, None, :]  # (..., K, 1, d)
+    means = (head.H @ mu[..., None])[..., 0] + head.c  # (..., K, M, d_obs)
+    u = head.H @ comps.chol[..., :, None, :, :]  # (..., K, M, d_obs, d)
+    diag = jnp.broadcast_to(head.R_diag**2, means.shape)
+    u = jnp.broadcast_to(u, means.shape + u.shape[-1:])
+    log_w = m.log_weights[..., :, None] + mode_logq[..., None, :]
+    batch = means.shape[:-3]
+    log_w = jnp.broadcast_to(log_w, batch + log_w.shape[-2:])
+    n = m.num_components * mode_logq.shape[-1]
+    d_obs, r = means.shape[-1], u.shape[-1]
+    return LowRankMixture(
+        log_weights=log_w.reshape(batch + (n,)),
+        means=means.reshape(batch + (n, d_obs)),
+        diag=diag.reshape(batch + (n, d_obs)),
+        factors=u.reshape(batch + (n, d_obs, r)),
+    )
+
+
 def _observation_entropy(R_chol: Array) -> Array:
     """H[N(., R R^T)] — the conditional entropy H[y|x], constant in x (additive noise).
 
@@ -579,6 +628,11 @@ def _observation_entropy(R_chol: Array) -> Array:
     d_obs = R_chol.shape[-1]
     half_log_det = jnp.sum(jnp.log(jnp.diagonal(R_chol, axis1=-2, axis2=-1)), axis=-1)
     return 0.5 * d_obs * (1.0 + _LOG_2PI) + half_log_det
+
+
+def _observation_entropy_diag(scale: Array) -> Array:
+    """:func:`_observation_entropy` of a diagonal noise given by its standard deviations."""
+    return 0.5 * scale.shape[-1] * (1.0 + _LOG_2PI) + jnp.sum(jnp.log(scale), axis=-1)
 
 
 def _flatten_modes(arr: Array, m: int, event_ndims: int) -> Array:
@@ -670,6 +724,24 @@ def predictive_entropy(
     belief through a non-switching channel, whose predictive is the one Gaussian ``N(H μ + c,
     H Σ Hᵀ + R)``, evaluated as ``½ log|2πe (H Σ Hᵀ + R)|`` from a Cholesky factor without
     building the mixture; a Kolchinsky–Tracey pair on the mixture otherwise."""
+    if isinstance(model, ComponentHead) and model.R_diag is not None:
+        logq = (
+            _joint_mode_log_probs(mode_beliefs) if mode_beliefs else jnp.zeros((1,), model.c.dtype)
+        )
+        return _predictive_lowrank(q, model, logq).entropy()
+    if (
+        isinstance(q, Gaussian)
+        and not mode_beliefs
+        and isinstance(model, DiagonalNoiseObservation)
+        and model.scale is not None
+    ):
+        # log|D + U Uᵀ| = log|D| + log|I + Uᵀ D⁻¹ U|, no d_obs by d_obs array
+        u = model.H @ q.chol
+        cap = jnp.eye(u.shape[-1], dtype=u.dtype) + jnp.einsum(
+            "...pa,...p,...pb->...ab", u, model.scale**-2, u
+        )
+        half_log_det = jnp.sum(jnp.log(model.scale), -1) + _half_log_det(cap)
+        return Interval.exact(0.5 * u.shape[-2] * (1.0 + _LOG_2PI) + half_log_det)
     if isinstance(q, Gaussian) and not mode_beliefs:
         HL = model.H @ q.chol
         R_chol = model.R_chol_at(q.loc)
@@ -713,7 +785,12 @@ def conditional_obs_entropy(
             if mode_beliefs
             else jnp.ones((1,), w.dtype)
         )
-        return jnp.einsum("...k,...kj,...j->...", w, _observation_entropy(model.R_chol), qj)
+        h = (
+            _observation_entropy_diag(model.R_diag)
+            if model.R_diag is not None
+            else _observation_entropy(model.R_chol)
+        )
+        return jnp.einsum("...k,...kj,...j->...", w, h, qj)
     if not mode_beliefs:
         if not model.noise_map:
             return _observation_entropy(model.R_chol)

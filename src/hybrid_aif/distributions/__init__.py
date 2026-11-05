@@ -16,7 +16,7 @@ from hybrid_aif.distributions.gaussian import Gaussian
 from hybrid_aif.distributions.joint import JointCategorical
 from hybrid_aif.distributions.learnable import Learnable
 from hybrid_aif.distributions.matrix_normal import MatrixNormal
-from hybrid_aif.distributions.mixture import MixtureGaussian
+from hybrid_aif.distributions.mixture import LowRankMixture, MixtureGaussian
 from hybrid_aif.distributions.neural import (
     GRUCell,
     LearnedVector,
@@ -44,6 +44,7 @@ __all__ = [
     "JointCategorical",
     "Learnable",
     "LearnedVector",
+    "LowRankMixture",
     "MLPCategorical",
     "MLPConditional",
     "MLPPredictor",

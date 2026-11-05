@@ -6,9 +6,19 @@ order (by default the full enumeration over their levels, ordered as pymdp order
 time-major, the last column at the last step fastest), and for each one descends ``G`` over the
 continuous controls with :func:`~hybrid_aif.planning.gradient.descend`, the descent of the
 gradient planner (Adam's floor and the best iterate it scored included), projected onto the
-continuous nodes' boxes. The descents run together, vmapped over the discrete policies, and all
-start from the same continuous plan: ``init``, or the box centre. The cost is that of
+continuous nodes' boxes. The descents run together, vmapped over the discrete policies, and by
+default all start from the same continuous plan: ``init``, or the box centre. The cost is that of
 exhaustive search over the discrete set times the number of descent steps.
+
+With ``starts > 1`` each discrete policy is descended from ``starts`` continuous warm starts:
+the first is ``init`` (or the box centre) and the rest form a Latin hypercube over
+the whole continuous plan, mapped to the box
+(:func:`~hybrid_aif.planning.gradient.spread_starts`; deterministic, no key). The starts are an
+optimisation device: a discrete policy keeps the plan of the start whose descent scored lowest,
+as :func:`~hybrid_aif.planning.gradient.gradient_plan` does, so its ``G`` is the best its descents
+found, ``P`` stays the number of discrete policies and the posterior keeps its meaning. Every
+start's outcome is kept for inspection in ``start_scores`` and ``start_plans``. ``init`` may
+carry a leading ``(starts, policy_len, action_dim)`` axis to give the starts explicitly.
 
 Every ``G`` the planner reports is the expected free energy of a clamped plan: the discrete
 policy and its optimised continuous controls. The policy posterior is the softmax of ``−γ`` times
@@ -51,7 +61,8 @@ from hybrid_aif.planning.gradient import (
     Optimizer,
     _point,
     check_descent,
-    descend,
+    descend_scored,
+    warm_starts,
 )
 
 
@@ -63,7 +74,11 @@ class MixedResult(NamedTuple):
     order), ``G`` the expected free energy of each clamped plan, ``(P,)``, ``trace`` ``(P,
     steps)`` the scored ``G`` before each step, ``gradient_trace`` ``(P, steps)`` the root mean
     square of the gradient before each step and ``best_step`` ``(P,)`` the iterate returned, as
-    in :class:`~hybrid_aif.planning.gradient.GradientResult`."""
+    in :class:`~hybrid_aif.planning.gradient.GradientResult`. With several starts, ``plan``
+    is the best start's for each discrete policy and ``trace``, ``gradient_trace`` and
+    ``best_step`` are that start's; ``start_scores`` ``(P, starts)`` is every start's final
+    score and ``start_plans`` ``(P, starts, policy_len, action_dim)`` its plan (``starts`` is 1
+    for a single start)."""
 
     q_pi: Categorical
     tree: TermTree | None
@@ -73,6 +88,8 @@ class MixedResult(NamedTuple):
     trace: Array
     gradient_trace: Array
     best_step: Array
+    start_scores: Array
+    start_plans: Array
 
 
 def _nodes(ctx: PlannerContext, kind: str) -> list[int]:
@@ -151,6 +168,7 @@ def mixed_plan(
     discrete_policies: Array | None = None,
     steps: int = DEFAULT_STEPS,
     init: Array | None = None,
+    starts: int = 1,
     lr: float | Array | None = None,
     optimizer: Optimizer = "adam",
     use_bound: UseBound = "midpoint",
@@ -163,9 +181,12 @@ def mixed_plan(
     enumeration over their levels). ``steps``, ``lr`` and ``optimizer`` set each descent as in
     :func:`~hybrid_aif.planning.gradient.gradient_plan`. ``init`` is the warm start of the
     continuous controls shared by every discrete policy, ``(policy_len, action_dim)`` or
-    ``(action_dim,)`` broadcast over the steps (default: the boxes' centre). ``use_bound`` picks
-    the point of ``G``'s interval that is descended and that the posterior is taken over.
-    Convergence of each descent is read from the last entries of its row of ``trace`` and
+    ``(action_dim,)`` broadcast over the steps (default: the boxes' centre), or with a leading
+    ``(starts, policy_len, action_dim)`` axis to give every start. ``starts`` is the number of
+    continuous warm starts of each discrete policy, of which the best is kept (see the module
+    docstring). ``use_bound`` picks the point of ``G``'s interval that is descended and that
+    the posterior is taken over.
+    Convergence of each descent is read from the last entries of its slice of ``trace`` and
     ``gradient_trace``.
     """
     _refuse_unmixed(ctx)
@@ -180,14 +201,9 @@ def mixed_plan(
         discrete = _check_discrete(ctx, discrete_policies, levels)
     low = jnp.concatenate([jnp.asarray(ctx.boxes[k].low, jnp.float32) for k in float_nodes])
     high = jnp.concatenate([jnp.asarray(ctx.boxes[k].high, jnp.float32) for k in float_nodes])
-    dim = low.shape[0]
     rate = DEFAULT_LR_FRACTION * (high - low) if lr is None else jnp.asarray(lr, low.dtype)
-    plan0 = (
-        jnp.broadcast_to(0.5 * (low + high), (horizon, dim))
-        if init is None
-        else jnp.broadcast_to(jnp.asarray(init, low.dtype), (horizon, dim))
-    )
-    plan0 = jnp.clip(plan0, low, high)
+    plan0 = warm_starts(init, starts, horizon, low, high)
+    count_starts, num_policies = plan0.shape[0], discrete.shape[0]
     args = (
         ctx.init_beliefs,
         ctx.transition_fn,
@@ -195,14 +211,30 @@ def mixed_plan(
         ctx.terminal_terms_fn,
     )
 
-    def descend_one(levels_one: Array):
+    def descend_one(levels_one: Array, start: Array):
         def score(plan: Array) -> Array:
             clamped = jtu.tree_map(lambda x: x[None], control_steps(ctx, levels_one, plan))
             return _point(evaluate_policies_total(clamped, *args), use_bound)[0]
 
-        return descend(score, plan0, low, high, rate, steps=steps, optimizer=optimizer)
+        return descend_scored(score, start, low, high, rate, steps=steps, optimizer=optimizer)
 
-    plan, best_step, trace, gradient_trace = jax.vmap(descend_one)(discrete)
+    pairs = jnp.repeat(discrete, count_starts, axis=0)
+    starts_of = jnp.tile(plan0, (num_policies, 1, 1))
+    plans, best_steps, traces, gradient_traces, scores = jax.vmap(descend_one)(pairs, starts_of)
+
+    def by_policy(x: Array) -> Array:
+        return x.reshape(num_policies, count_starts, *x.shape[1:])
+
+    start_plans, start_scores = by_policy(plans), by_policy(scores)
+    pick = jnp.argmin(jnp.where(jnp.isnan(start_scores), jnp.inf, start_scores), axis=1)
+
+    def chosen(x: Array) -> Array:
+        return jnp.take_along_axis(
+            by_policy(x), pick.reshape((-1, 1) + (1,) * (x.ndim - 1)), axis=1
+        )[:, 0]
+
+    plan, best_step = chosen(plans), chosen(best_steps)
+    trace, gradient_trace = chosen(traces), chosen(gradient_traces)
     clamped = control_steps(ctx, discrete, plan)
     if metrics:
         tree = evaluate_policies(clamped, *args)
@@ -232,6 +264,8 @@ def mixed_plan(
         trace=trace,
         gradient_trace=gradient_trace,
         best_step=best_step,
+        start_scores=start_scores,
+        start_plans=start_plans,
     )
 
 

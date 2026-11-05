@@ -12,6 +12,7 @@ Design: docs/de-risk-report.md §2
 import math
 from functools import partial
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array, lax
@@ -368,3 +369,130 @@ def _mode_aligned_reduce(
     out_means = red_means.reshape(k, -1)
     out_covs = red_covs.reshape(k, *chols.shape[-2:])
     return jax.nn.log_softmax(cat_lw), out_means, jnp.linalg.cholesky(out_covs)
+
+
+_LOG_2PI = math.log(2.0 * math.pi)
+
+
+def _spd_factors(m: Array) -> tuple[Array, Array]:
+    """``(M^{-1}, log det M)`` of a batch of small symmetric positive-definite matrices."""
+    chol = jnp.linalg.cholesky(m)
+    eye = jnp.broadcast_to(jnp.eye(m.shape[-1], dtype=m.dtype), m.shape)
+    inv = jax.scipy.linalg.cho_solve((chol, True), eye)
+    return inv, 2.0 * jnp.sum(jnp.log(jnp.diagonal(chol, axis1=-2, axis2=-1)), axis=-1)
+
+
+class LowRankMixture(eqx.Module):
+    """Gaussian mixture whose component covariances are diagonal plus low rank,
+    ``S_i = diag(D_i) + U_i U_iᵀ``, with ``U_i`` of ``r`` columns in a ``p``-dimensional space.
+
+    ``entropy()`` is the Kolchinsky-Tracey pair of :meth:`MixtureGaussian.entropy`, computed
+    without forming a ``p`` by ``p`` array: the matrix determinant lemma gives every log
+    determinant and the Woodbury identity every trace and quadratic form, from ``r`` by ``r`` and
+    ``2r`` by ``2r`` factorisations. The cost is ``O(N² p r²)`` for ``N`` components against
+    ``O(N² p³)`` dense.
+    """
+
+    log_weights: Array  # (..., N)
+    means: Array  # (..., N, p)
+    diag: Array  # (..., N, p), the diagonal D_i of each covariance, positive
+    factors: Array  # (..., N, p, r)
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self.log_weights.shape[:-1]
+
+    @property
+    def num_components(self) -> int:
+        return self.log_weights.shape[-1]
+
+    @property
+    def dim(self) -> int:
+        return self.means.shape[-1]
+
+    def _prepare(self) -> tuple[Array, Array, Array]:
+        """``(D^{-1}, M^{-1}, log det S)`` per component, ``M = I + Uᵀ D^{-1} U``."""
+        dinv = 1.0 / self.diag
+        m = _capacitance(self.factors, dinv)
+        m_inv, log_det_m = _spd_factors(m)
+        return dinv, m_inv, jnp.sum(jnp.log(self.diag), axis=-1) + log_det_m
+
+    def component_entropies(self) -> Array:
+        """``H`` of each component, ``½ log|2πe S_i|``, shape ``(..., N)``."""
+        _, _, log_det = self._prepare()
+        return 0.5 * self.dim * (1.0 + _LOG_2PI) + 0.5 * log_det
+
+    def pairwise_kl(self) -> Array:
+        """``KL(component_i ‖ component_j)``, shape ``(..., N, N)``, an exact zero on the
+        diagonal.
+
+        ``tr(S_j⁻¹ S_i) - p`` is formed from the differences ``D_i - D_j`` and ``Δ = U_i - U_j``
+        as ``tr(S_j⁻¹ (D_i - D_j)) + 2 tr(X_jᵀ Δ) + tr(Δᵀ S_j⁻¹ Δ)``, ``X_j = S_j⁻¹ U_j``,
+        which is small for near-coincident components, where subtracting the two traces
+        ``tr(S_j⁻¹ S_i)`` and ``p`` loses all precision in single precision."""
+        dinv, m_inv, log_det = self._prepare()
+        u, d = self.factors, self.diag
+        x = jnp.einsum("...jp,...jpa,...jab->...jpb", dinv, u, m_inv)  # S_j^{-1} U_j
+        s_diag = dinv - jnp.einsum("...jpa,...jpa->...jp", x, dinv[..., None] * u)
+        d_diff = d[..., :, None, :] - d[..., None, :, :]  # (i, j): D_i - D_j
+        delta = u[..., :, None, :, :] - u[..., None, :, :, :]  # (i, j): U_i - U_j
+        dmu = self.means[..., None, :, :] - self.means[..., :, None, :]  # (i, j): mu_j - mu_i
+
+        def quad(v: Array) -> Array:  # tr(vᵀ S_j^{-1} v), v (..., i, j, p, k)
+            proj = jnp.einsum("...jpa,...jp,...ijpk->...ijak", u, dinv, v)
+            return jnp.einsum("...jp,...ijpk->...ij", dinv, v**2) - jnp.einsum(
+                "...ijak,...jab,...ijbk->...ij", proj, m_inv, proj
+            )
+
+        trace_gap = (
+            jnp.einsum("...jp,...ijp->...ij", s_diag, d_diff)
+            + 2.0 * jnp.einsum("...jpa,...ijpa->...ij", x, delta)
+            + quad(delta)
+        )
+        kl = 0.5 * (
+            trace_gap + quad(dmu[..., None]) + log_det[..., None, :] - log_det[..., :, None]
+        )
+        return jnp.where(jnp.eye(self.num_components, dtype=bool), 0.0, kl)
+
+    def pairwise_bhattacharyya(self) -> Array:
+        """Bhattacharyya distance between components, shape ``(..., N, N)``, an exact zero on the
+        diagonal."""
+        _, _, log_det = self._prepare()
+        d_bar = 0.5 * (self.diag[..., :, None, :] + self.diag[..., None, :, :])  # (..., N, N, p)
+        e = 1.0 / d_bar
+        u_i = jnp.broadcast_to(
+            self.factors[..., :, None, :, :], d_bar.shape + (self.factors.shape[-1],)
+        )
+        u_j = jnp.broadcast_to(self.factors[..., None, :, :, :], u_i.shape)
+        w = jnp.concatenate([u_i, u_j], axis=-1) / jnp.sqrt(2.0)  # (..., N, N, p, 2r)
+        m_inv, log_det_m = _spd_factors(_capacitance(w, e))
+        log_det_bar = jnp.sum(jnp.log(d_bar), axis=-1) + log_det_m
+        dmu = self.means[..., :, None, :] - self.means[..., None, :, :]
+        proj = jnp.einsum("...ijpa,...ijp->...ija", w, e * dmu)
+        maha = jnp.sum(e * dmu**2, axis=-1) - jnp.einsum(
+            "...ija,...ijab,...ijb->...ij", proj, m_inv, proj
+        )
+        dist = (
+            0.125 * maha
+            + 0.5 * log_det_bar
+            - 0.25 * (log_det[..., :, None] + log_det[..., None, :])
+        )
+        return jnp.where(jnp.eye(self.num_components, dtype=bool), 0.0, dist)
+
+    def entropy(self) -> Interval:
+        """Kolchinsky-Tracey pairwise bounds, as :meth:`MixtureGaussian.entropy`."""
+        w = jax.nn.log_softmax(self.log_weights, axis=-1)
+        comp_entropy = jnp.sum(jnp.exp(w) * self.component_entropies(), axis=-1)
+
+        def bound(pairwise_d: Array) -> Array:
+            inner = logsumexp(w[..., None, :] - pairwise_d, axis=-1)
+            return comp_entropy - jnp.sum(jnp.exp(w) * inner, axis=-1)
+
+        return Interval(lower=bound(self.pairwise_bhattacharyya()), upper=bound(self.pairwise_kl()))
+
+
+def _capacitance(u: Array, dinv: Array) -> Array:
+    """``I + Uᵀ D^{-1} U`` over the leading axes of ``u`` ``(..., p, r)`` and ``dinv``
+    ``(..., p)``."""
+    r = u.shape[-1]
+    return jnp.eye(r, dtype=u.dtype) + jnp.einsum("...pa,...p,...pb->...ab", u, dinv, u)
