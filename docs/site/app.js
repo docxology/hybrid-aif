@@ -354,7 +354,7 @@
     $("cam2").innerHTML = h;
     $("camv1").textContent = cam.log_evidence != null ? "log evidence " + cam.log_evidence.toFixed(1) :
       cam.covered_term != null ? "covered term " + cam.covered_term.toFixed(1) + ", normaliser " + cam.normaliser.toFixed(1) : "";
-    $("camcap").innerHTML = "The camera: the observed " + side + "&times;" + side + " patch (left), the decoder's prediction at the belief mean and most likely terrain (middle), and a terrain readout (right): the rover's belief over terrain, and the true terrain marked. " +
+    $("camcap").innerHTML = "The camera: the observed " + side + "&times;" + side + " patch (left), the decoder's prediction at the belief mean and most likely terrain (middle), and, as bars, the terrain readout (right): the rover's belief over terrain, with the true terrain marked. " +
       (rec ? "The recogniser's probability vector for the image is shown beside the belief. " : "") +
       (encoderSetting() ? "In this setting the recogniser's probabilities replace the inversion of the image for the terrain factor; the covered term is the image's expected cost under the belief, and the normaliser is the measurement's evidence."
         : "In this setting the engine inverts the decoder at the belief; the number under the middle panel is the image's log evidence under that linearisation. The recogniser is run for comparison only.") +
@@ -642,7 +642,7 @@
   function drawMdl() {
     var tb = document.querySelector("#mdltable tbody"), tf = document.querySelector("#mdltable tfoot");
     tb.innerHTML = ""; tf.innerHTML = "";
-    var order = ["model", "mission", "rover"], by = {}, mx = 0, tot = 0;
+    var order = ["mission", "rover", "model"], by = {}, mx = 0, tot = 0;
     B.mdl.components.forEach(function (c) { (by[c.tier] = by[c.tier] || []).push(c); if (c.nats != null) { mx = Math.max(mx, Math.log10(c.nats + 1)); tot += c.nats; } });
     Object.keys(by).forEach(function (k) { if (order.indexOf(k) < 0) order.push(k); });
     function comp(c) {
@@ -659,14 +659,17 @@
     }
     order.forEach(function (tier) {
       var cs = by[tier]; if (!cs) return;
+      cs.forEach(comp);
       if (tier !== "model") {
         var sub = 0, ex = 0; cs.forEach(function (c) { if (c.nats != null) { sub += c.nats; if (c.exact) ex += c.nats; } });
         var h = document.createElement("tr"); h.className = "grp light";
         h.innerHTML = "<td colspan='3'>" + esc(tier + " tier subtotal") + "</td><td class='num'>" + sub.toFixed(2) + "</td><td></td><td>" + ex.toFixed(2) + " of it exact</td>";
         tb.appendChild(h);
       }
-      cs.forEach(comp);
     });
+    var tr = document.createElement("tr"); tr.className = "grp";
+    tr.innerHTML = "<td colspan='3'>total over scored components</td><td class='num'>" + tot.toFixed(2) + "</td><td></td><td>" + B.mdl.total_exact.toFixed(2) + " of it exact</td>";
+    tf.appendChild(tr);
     $("mdltotal").innerHTML = "Total over scored components: <b>" + Number(tot.toPrecision(4)).toLocaleString() + " nats</b>";
     $("mdlfoot").textContent = "Of this, " + B.mdl.total_exact.toFixed(2) + " nats are exact: the graph and control entries. Every fixed table or density is priced by its family alone and flagged approximate, and its cost grows with its parameter count (entries: the array entries the params hold at that address, a table's whole table or a network's weights). Bars are proportional to log10(nats + 1).";
   }
