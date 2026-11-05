@@ -600,7 +600,7 @@ class _Walk:
         elif isinstance(decl, _dist.Gaussian):
             d = decl.loc.shape[-1]
             if n is not None:
-                family = resolution_term(_gaussian_k(d), n)
+                family = resolution_term(2 * d if decl.diagonal else _gaussian_k(d), n)
             exact = False
             note += " (fixed; no prior over its parameters, so its extent is unscored)"
         elif isinstance(decl, _dist.MixtureGaussian):

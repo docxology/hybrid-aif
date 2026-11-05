@@ -454,6 +454,9 @@ def _contract_target(target, key: str, cuts: Sequence[tuple[int, int | None, Arr
                 chol = jnp.take(chol, keep, axis=pos)
         if ndims == 0:
             return Gaussian(loc=loc, chol=chol)
+        if target.diagonal and ndims == 1 and loc.shape[-2] == loc.shape[-1]:
+            # (L, d) with L == d would read as a shared full factor: stack the full factors
+            chol = chol[..., :, None] * jnp.eye(loc.shape[-1], dtype=chol.dtype)
         return ConditionalGaussian(loc=loc, chol=chol, parent_ndims=ndims)
     table = target.log_probs if any(w is not None for _, _, w in cuts) else target.log_table
     for pos, keep, weights in sorted(cuts, key=lambda cut: cut[0], reverse=True):

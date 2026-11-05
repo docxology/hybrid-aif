@@ -102,6 +102,14 @@ build adds: a Gaussian target with a categorical state parent, scored as the exp
 over the parent's belief, on linear-Gaussian and neural modalities. The risk form (a divergence
 to a mixture target) stays refused with the sentence it has now.
 
+Each level is scored relative to its own peak, `E_q[log N_l(o)] - log N_l(m_l)`, which drops the
+level's log-normaliser: with different scales per level the normaliser would differ by thousands
+of nats and pay the agent for being in the level with the smallest scale, so a level's scale sets
+the strength of its pull and never a bonus for the level itself (the unconditional utility keeps
+its normaliser, a constant over plans). A target conditional on control nodes alone keeps each level's
+normaliser (the durations convention, where a selected level's tightness is a bonus); averaging
+over a state parent's levels drops them. The asymmetry is intended.
+
 ## What the showcase declares (level 1)
 
 - `x`: position and velocity, a mode-aligned mixture switched by terrain; `v`: the velocity

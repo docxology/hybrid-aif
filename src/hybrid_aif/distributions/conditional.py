@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.scipy.special import digamma
 
@@ -34,6 +35,7 @@ from hybrid_aif.distributions.dirichlet import (
     anchor_for,
 )
 from hybrid_aif.distributions.gaussian import Gaussian
+from hybrid_aif.interval import Interval
 
 if TYPE_CHECKING:
     from hybrid_aif.distributions.joint import JointCategorical
@@ -380,6 +382,12 @@ class ConditionalGaussian(Conditional):
     (:attr:`shared_chol`): one covariance factor shared by every parent configuration, the mean
     alone depending on the parents. The parent axes are read from ``loc``; a ``chol`` carrying
     some of them is refused.
+
+    ``chol`` may also be a diagonal standard deviation per configuration, the shape of ``loc``
+    (:attr:`diagonal`): ``(..., *parent_shape, dim)``. With one parent whose level count equals
+    ``dim`` that shape is also a shared full factor, and is read as one; a diagonal over such a
+    parent is declared in the full ``(L, dim, dim)`` form, and a ``(dim, dim)`` array with
+    entries above its diagonal is refused as neither.
     """
 
     loc: Array  # (..., *parent_shape, dim)
@@ -396,11 +404,27 @@ class ConditionalGaussian(Conditional):
         loc_shape, chol_shape = tuple(self.loc.shape), tuple(self.chol.shape)
         d = loc_shape[-1]
         batch = loc_shape[: len(loc_shape) - self.parent_ndims - 1]
-        if chol_shape not in (loc_shape + (d,), batch + (d, d)):
+        if (
+            chol_shape == loc_shape
+            and self.parent_ndims == 1
+            and loc_shape[-2] == d
+            and isinstance(self.chol, np.ndarray | jax.Array)
+            and not isinstance(self.chol, jax.core.Tracer)
+            and not np.allclose(np.triu(np.asarray(self.chol), k=1), 0.0)
+        ):
+            raise ValueError(
+                f"chol has shape {chol_shape}, which over a parent with {d} levels in {d} "
+                "dimensions reads as one shared full factor, and it has entries above its "
+                "diagonal; a diagonal standard deviation over a parent with as many levels as "
+                f"dimensions must be given in the full ({d}, {d}, {d}) form, one diagonal matrix "
+                "per level"
+            )
+        if chol_shape not in (loc_shape + (d,), batch + (d, d), loc_shape):
             raise ValueError(
                 f"chol has shape {chol_shape} beside a loc of shape {loc_shape} with "
                 f"parent_ndims={self.parent_ndims}: chol is {loc_shape + (d,)}, one factor per "
-                f"parent configuration, or {batch + (d, d)}, one factor shared by all of them"
+                f"parent configuration, {batch + (d, d)}, one factor shared by all of them, or "
+                f"{loc_shape}, a diagonal standard deviation per parent configuration"
                 + (
                     " (a chol with only some of the parent axes is not a declaration)"
                     if chol_shape[-2:] == (d, d)
@@ -409,10 +433,18 @@ class ConditionalGaussian(Conditional):
             )
 
     @property
+    def diagonal(self) -> bool:
+        """Whether ``chol`` is a diagonal standard deviation per parent configuration, the shape
+        of ``loc``."""
+        if tuple(self.chol.shape) != tuple(self.loc.shape):
+            return False
+        return not (self.parent_ndims == 1 and self.loc.shape[-2] == self.loc.shape[-1])
+
+    @property
     def shared_chol(self) -> bool:
         """Whether ``chol`` omits the parent axes: one covariance factor for every parent
         configuration."""
-        return self.chol.ndim == self.loc.ndim - self.parent_ndims + 1
+        return not self.diagonal and self.chol.ndim == self.loc.ndim - self.parent_ndims + 1
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
@@ -429,6 +461,8 @@ class ConditionalGaussian(Conditional):
     def stacked_chol(self) -> Array:
         """``chol`` with the parent axes, ``(..., *parent_shape, dim, dim)``: a shared factor
         broadcast over them."""
+        if self.diagonal:
+            return self.chol[..., :, None] * jnp.eye(self.dim, dtype=self.chol.dtype)
         if not self.shared_chol:
             return self.chol
         d = self.dim
@@ -445,6 +479,79 @@ class ConditionalGaussian(Conditional):
             raise ValueError(f"need {self.parent_ndims} parent indices, got {len(parent_indices)}")
         idx = tuple(jnp.asarray(i, jnp.int32) for i in parent_indices)
         loc = self.loc[(Ellipsis, *idx, slice(None))]
+        if self.diagonal:
+            scale = self.chol[(Ellipsis, *idx, slice(None))]
+            return Gaussian(
+                loc=loc, chol=scale[..., :, None] * jnp.eye(self.dim, dtype=scale.dtype)
+            )
         if self.shared_chol:
             return Gaussian(loc=loc, chol=self.chol)
         return Gaussian(loc=loc, chol=self.chol[(Ellipsis, *idx, slice(None), slice(None))])
+
+
+class LevelWeightedGaussian(eqx.Module):
+    """A Gaussian preference averaged over the levels of categorical state parents.
+
+    ``loc`` ``(..., L, dim)`` and ``chol`` ``(..., L, dim, dim)`` (or a diagonal standard
+    deviation ``(..., L, dim)``, see :attr:`diagonal`) hold one Gaussian per configuration of the
+    state parents, flattened to ``L`` levels, and ``weights`` ``(..., L)`` the parent belief's
+    mass on each. It is a scoring object, not a density: the preference is
+    the weighted expectation ``sum_l w_l E_q[log N(o; loc_l, chol_l)]`` (:meth:`cross_entropy`),
+    which is closed form for a Gaussian or mixture ``q``.
+    """
+
+    loc: Array
+    chol: Array
+    weights: Array
+
+    @property
+    def diagonal(self) -> bool:
+        """Whether ``chol`` holds a diagonal standard deviation per level, ``(..., L, dim)``."""
+        return self.chol.ndim == self.loc.ndim
+
+    def dense(self) -> "LevelWeightedGaussian":
+        """The same target with a full ``(..., L, dim, dim)`` factor per level."""
+        if not self.diagonal:
+            return self
+        eye = jnp.eye(self.dim, dtype=self.chol.dtype)
+        return LevelWeightedGaussian(
+            loc=self.loc, chol=self.chol[..., :, None] * eye, weights=self.weights
+        )
+
+    @property
+    def dim(self) -> int:
+        return self.loc.shape[-1]
+
+    @property
+    def num_levels(self) -> int:
+        return self.loc.shape[-2]
+
+    def level(self, i: int) -> Gaussian:
+        """The Gaussian of level ``i``."""
+        if self.diagonal:
+            return Gaussian(loc=self.loc[..., i, :], chol=self.chol[..., i, :]).dense()
+        return Gaussian(loc=self.loc[..., i, :], chol=self.chol[..., i, :, :])
+
+    def cross_entropy(self, score):
+        """``sum_l w_l (score(N_l) - h_l)`` as an :class:`~hybrid_aif.interval.Interval`, where
+        ``score`` maps a :class:`Gaussian` to the interval ``-E_q[log N_l]`` and ``h_l =
+        -log N_l(loc_l)`` is the level's peak value of the negative log-density.
+
+        Each level is scored relative to its own peak, ``-E_q[log N_l] + log N_l(loc_l) = 1/2
+        E_q[(o - loc_l)^T S_l^-1 (o - loc_l)]``, so a level's scale sets the strength of its pull
+        and never a bonus for being in that level."""
+        parts = [score(self.level(i)) for i in range(self.num_levels)]
+        peak = self._peak_nll()
+        lower = sum(self.weights[..., i] * (p.lower - peak[..., i]) for i, p in enumerate(parts))
+        upper = sum(self.weights[..., i] * (p.upper - peak[..., i]) for i, p in enumerate(parts))
+        return Interval(
+            lower=lower,
+            upper=upper,
+            derived=all(p.derived for p in parts),
+            approximate=any(p.approximate for p in parts),
+        )
+
+    def _peak_nll(self) -> Array:
+        """``-log N_l(loc_l) = 1/2 log |2 pi S_l|`` per level, ``(..., L)``."""
+        diag = self.chol if self.diagonal else jnp.diagonal(self.chol, axis1=-2, axis2=-1)
+        return 0.5 * self.dim * jnp.log(2.0 * jnp.pi) + jnp.sum(jnp.log(diag), axis=-1)

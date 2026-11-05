@@ -638,6 +638,20 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   fixed cost per option stays the control node's own `Categorical` target. The `target` record
   takes `parents`; `ConditionalGaussian` joins the families table under `target`; `merge`
   namespaces `C_deps`.
+  A Gaussian target over a modality may also condition on categorical STATE factors
+  (`design/terrain-field.md`), scored in the utility form (`decomposition="utility_infogain"`)
+  as the parent-belief-weighted average over the levels of the expected log-density of the
+  predictive under that level's Gaussian, each level taken relative to its own peak so that a
+  tighter level is a stronger pull and never a bonus for being in that level; the weights are
+  the parents' predictive beliefs at that step, control parents still select by the action. The
+  risk form, a state target with a state parent, and a parent the modality itself reads as a mode
+  (a categorical parent of the modality or the mode factor of the mixture it observes) are
+  refused with sentences. A Gaussian or ConditionalGaussian target may carry a diagonal standard
+  deviation (`chol` with the shape of `loc`; `obs_targets` only), and over a neural or
+  diagonal-noise modality such a target is scored through the low-rank predictive in O(pixels x
+  state dimension) with no pixel-by-pixel array in the forward or backward pass, which makes an
+  image-space preference affordable (a 2304-pixel camera: about two seconds per warm plan call
+  with four warm starts, against twenty minutes on the dense path).
   Durations (`design/step-durations.md` T1, T4, T8): `SystemParams.durations`,
   `{"u_option": [300.0, 40.0]}`, gives a round a length per level of one discrete control
   node, in the unit the preferences are per; a System has one clock, and the model description

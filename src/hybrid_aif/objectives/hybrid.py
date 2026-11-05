@@ -74,10 +74,14 @@ from hybrid_aif.objectives.continuous import (
     ComponentHead,
     DiagonalNoiseObservation,
     conditional_correlation,
+    dense_target,
+    diagonal_target_parts,
     emission_entropies,
     lg_ambiguity,
     lg_utility,
     linear_gaussian_readings,
+    lowrank_capable,
+    lowrank_utility,
     observation_correlation,
     observation_interaction,
     predictive_entropy,
@@ -868,6 +872,33 @@ def neural_read(
     return jax.vmap(per_component)(comps.loc, comps.chol)
 
 
+def neural_scale(
+    decl: MLPConditional,
+    q: Gaussian | MixtureGaussian,
+    sizes: tuple[int, ...] = (),
+    levels: tuple[Array, ...] | None = None,
+) -> Array:
+    """The decoder's noise standard deviations at the belief's mean (first order), laid out as
+    the diagonal of :func:`neural_read`'s ``R_chol``: ``(d_obs,)`` on a Gaussian, ``(K, M,
+    d_obs)`` on a mixture."""
+    fixed = (
+        ()
+        if levels is None
+        else tuple(jax.nn.one_hot(lv, n) for lv, n in zip(levels, sizes, strict=True))
+    )
+
+    def scale_at(loc: Array, onehots: tuple[Array, ...]) -> Array:
+        return decl._head((loc, *onehots))[1]
+
+    if isinstance(q, Gaussian):
+        return scale_at(q.loc, fixed)
+    comps = q.components
+    if levels is not None or not sizes:
+        return jax.vmap(lambda loc: scale_at(loc, fixed))(comps.loc)[:, None]
+    grid = _mode_grid(sizes)
+    return jax.vmap(lambda loc: jax.vmap(lambda *oh: scale_at(loc, oh))(*grid))(comps.loc)
+
+
 def _categorical_only(deps: tuple[int, ...], families: tuple[str, ...]) -> bool:
     """Whether every parent in ``deps`` is a categorical factor or an action node."""
     return all(g >= len(families) or families[g] == CATEGORICAL for g in deps)
@@ -893,9 +924,11 @@ def neural_model(head: NeuralHead, q: Gaussian | MixtureGaussian):
     configuration) over a mixture."""
     sizes = tuple(head.decl.parent_dims[1:])
     H, c, R_chol = neural_read(head.decl, q, sizes, head.levels)
-    # first order reads the decoder's diagonal noise at the mean; the unscented noise is dense
+    # first order reads the decoder's diagonal noise at the mean, straight from the head (not as
+    # the diagonal of the dense factor, whose gradient would fill a d_obs by d_obs array); the
+    # unscented noise is dense
     diag = (
-        jnp.diagonal(R_chol, axis1=-2, axis2=-1)
+        neural_scale(head.decl, q, sizes, head.levels)
         if getattr(head.decl, "propagation", "first_order") == "first_order"
         else None
     )
@@ -2160,14 +2193,32 @@ def _make_step_terms(
                 utility(q_obs, obs_t, names) if ig_decomposition else risk(q_obs, obs_t, names)
             )
         if lg_obs_idx:
-            q_lg = tuple(
-                predictive_obs(qs[A_deps[m][0]], A_p[m], parents)
-                for m, parents in zip(lg_obs_idx, lg_mode_beliefs(qs_all, lg_obs_idx), strict=True)
-            )
-            names = sub(mods, lg_obs_idx)
-            trees.append(
-                lg_utility(q_lg, obs_t, names) if ig_decomposition else risk(q_lg, obs_t, names)
-            )
+            # a diagonal preference over a diagonal-noise predictive is scored from the low-rank
+            # predictive, without a d_obs by d_obs array; every other pair takes the dense path
+            fast: dict[str, Interval] = {}
+            slow: list[int] = []
+            for m, parents in zip(lg_obs_idx, lg_mode_beliefs(qs_all, lg_obs_idx), strict=True):
+                if (
+                    ig_decomposition
+                    and diagonal_target_parts(obs_t[mods[m]]) is not None
+                    and lowrank_capable(A_p[m], parents)
+                ):
+                    fast[mods[m]] = lowrank_utility(
+                        qs[A_deps[m][0]], A_p[m], parents, obs_t[mods[m]]
+                    )
+                else:
+                    slow.append(m)
+            tree = {"utility" if ig_decomposition else "risk": fast}
+            if slow:
+                dense_t = {mods[m]: dense_target(obs_t[mods[m]]) for m in slow}
+                q_lg = tuple(
+                    predictive_obs(qs[A_deps[m][0]], A_p[m], parents)
+                    for m, parents in zip(slow, lg_mode_beliefs(qs_all, tuple(slow)), strict=True)
+                )
+                names = sub(mods, tuple(slow))
+                score = lg_utility if ig_decomposition else risk
+                tree = merge(tree, score(q_lg, dense_t, names))
+            trees.append(tree)
         if flat_idx:
             q_flat = expected_obs(qs_all, sub(A_t, flat_idx), sub(A_deps, flat_idx))
             trees.append(flat_risk(q_flat, sub(mods, flat_idx)))

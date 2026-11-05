@@ -176,6 +176,12 @@ def accumulated_target(
     if dur.ndim != 1:
         raise ValueError(f"accumulated_target: durations is a (levels,) array, got {dur.shape}")
     if isinstance(target, Gaussian):
+        if target.diagonal:
+            raise ValueError(
+                "accumulated_target: a Gaussian with a diagonal standard deviation (a chol "
+                "without its second axis) is a form for a modality's obs_targets entry; pass a "
+                "target with a full chol"
+            )
         if target.batch_shape != ():
             raise ValueError(
                 "accumulated_target: a Gaussian target is one distribution (batch shape ()), "

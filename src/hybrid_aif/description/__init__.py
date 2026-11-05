@@ -474,6 +474,9 @@ _TIGHTER = {"logits": ("log_simplex", "simplex"), "log_simplex": ("simplex",)}
 #: A looser domain a field admits because its family normalises it: a table's unnormalised log
 #: values (the family normalises over the child axis), which :func:`describe` writes as logits.
 _LOOSER = {
+    # a diagonal Gaussian preference's chol is a standard deviation per dimension
+    ("Gaussian", "chol"): ("positive",),
+    ("ConditionalGaussian", "chol"): ("positive",),
     ("ConditionalCategorical", "log_table"): ("logits",),
     # a zero is a level on the simplex's face: a structural zero, or a growable factor's dead
     # level (structure-learning.md S6)
@@ -756,15 +759,19 @@ def _encode(
         _check_layout(decl.event_ndims == decl.logits.ndim, address, "event_ndims")
         var = w.param(main or f"{base}_logits", decl.logits, "logits", address)
         return _record("JointCategorical", parameters={"logits": var})
-    if kind in (_dist.Gaussian, _dist.MixtureGaussian):
+    if kind in (_dist.Gaussian, _dist.MixtureGaussian, _dist.ConditionalGaussian):
         family = kind.__name__
+        if kind is _dist.ConditionalGaussian:
+            _check_layout(decl.parent_ndims == decl.loc.ndim - 1, address, "parent_ndims")
         names = FAMILIES[family].parameters
-        return _record(family, parameters={n: field(n, getattr(decl, n), family) for n in names})
-    if kind is _dist.ConditionalGaussian:
-        _check_layout(decl.parent_ndims == decl.loc.ndim - 1, address, "parent_ndims")
-        family = kind.__name__
-        names = FAMILIES[family].parameters
-        return _record(family, parameters={n: field(n, getattr(decl, n), family) for n in names})
+        diagonal = kind is not _dist.MixtureGaussian and decl.diagonal
+        parameters = {}
+        for n in names:
+            if diagonal and n == "chol":  # a standard deviation per dimension
+                parameters[n] = w.param(f"{base}_{n}", decl.chol, "positive", f"{address}/{n}")
+            else:
+                parameters[n] = field(n, getattr(decl, n), family)
+        return _record(family, parameters=parameters)
     if kind is _factors.LinearGaussianTransition:
         inn = decl.innovations
         _check_layout(
@@ -3701,7 +3708,8 @@ class _Model:
         d = self._dim(fac)
         names = fac.parameters
         self._trailing(fac, names["loc"], module.loc.shape, (d,), exact=True)
-        self._trailing(fac, names["chol"], module.chol.shape, (d, d), exact=True)
+        diagonal = tuple(module.chol.shape) == tuple(module.loc.shape)
+        self._trailing(fac, names["chol"], module.chol.shape, (d,) if diagonal else (d, d), True)
 
     def _decode_Gaussian(self, fac: _Factor, options, role: str):
         module = self._plain(fac, _dist.Gaussian)
@@ -3723,7 +3731,9 @@ class _Model:
         modes = tuple(self._levels_of(fac, p) for p in parents)
         note = f" (one leading axis per parent, in order: {dict(zip(parents, modes, strict=True))})"
         self._trailing(fac, names["loc"], loc.shape, (*modes, d), True, note)
-        if tuple(chol.shape) != (d, d):
+        if tuple(chol.shape) == tuple(loc.shape) and not (len(modes) == 1 and modes[0] == d):
+            pass  # a diagonal standard deviation per configuration
+        elif tuple(chol.shape) != (d, d):
             self._trailing(fac, names["chol"], chol.shape, (*modes, d, d), True, note)
         return _assemble(
             _dist.ConditionalGaussian, fac.address, loc=loc, chol=chol, parent_ndims=len(parents)

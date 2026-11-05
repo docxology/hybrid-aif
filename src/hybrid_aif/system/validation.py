@@ -23,6 +23,7 @@ from hybrid_aif.distributions import (
     ConditionalCategorical,
     ConditionalDirichlet,
     ConditionalGaussian,
+    Gaussian,
     MLPConditional,
 )
 from hybrid_aif.distributions.neural import LearnedVector, PredictorHead
@@ -272,6 +273,7 @@ def _validate(
             )
     system._validate_node_targets(params, face)
     system._durations(params, face)
+    _validate_diagonal_targets(params)
     _validate_C_deps(system, params, facs)
     system._validate_H_deps(params, facs)
     _validate_control_deps(system, params, facs, face)
@@ -590,6 +592,64 @@ def _carrier(system: System, params: SystemParams, facs: tuple[str, ...], key: s
     return "categorical" if _factor_levels(params, facs.index(key)) is not None else "gaussian"
 
 
+def _refuse_shared_modes(
+    system: System,
+    params: SystemParams,
+    facs: tuple[str, ...],
+    key: str,
+    state_parents: list[str],
+    where: str,
+) -> None:
+    """A target's state parent may not also be a categorical parent of its modality, or the mode
+    factor of the mixture the modality observes: the levels would then pair with the predictive's
+    components, and the weighted expectation reads the marginal predictive instead."""
+    m = system.modality_names.index(key)
+    deps = system._engine_A_deps[m]
+    states = system._table.num_states
+    shared = {facs[g] for g in deps[1:] if g < states}
+    observed = deps[0]
+    if observed < states and system._is_hybrid(params):
+        if system._families(params)[observed] == _hybrid.MIXTURE:
+            shared |= {facs[g] for g in system._B[observed] if g < states}
+    for p in state_parents:
+        if p in shared:
+            raise NotImplementedError(
+                f"{where}: the target on {key!r} is conditional on {p!r}, which {key!r} itself "
+                "reads as a mode (a categorical parent of the modality, or the mode factor of "
+                "the mixture it observes), so the levels of the target would pair with the "
+                "predictive's components, which is not built; condition on a state factor the "
+                "modality does not read"
+            )
+
+
+def _refuse_diagonal(where: str, what: str) -> ValueError:
+    return ValueError(
+        f"{where} is a Gaussian with a diagonal standard deviation (a chol without its second "
+        f"axis), a form for a modality's obs_targets entry; {what} reads a full chol"
+    )
+
+
+def _validate_diagonal_targets(params: SystemParams) -> None:
+    """A diagonal Gaussian preference (a standard deviation per dimension, :attr:`Gaussian.
+    diagonal` and :attr:`ConditionalGaussian.diagonal`) is a preference over a modality: the
+    objective terms of a state or terminal target read a full factor."""
+    for scope, given in (
+        ("state_targets", params.state_targets),
+        ("terminal_targets", params.terminal_targets),
+    ):
+        for key, target in given.items():
+            if isinstance(target, Gaussian | ConditionalGaussian) and target.diagonal:
+                raise _refuse_diagonal(f"{scope}[{key!r}]", "a state or terminal target")
+    for f, prior in enumerate(params.initial_state_prior):
+        if isinstance(prior, Gaussian) and prior.diagonal:
+            raise _refuse_diagonal(f"initial_state_prior[{f}]", "an initial prior")
+    transition = params.transition
+    for key, decl in transition.items() if isinstance(transition, dict) else enumerate(transition):
+        inn = getattr(decl, "innovations", None)
+        if isinstance(inn, Gaussian | ConditionalGaussian) and inn.diagonal:
+            raise _refuse_diagonal(f"transition[{key!r}].innovations", "an innovation")
+
+
 def _validate_C_deps(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
     """``C_deps`` against the per-step designations.
 
@@ -597,7 +657,8 @@ def _validate_C_deps(system: System, params: SystemParams, facs: tuple[str, ...]
     its ``loc``/``chol``) per parent, each sized by the parent's levels: a discrete control
     node's, or a categorical state factor's. A conditional family under a key without an entry,
     a continuous control node or a non-categorical factor as a parent, a learnable conditional
-    target, and a Gaussian target with a state parent (a mixture target per step) are refused.
+    target, and a Gaussian modality target with a state parent under the risk decomposition (a
+    mixture target per step; the utility form takes one) are refused.
     The names themselves are checked at construction (:meth:`System._check_C_deps`).
     Design: docs/design/step-durations.md T5.
     """
@@ -669,13 +730,24 @@ def _validate_C_deps(system: System, params: SystemParams, facs: tuple[str, ...]
                 "ConditionalGaussian"
             )
         if isinstance(target, ConditionalGaussian):
-            if state_parents:
+            if state_parents and key in mods and system.decomposition == "risk_ambiguity":
                 raise NotImplementedError(
                     f"{where}: a Gaussian target conditional on the state factor(s) "
-                    f"{state_parents} is a mixture target at each step, which is not built; "
-                    "condition a Gaussian target on control nodes only, or write a "
-                    "ConditionalCategorical target over a categorical factor"
+                    f"{state_parents} is a mixture target at each step when scored by risk, "
+                    "which is not built; the utility form (decomposition='utility_infogain') "
+                    "takes a state parent and scores the parent-belief-weighted expected "
+                    "log-density, each level relative to its peak. Use that decomposition, "
+                    "condition on control nodes only, or write a ConditionalCategorical "
+                    "target over a categorical factor"
                 )
+            if state_parents and key not in mods:
+                raise NotImplementedError(
+                    f"{where}: a Gaussian state target conditional on the state factor(s) "
+                    f"{state_parents} is not built; condition a modality target on it under "
+                    "decomposition='utility_infogain', or condition on control nodes only"
+                )
+            if state_parents and key in mods:
+                _refuse_shared_modes(system, params, facs, key, state_parents, where)
             what = "ConditionalGaussian target"
             if hybrid and key in facs and families[facs.index(key)] == _hybrid.GAUSSIAN:
                 d = params.initial_state_prior[facs.index(key)].dim

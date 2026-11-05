@@ -18,6 +18,7 @@ channel, parameter leaves by :func:`param_key`.
 Design: docs/design/parameter-learning.md D2
 """
 
+import math
 import string
 
 import jax
@@ -46,6 +47,7 @@ from hybrid_aif.distributions import (
     MixtureGaussian,
 )
 from hybrid_aif.distributions.base import Distribution
+from hybrid_aif.distributions.conditional import LevelWeightedGaussian
 from hybrid_aif.interval import Interval
 from hybrid_aif.objectives.base import INFOGAIN, TermTree, register_term
 
@@ -344,8 +346,12 @@ def resolve_step_targets(
     weights) and a state parent's is the step's belief, the mean-field rule of
     :func:`resolve_conditional_targets`. A :class:`ConditionalCategorical` resolves to a
     :class:`Categorical`; a :class:`ConditionalGaussian` selects the level's ``(loc, chol)``
-    (its parents are control nodes, read as levels: a probability vector over them would make it
-    a mixture, and raises). Unconditional entries pass through. Cf. SPM's state-dependent
+    along its control parents (read as levels: a probability vector over them would make it a
+    mixture, and raises). With categorical state parents it resolves to a
+    :class:`~hybrid_aif.distributions.conditional.LevelWeightedGaussian`: one Gaussian per state
+    configuration, weighted by the product of the parents' beliefs, scored as an expected
+    log-density relative to each level's peak. Unconditional entries pass through. Cf. SPM's
+    state-dependent
     preferences in ``spm_MDP_VB_XXX`` (``id.C``), which average ``log C`` under the parents'
     beliefs; this resolves the mixture ``Σ C q`` before the log, and also admits control
     parents. ``action`` is the step's control step and ``layout`` the flat layout of a mixed
@@ -359,7 +365,11 @@ def resolve_step_targets(
         target = out[name]
         indices = target_parent_entries(parents, action, beliefs, layout)
         if isinstance(target, ConditionalGaussian):
-            soft = [i for (kind, i), idx in zip(parents, indices, strict=True) if is_belief(idx)]
+            soft = [
+                i
+                for (kind, i), idx in zip(parents, indices, strict=True)
+                if kind == "control" and is_belief(idx)
+            ]
             if soft:
                 raise ValueError(
                     f"the Gaussian target on {name!r} is conditional on control node column(s) "
@@ -368,11 +378,41 @@ def resolve_step_targets(
                     "built: clamp the node's levels"
                 )
             loc, chol = target.loc, target.chol
-            for idx in reversed(indices):
-                loc = jnp.take(loc, jnp.asarray(idx, jnp.int32), axis=-2)
-                if not target.shared_chol:
-                    chol = jnp.take(chol, jnp.asarray(idx, jnp.int32), axis=-3)
-            out[name] = Gaussian(loc=loc, chol=chol)
+            states = [
+                (j, idx)
+                for j, ((kind, _), idx) in enumerate(zip(parents, indices, strict=True))
+                if kind == "state"
+            ]
+            n_state = len(states)
+            for j in reversed(range(len(parents))):
+                if parents[j][0] == "state":
+                    continue
+                idx = jnp.asarray(indices[j], jnp.int32)
+                right_of_j = sum(1 for k in range(j + 1, len(parents)) if parents[k][0] == "state")
+                loc = jnp.take(loc, idx, axis=-(2 + right_of_j))
+                if target.diagonal:
+                    chol = jnp.take(chol, idx, axis=-(2 + right_of_j))
+                elif not target.shared_chol:
+                    chol = jnp.take(chol, idx, axis=-(3 + right_of_j))
+            if not states:
+                out[name] = Gaussian(loc=loc, chol=chol)
+                continue
+            d = target.dim
+            batch = loc.shape[: loc.ndim - n_state - 1]
+            count = math.prod(loc.shape[loc.ndim - n_state - 1 : -1])
+            if target.diagonal:
+                chol = chol.reshape((*batch, count, d))
+            elif target.shared_chol:
+                chol = jnp.broadcast_to(chol[..., None, :, :], (*batch, count, d, d))
+            else:
+                chol = chol.reshape((*batch, count, d, d))
+            weights = jnp.ones(batch)
+            for _, probs in states:
+                weights = weights[..., None] * jnp.asarray(probs)
+                weights = weights.reshape((*batch, -1))
+            out[name] = LevelWeightedGaussian(
+                loc=loc.reshape((*batch, count, d)), chol=chol, weights=weights
+            )
         else:
             out[name] = Categorical(logits=take_controls(target.log_probs, indices, log=True))
     return out

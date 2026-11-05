@@ -32,6 +32,20 @@ class Gaussian(ExponentialFamily):
     def cov(self) -> Array:
         return self.chol @ jnp.swapaxes(self.chol, -1, -2)
 
+    @property
+    def diagonal(self) -> bool:
+        """Whether ``chol`` is a diagonal standard deviation ``(..., dim)``, the shape of ``loc``
+        (a full factor has one trailing axis more). Only a preference over a modality reads it as
+        such; every other method needs :meth:`dense`."""
+        return self.chol.shape == self.loc.shape
+
+    def dense(self) -> "Gaussian":
+        """The Gaussian with a full ``(..., dim, dim)`` factor (itself when it has one)."""
+        if not self.diagonal:
+            return self
+        eye = jnp.eye(self.dim, dtype=self.chol.dtype)
+        return Gaussian(loc=self.loc, chol=self.chol[..., :, None] * eye)
+
     @classmethod
     def from_cov(cls, loc: Array, cov: Array) -> "Gaussian":
         return cls(loc=loc, chol=jnp.linalg.cholesky(cov))

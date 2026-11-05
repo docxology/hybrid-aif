@@ -38,6 +38,7 @@ from hybrid_aif.distributions import (
     LowRankMixture,
     MixtureGaussian,
 )
+from hybrid_aif.distributions.conditional import LevelWeightedGaussian
 from hybrid_aif.factors import (
     LinearGaussianObservation,
     LinearGaussianObservationMNIW,
@@ -957,6 +958,97 @@ def _conditional_predictive_entropy(
     ).entropy()
 
 
+def dense_target(target: Distribution) -> Distribution:
+    """``target`` with a full covariance factor: a diagonal :class:`Gaussian` or
+    :class:`~hybrid_aif.distributions.conditional.LevelWeightedGaussian` (a standard deviation per
+    dimension) embedded as a matrix; anything else as it is."""
+    if isinstance(target, Gaussian | LevelWeightedGaussian) and target.diagonal:
+        return target.dense()
+    return target
+
+
+def diagonal_target_parts(target: Distribution) -> tuple[Array, Array, Array] | None:
+    """``(loc, scale, weights)``, each with a leading level axis ``(L, ...)``, of a diagonal
+    Gaussian preference (one level, weight one) or a diagonal level-weighted one; ``None`` for
+    any other target."""
+    if isinstance(target, Gaussian) and target.diagonal:
+        return target.loc[None], target.chol[None], jnp.ones((1,), target.loc.dtype)
+    if isinstance(target, LevelWeightedGaussian) and target.diagonal:
+        return target.loc, target.chol, target.weights
+    return None
+
+
+def lowrank_capable(model: object, mode_beliefs: tuple) -> bool:
+    """Whether the predictive of ``model`` has the low-rank form :func:`lowrank_utility` reads:
+    a :class:`ComponentHead` with a diagonal noise, or a :class:`DiagonalNoiseObservation` with
+    one that does not switch."""
+    if isinstance(model, ComponentHead):
+        return model.R_diag is not None
+    return (
+        isinstance(model, DiagonalNoiseObservation) and model.scale is not None and not mode_beliefs
+    )
+
+
+def lowrank_utility(
+    q: Gaussian | MixtureGaussian,
+    model: ComponentHead | DiagonalNoiseObservation,
+    mode_beliefs: tuple[Categorical, ...],
+    target: Distribution,
+) -> Interval:
+    """``E_q(o)[log C(o)]`` of a diagonal Gaussian preference (or a diagonal level-weighted one)
+    over a diagonal-noise predictive, without forming a ``d_obs`` by ``d_obs`` array.
+
+    With predictive component ``n`` ``N(mu_n, D_n + U_n U_n^T)`` (:func:`_predictive_lowrank`)
+    and level ``l`` ``N(m_l, diag s_l^2)`` of weight ``w_l``, the leaf is ``-sum_n a_n sum_l w_l
+    CE_nl``, ``CE_nl = 1/2 [ sum_p (mu_n - m_l)^2 / s_l^2 + sum_p (D_n + sum_r U_n^2) / s_l^2 +
+    sum_p log(2 pi s_l^2) ]``: ``O(d_obs (d + 1))`` per component and level, vectorised over
+    both. Exact. For a level-weighted target the term ``sum_p log(2 pi s_l^2)`` is dropped (each
+    level is scored relative to its peak, see
+    :meth:`~hybrid_aif.distributions.conditional.LevelWeightedGaussian.cross_entropy`)."""
+    parts = diagonal_target_parts(target)
+    relative = isinstance(target, LevelWeightedGaussian)
+    if parts is None:
+        raise ValueError("lowrank_utility needs a diagonal Gaussian or level-weighted target")
+    loc, scale, weights = parts
+    if isinstance(model, ComponentHead):
+        head, logq = (
+            model,
+            (
+                _joint_mode_log_probs(mode_beliefs)
+                if mode_beliefs
+                else jnp.zeros((1,), model.c.dtype)
+            ),
+        )
+    else:
+        head = ComponentHead(
+            H=model.H[None, None],
+            c=model.c[None, None],
+            R_chol=jnp.zeros((1, 1, 0, 0), model.c.dtype),  # the dense noise is never read
+            R_diag=model.scale[None, None],
+        )
+        logq = jnp.zeros((1,), model.c.dtype)
+    low = _predictive_lowrank(q, head, logq)
+    inv = 1.0 / scale**2  # (L, p)
+    dev = low.means[..., :, None, :] - loc  # (..., n, L, p)
+    maha = jnp.einsum("...nlp,lp->...nl", dev**2, inv)
+    spread = low.diag + jnp.sum(low.factors**2, axis=-1)  # (..., n, p)
+    trace = jnp.einsum("...np,lp->...nl", spread, inv)
+    log_norm = jnp.sum(jnp.log(2.0 * jnp.pi * scale**2), axis=-1)  # (L,)
+    # a level-weighted preference scores each level relative to its peak: no normaliser
+    ce = 0.5 * (maha + trace + (0.0 if relative else log_norm))
+    mix = jax.nn.softmax(low.log_weights, axis=-1)
+    return Interval.exact(-jnp.einsum("...n,...nl,...l->...", mix, ce, weights))
+
+
+def _expected_log_density(q: MixtureGaussian, target: Distribution) -> Interval:
+    """``-E_q[log target]`` for a predictive ``q``: the cross-entropy, level-weighted for a
+    :class:`~hybrid_aif.distributions.conditional.LevelWeightedGaussian` target."""
+    target = dense_target(target)
+    if isinstance(target, LevelWeightedGaussian):
+        return target.cross_entropy(q.cross_entropy_to)
+    return q.cross_entropy_to(target)
+
+
 def lg_utility(
     q_obs: tuple[MixtureGaussian, ...],
     targets: dict[str, Distribution],
@@ -967,11 +1059,16 @@ def lg_utility(
     ``q_obs`` are the predicted observation densities (:func:`predictive_obs`);
     ``targets`` maps modality names to Gaussian or mixture preference densities.
     Undesignated modalities are omitted. The leaf is exact for a Gaussian target
-    and a Kolchinsky–Tracey Interval for a mixture target.
+    and a Kolchinsky–Tracey Interval for a mixture target. A
+    :class:`~hybrid_aif.distributions.conditional.LevelWeightedGaussian` target (a Gaussian
+    conditional on categorical state parents) scores the parent-belief-weighted sum over its
+    levels of the expected log-density under that level's Gaussian relative to each level's peak
+    (its log-normaliser dropped, so a level's scale sets the strength of its pull and not a bonus
+    for the level), exact for each level.
     """
     names = _block_names("modality", len(q_obs), block_names)
     leaves = {
-        name: -q.cross_entropy_to(targets[name])
+        name: -_expected_log_density(q, targets[name])
         for name, q in zip(names, q_obs, strict=True)
         if name in targets
     }

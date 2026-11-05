@@ -150,6 +150,7 @@ def _precision(target) -> Array:
     per level, with its parent axes leading."""
     if isinstance(target, TruncatedGaussian):
         return jnp.diag(1.0 / jnp.asarray(target.scale) ** 2)
+    target = target.dense() if isinstance(target, Gaussian) else target
     chol = target.stacked_chol() if isinstance(target, ConditionalGaussian) else target.chol
     eye = jnp.broadcast_to(jnp.eye(target.dim, dtype=chol.dtype), chol.shape)
     return cho_solve((chol, True), eye)
@@ -207,6 +208,13 @@ def coverage(
         )
 
     def check_gaussian(target, what: str, name: str = "") -> None:
+        if name in c_deps and any(kind == "state" for kind, _ in c_deps[name]):
+            raise ValueError(
+                f"{where}: {what} is conditional on a state factor, a preference averaged over "
+                "the parent's belief at each step, which the closed-loop pass does not weigh "
+                "by a single precision. Condition on control nodes only, or plan with "
+                "feedback=None"
+            )
         if name in c_deps and isinstance(target, ConditionalGaussian):
             return
         if not isinstance(target, Gaussian):

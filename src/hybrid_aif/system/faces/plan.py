@@ -228,6 +228,12 @@ def _validate_node_targets(system, params: SystemParams, face: str = "this face"
     boxes = dict(zip(controls, space.boxes, strict=True))
     for what, k, v in named:
         if kinds[k] == FLOAT:
+            if getattr(v, "diagonal", False):
+                raise ValueError(
+                    f"{face}: {what}[{k!r}] is a Gaussian with a diagonal standard deviation on "
+                    f"continuous control node {k!r}; the diagonal form is for a modality's "
+                    "obs_targets, so give the control node's target a full chol"
+                )
             ok = isinstance(v, Gaussian | TruncatedGaussian) and (
                 v.batch_shape == () and v.dim == sizes[k]
             )
