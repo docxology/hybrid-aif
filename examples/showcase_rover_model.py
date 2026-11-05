@@ -1,10 +1,11 @@
 """The fast rover tier of the two-tier rover showcase.
 
-A terrain-switched 4-D position and velocity under a velocity command, three sensing modalities
-(a position fix whose noise is a levelled map over position and the sensor node, a terrain cue,
-and a camera image whose likelihood is a frozen neural decoder) and a position target that is
-conditional on the mission's option node. An optional recognition entry replaces the engine's
-inversion of the image with a frozen encoder's measurement of the position.
+A terrain-switched 4-D position and velocity under a velocity command, two sensing modalities
+(a position fix whose noise is a levelled map over position and the sensor node, and a
+rover-centred camera image whose likelihood is a frozen neural decoder) and a position target that
+is conditional on the mission's option node. The fix is the only modality that pins position; the
+image identifies terrain. An optional recognition entry replaces the engine's inversion of the
+image, for the terrain factor, with a frozen recogniser's probability vector.
 """
 
 import jax.numpy as jnp
@@ -30,13 +31,6 @@ SENSOR_NAMES = ["short exposure", "long exposure"]
 TERRAIN_NAMES = ["firm", "sand", "ice"]
 
 
-def _cc(table, parent_ndims):
-    return ConditionalCategorical(
-        log_table=jnp.log(jnp.clip(jnp.asarray(table, jnp.float32), 1e-12)),
-        parent_ndims=parent_ndims,
-    )
-
-
 def fix_noise_map():
     """A GridNoiseMap with a leading sensor-level axis: values (2, G, G, 2, 2)."""
     xs = np.linspace(*wd.FIELD[0], GRID)
@@ -52,14 +46,16 @@ def fix_noise_map():
     return GridNoiseMap(jnp.asarray(values), low, high, axes=(0, 1))
 
 
-def rover(decoder, encoder=None, precision=4.0, epistemic=True, policy_len=3, camera=True):
+def rover(decoder, encoder=None, precision=4.0, infogain=("fix",), policy_len=3, camera=True):
     """The rover System and params. ``decoder`` is the camera's likelihood; with ``encoder``, a
-    recognition entry measures the position from the image. ``camera=False`` leaves the image
-    out of the model."""
+    recognition entry reads the terrain from the image. ``infogain`` names the modalities whose
+    information gain the planner scores (none, for no epistemic terms). ``camera=False`` leaves
+    the image out of the model."""
     # factors: terrain 0, x 1, v 2 (float control), sensor 3, u_opt 4 (the mission's option);
     # action nodes: a_v 5, a_sensor 6, a_opt 7
-    modalities = ["fix", "cue"] + (["img"] if camera else [])
-    A_deps = [(1, 6), (0,)] + ([(1, 0)] if camera else [])
+    modalities = ["fix"] + (["img"] if camera else [])
+    A_deps = [(1, 6)] + ([(1, 0)] if camera else [])
+    scored = [m for m in infogain if m in modalities]
     system = System(
         A_deps=tuple(A_deps),
         B_deps=((0,), (0, 2, 3), (), (), ()),
@@ -72,9 +68,11 @@ def rover(decoder, encoder=None, precision=4.0, epistemic=True, policy_len=3, ca
         mixture_k=mm.MIXTURE_K,
         mixture_schedule="mode_aligned",
         planning_belief="prior",
-        epistemic=tuple(f"obs:{m}" for m in modalities) if epistemic else False,
+        epistemic=tuple(f"obs:{m}" for m in scored) if scored else False,
         terms=("uncertainty:x",),
-        recognition=(Recognition("x", ("obs:img",)),) if camera and encoder is not None else (),
+        recognition=(Recognition("terrain", ("obs:img",)),)
+        if camera and encoder is not None
+        else (),
     )
     M, S = N_TERRAIN, N_SENSOR
     F = np.zeros((M, S, 4, 4))
@@ -99,7 +97,6 @@ def rover(decoder, encoder=None, precision=4.0, epistemic=True, policy_len=3, ca
         tgt_chol[o] = np.diag([sd_pos, sd_pos, 2.0, 2.0])
     likelihood = {
         "fix": LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=fix_noise_map()),
-        "cue": _cc(wd.CUE, 1),
     }
     if camera:
         likelihood["img"] = decoder
@@ -128,6 +125,6 @@ def rover(decoder, encoder=None, precision=4.0, epistemic=True, policy_len=3, ca
                 parent_ndims=1,
             )
         },
-        recognition={"x": encoder} if camera and encoder is not None else {},
+        recognition={"terrain": encoder} if camera and encoder is not None else {},
     )
     return system, params

@@ -2,9 +2,9 @@
 
 It holds the rover's position and velocity over terrain patches, its energy, three rocks and the
 readings the two minds receive: the mission's gauge, zone, rock checks and payoff, and the
-rover's position fix, terrain cue and camera image. It is a hand-written ``GenerativeEnv`` wired
-to the minds with ``couple``. The physical constants, the true dynamics and the image renderer
-live here; the minds' models read them as their own.
+rover's position fix and camera image. It is a hand-written ``GenerativeEnv`` wired to the
+minds with ``couple``. The physical constants, the true dynamics and the image renderer live
+here; the minds' models read them as their own.
 """
 
 import jax
@@ -26,7 +26,6 @@ GAIN = np.asarray([0.8, 0.05])  # velocity gain per sensor level (short, long ex
 KEEP = np.asarray([0.2, 0.05])  # velocity persistence per sensor level
 TERRAIN_SD = np.asarray([0.04, 0.12, 0.12])
 DRIFT = {1: (2, -0.25), 2: (3, 0.25)}  # sand pushes along -x, ice along +y
-CUE = np.asarray([[0.8, 0.15, 0.1], [0.1, 0.7, 0.1], [0.1, 0.15, 0.8]])
 FIX_SD = ((0.5, 0.2), (0.15, 0.04))  # (open field, at the ridge) per sensor level
 
 ZONE_RADIUS = 0.8
@@ -41,16 +40,18 @@ GAUGE_ACC = 0.88
 ZONE_CENTRES = np.asarray([mm.ZONES[z] for z in mm.ZONE_NAMES], np.float32)
 ZONE_IDX = {z: i for i, z in enumerate(mm.ZONE_NAMES)}
 
-IMG_SIDE = 8  # the camera image is IMG_SIDE x IMG_SIDE pixels over the field
+IMG_SIDE = 32  # the camera image is IMG_SIDE x IMG_SIDE pixels of terrain around the rover
 IMG_PIXELS = IMG_SIDE * IMG_SIDE
-PIXEL_SD = 0.2
-BLOB_SD = 0.8  # the rover's blob, in field units
-BLOB_GAIN = 0.7
+PIXEL_SD = 0.1
+PATCH_HALF = 1.0  # the patch spans +-PATCH_HALF field units around the rover, on each axis
 TERRAIN_BRIGHTNESS = (0.15, 0.40, 0.65)
-TERRAIN_TEXTURE = ((0.0, 0.0), (0.12, 1.3), (0.12, 2.6))  # (amplitude, spatial frequency)
+STRIPE_AMPLITUDE = (0.0, 0.18, 0.18)
+STRIPE_FREQUENCY = (0.0, 1.5, 3.0)  # spatial frequency per field unit, along the stripe normal
+STRIPE_ANGLE = (0.0, 0.3, -0.9)  # radians, the stripe normal's angle from the x axis
+MOTTLE = 0.08  # amplitude of the faint mottle on firm ground
 
 FACTORS = ("terrain", "x", "energy", "rock_1", "rock_2", "rock_3", "pay_mem", "clock")
-MODALITIES = (*mm.MISSION_MODALITIES, "fix", "cue", "img")
+MODALITIES = (*mm.MISSION_MODALITIES, "fix", "img")
 ACTIONS = ("a_v", "a_sensor", "option")
 
 
@@ -75,27 +76,27 @@ def dynamics(terrain, sensor):
     return F, G, loc, TERRAIN_SD[terrain] * np.eye(4)
 
 
-_PIXEL_X = np.linspace(FIELD[0][0], FIELD[0][1], IMG_SIDE + 1)
-_PIXEL_Y = np.linspace(FIELD[1][0], FIELD[1][1], IMG_SIDE + 1)
-PIXEL_CENTRES = np.stack(
-    np.meshgrid(
-        0.5 * (_PIXEL_X[1:] + _PIXEL_X[:-1]), 0.5 * (_PIXEL_Y[1:] + _PIXEL_Y[:-1]), indexing="ij"
-    ),
-    axis=-1,
-).reshape(-1, 2)  # pixel p is cell (p // IMG_SIDE, p % IMG_SIDE) of the field, x first
+_OFFSETS = np.linspace(-PATCH_HALF, PATCH_HALF, IMG_SIDE)
+# pixel p is cell (p // IMG_SIDE, p % IMG_SIDE): row 0 is the largest y offset, columns run
+# along x, so the patch reads as a top-down picture with +x to the right and +y up.
+PATCH_DX = np.tile(_OFFSETS, IMG_SIDE).astype(np.float32)
+PATCH_DY = np.repeat(_OFFSETS[::-1], IMG_SIDE).astype(np.float32)
 
 
 def render(x, terrain):
     """The noiseless camera image (IMG_PIXELS values) at a state ``x`` (position first) and a
-    terrain level: a bright blob at the rover's position in a top-down view of the field, over a
-    background whose brightness and stripe texture depend on the terrain."""
-    centres = jnp.asarray(PIXEL_CENTRES, jnp.float32)
-    d2 = jnp.sum((centres - x[:2][None, :]) ** 2, axis=1)
-    blob = BLOB_GAIN * jnp.exp(-d2 / (2 * BLOB_SD**2))
-    amp = jnp.asarray([a for a, _ in TERRAIN_TEXTURE], jnp.float32)[terrain]
-    freq = jnp.asarray([f for _, f in TERRAIN_TEXTURE], jnp.float32)[terrain]
-    background = jnp.asarray(TERRAIN_BRIGHTNESS, jnp.float32)[terrain]
-    return background + amp * jnp.sin(freq * centres[:, 0]) + blob
+    terrain level: a top-down patch of terrain centred on the rover. Brightness and a stripe
+    texture depend on the terrain; the stripe phase depends on the world position of each pixel.
+    Firm ground carries a faint mottle instead of stripes. The patch holds no mark of the rover."""
+    wx = x[0] + jnp.asarray(PATCH_DX)
+    wy = x[1] + jnp.asarray(PATCH_DY)
+    angle = jnp.asarray(STRIPE_ANGLE, jnp.float32)[terrain]
+    phase = jnp.asarray(STRIPE_FREQUENCY, jnp.float32)[terrain] * (
+        jnp.cos(angle) * wx + jnp.sin(angle) * wy
+    )
+    stripes = jnp.asarray(STRIPE_AMPLITUDE, jnp.float32)[terrain] * jnp.sin(phase)
+    mottle = jnp.where(terrain == 0, MOTTLE, 0.0) * jnp.sin(3 * wx) * jnp.sin(3 * wy)
+    return jnp.asarray(TERRAIN_BRIGHTNESS, jnp.float32)[terrain] + stripes + mottle
 
 
 def to_uint8(image):
@@ -143,7 +144,7 @@ class RoverWorld(GenerativeEnv):
     """Keyed faces over the hand-written process; ``params`` only types the out-ports."""
 
     def _observe(self, key, state, level):
-        keys = jax.random.split(key, 9)
+        keys = jax.random.split(key, 6)
         pos = state["x"][:2]
         zone = zone_of(pos)
         band = band_of(state["energy"])
@@ -161,11 +162,8 @@ class RoverWorld(GenerativeEnv):
             obs[f"check_{k + 1}"] = (jax.random.uniform(keys[1 + k]) >= p_good).astype(jnp.int32)
         sd = jnp.where(level == 0, fix_sd(0, *pos), fix_sd(1, *pos))
         obs["fix"] = pos + sd * jax.random.normal(keys[4], (2,))
-        obs["cue"] = jax.random.categorical(
-            keys[5], jnp.log(jnp.asarray(CUE)[:, state["terrain"]])
-        ).astype(jnp.int32)
         image = render(state["x"], state["terrain"])
-        obs["img"] = image + PIXEL_SD * jax.random.normal(keys[6], (IMG_PIXELS,))
+        obs["img"] = image + PIXEL_SD * jax.random.normal(keys[5], (IMG_PIXELS,))
         return obs
 
     def reset(self, key, params, state=None):
@@ -234,7 +232,6 @@ def world():
     n_level = {"gauge": 4, "zone_obs": 5, "check_1": 2, "check_2": 2, "check_3": 2, "payoff": 3}
     like = {m: _cc(np.eye(n), 1) for m, n in n_level.items()}
     like["fix"] = LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2))
-    like["cue"] = _cc(CUE, 1)
     like["img"] = LinearGaussianObservation(
         H=jnp.zeros((IMG_PIXELS, 4)), c=jnp.zeros(IMG_PIXELS), noise=jnp.eye(IMG_PIXELS)
     )

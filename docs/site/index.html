@@ -33,18 +33,19 @@
 <main class="wrap">
 <section id="hero">
   <h2>A rover, a ridge and a dock</h2>
-  <p class="lead">Two minds share one body. A slow mission tier decides which rock to visit, whether to sample it, or when to return to the dock, and holds that choice for the option's duration. A fast rover tier steers every tick: it infers a hidden terrain regime (sticky, three levels) that switches the dynamics of a four-dimensional position and velocity state, carries that state as a Gaussian mixture, chooses a continuous velocity and a sensor exposure, and reads a position fix whose noise depends on where it is and how long it looked. It also reads a camera image, inverted through a neural decoder. Drag the tick, switch the setting, and compare the epistemic terms on and off: with them on the rover looks before it samples; with them off it samples blind.</p>
+  <p class="lead">Two minds share one body. A slow mission tier decides which rock to visit, whether to sample it, or when to return to the dock, and holds that choice for the option's duration. A fast rover tier steers every tick: it infers a hidden terrain regime (sticky, three levels) that switches the dynamics of a four-dimensional position and velocity state, carries that state as a Gaussian mixture, chooses a continuous velocity and a sensor exposure, and reads a position fix whose noise depends on where it is and how long it looked. It also reads a camera image of the terrain around it, inverted through a neural decoder: the image says what ground the rover is on and constrains position along its texture, and the fix is what locates the rover on both axes. Drag the tick, switch the setting, and compare the epistemic terms on and off: with them on the rover looks before it samples; with them off it samples blind.</p>
   <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
   <div class="controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
     <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+    <p class="camnote setting" id="infogain" aria-live="polite"></p>
     <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
   </div>
   <div class="hero-grid">
     <figure class="graphfig">
       <svg id="graph" role="img" aria-label="Graphical model" viewBox="0 0 480 760"></svg>
-      <figcaption>The model: two tiers; circles are state factors, squares are observation modalities, rounded tags are controls. Durations are shown on the slow control. The image modality is a neural likelihood; in the encoder setting a recognition network over it supplies a measurement of position instead of its inversion.</figcaption>
+      <figcaption>The model: two tiers; circles are state factors, squares are observation modalities, rounded tags are controls. Durations are shown on the slow control. The image modality is a neural likelihood; in the encoder setting a recognition network over it supplies the terrain probabilities instead of its inversion.</figcaption>
     </figure>
     <figure class="fieldfig">
       <div class="canvaswrap"><canvas id="field" width="520" height="420" role="img" aria-label="Rover field"></canvas></div>
@@ -55,9 +56,9 @@
   </div>
   <figure class="camerafig" id="camerafig">
     <div class="camgrid" id="camgrid"></div>
-    <p class="camnote">A top-down view of the whole field, eight pixels per side. Background brightness marks terrain, a bright blob marks the rover, and pixel noise is added.</p>
+    <p class="camnote" id="camnote"></p>
     <div class="legend" id="terrlegend"></div>
-    <figcaption id="camcap">The camera: the observed 8&times;8 image (left), the decoder's prediction at the current belief (middle), and the field as the image sees it (right). The rover's blob is brighter than the terrain under it.</figcaption>
+    <figcaption id="camcap">The camera: the observed patch (left), the decoder's prediction at the current belief (middle), and a terrain readout (right).</figcaption>
   </figure>
 </section>
 
@@ -88,7 +89,7 @@
 
 <section id="planner">
   <h2>Planning in the field</h2>
-  <p class="lead">The rover's planner is a mixed one: a gradient step over continuous velocity plans and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows the trajectories of the highest-weighted plans from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
+  <p class="lead">The rover's planner is a mixed one: gradient descent over continuous velocity plans from four warm starts per exposure plan, keeping the best, and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows the trajectories of the highest-weighted plans from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
   <figure class="plannerfig">
     <div class="canvaswrap"><canvas id="plan" width="520" height="420" role="img" aria-label="Planned trajectories"></canvas></div>
     <div class="legend" id="planlegend"></div>
@@ -103,7 +104,7 @@
   <h2>Description length</h2>
   <p class="lead">What each part of the model costs to write down, in nats, for both tiers. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table or density, with no prior over its parameters, is priced by its family alone and flagged approximate; only the graph and the control entries are exact, so the exact total is a small part of the whole.</p>
   <p class="mdltotal" id="mdltotal"></p>
-  <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div>
+  <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">entries</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div>
   <p class="mdlfoot" id="mdlfoot"></p>
 </section>
 
@@ -111,7 +112,7 @@
   <h2>Install and quickstart</h2>
 <pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
 .venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
-  <p class="lead"><strong>Quickstart.</strong> A boat in an unknown current. A hidden current (sticky, two levels) drives a position carried as a Gaussian mixture; one control with three levels (anchor, drift, run); a noisy position sensor; the dock as the preference. Thirty lines declare it, one call infers, one call plans.</p>
+  <p class="lead"><strong>Quickstart.</strong> A boat in an unknown current. A hidden current (sticky, two levels) drives a position carried as a Gaussian mixture; one control with three levels (anchor, drift, run); a noisy position sensor; the dock as the preference. Forty lines declare it, one call infers, one call plans.</p>
 <pre><code>import jax
 import jax.numpy as jnp
 

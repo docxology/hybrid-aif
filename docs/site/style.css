@@ -101,6 +101,13 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .cam canvas{width:100%;max-width:220px;aspect-ratio:1;border:1px solid var(--line);border-radius:4px;background:var(--panel);image-rendering:pixelated}
 .cam .cl{font-size:.82rem;color:var(--muted)}
 .cam .cv{font:.82rem var(--mono)}
+.readout{font-size:.8rem;display:flex;flex-direction:column;gap:.2rem}
+.readout .rl{color:var(--muted);margin-top:.3rem}
+.readout .rb{display:grid;grid-template-columns:5.5rem 1fr 2.2rem;gap:.4rem;align-items:center}
+.readout .rb.true .rn{font-weight:700}
+.readout .bar{height:.6rem;background:var(--panel);border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.readout .bar i{display:block;height:100%;background:var(--c1)}
+.readout .rp{font-family:var(--mono);text-align:right}
 .tldr p{margin:0 0 .5rem}.tldr ul{margin:0;padding-left:1.2rem}.tldr li{margin:.3rem 0}
 .tldr code{font:.9em var(--mono)}
 .approx{color:var(--c2)}

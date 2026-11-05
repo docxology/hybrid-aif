@@ -70,7 +70,12 @@
   var FAM = { categorical: "categorical", gaussian_mixture: "Gauss. mixture", linear_gaussian: "lin. Gaussian", neural: "neural (MLP)" };
   function encoderSetting() { var s = settingRec(); return !!(s && s.camera === "encoder"); }
   function settingRec() { for (var i = 0; i < B.settings.length; i++) if (B.settings[i].id === S.setting) return B.settings[i]; return null; }
+  function showInfogain() {
+    var r = settingRec(), host = $("infogain"); if (!host) return;
+    host.textContent = !r || !r.infogain ? "" : "Rover tier information gain scored on: " + (r.infogain.length ? r.infogain.map(function (m) { return m === "img" ? "camera" : m; }).join(", ") + ". The mission tier scores the rock checks in every epistemic setting." : "none (epistemic terms off in both tiers).");
+  }
   function drawGraph() {
+    showInfogain();
     var svg = $("graph"); svg.innerHTML = "";
     var W = 480, LH = 80, MAXPER = 4;
     var kinds = {
@@ -267,11 +272,18 @@
     $("hud").innerHTML = "<span>t=<b>" + t.t + "</b></span><span>terrain: true <b>" + nm("terrain", t.true_terrain) +
       "</b>, belief " + nm("terrain", best) + " " + terr[best].toFixed(2) + "</span><span>components: <b>" +
       t.belief.components.length + "</b></span>" + (v ? "<span>belief velocity: <b>" + v[0].toFixed(2) + ", " + v[1].toFixed(2) + "</b></span>" : "") +
-      (t.free_energy != null ? "<span>free energy: <b>" + t.free_energy.toFixed(2) + "</b></span>" : "") +
-      (t.seconds != null ? "<span>tick time: <b>" + t.seconds.toFixed(1) + " s</b></span>" : "");
+      (t.free_energy != null ? "<span>free energy: <b>" + t.free_energy.toFixed(2) + "</b></span>" : "");
     drawCamera(t);
   }
+  function imageRows(x) {
+    // an image as rows of 0..255: either rows already, or a base64 string of the pixel bytes
+    if (typeof x !== "string") return x;
+    var bytes = atob(x), side = (B.meta.image && B.meta.image.side) || Math.round(Math.sqrt(bytes.length)), rows = [];
+    for (var i = 0; i < side; i++) { var row = []; for (var j = 0; j < side; j++) row.push(bytes.charCodeAt(i * side + j)); rows.push(row); }
+    return rows;
+  }
   function pixels(c, rows, overlay) {
+    rows = imageRows(rows);
     var n = rows.length, dpr = window.devicePixelRatio || 1, sz = 160;
     c.width = sz * dpr; c.height = sz * dpr;
     var g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -282,18 +294,15 @@
     if (overlay) overlay(g, sz);
     return g;
   }
-  function imgXY(sz) {
-    var f = B.meta.field, sx = sz / (f[0][1] - f[0][0]), sy = sz / (f[1][1] - f[1][0]);
-    return { X: function (x) { return (x - f[0][0]) * sx; }, Y: function (y) { return sz - (y - f[1][0]) * sy; }, sx: sx, sy: sy };
-  }
   function drawCamera(t) {
     var host = $("camgrid");
     if (!t.img) { $("camerafig").hidden = true; return; }
     $("camerafig").hidden = false;
     if (!host.children.length) {
-      ["observed image", "decoder prediction at the belief", "where the image says the rover is"].forEach(function (lbl, i) {
+      ["observed image", "decoder prediction at the belief", "terrain readout"].forEach(function (lbl, i) {
         var d = document.createElement("div"); d.className = "cam";
-        d.innerHTML = "<canvas id='cam" + i + "' width='160' height='160' role='img' aria-label='" + lbl + "'></canvas><span class='cl'>" + lbl + "</span><span class='cv' id='camv" + i + "'></span>";
+        d.innerHTML = (i < 2 ? "<canvas id='cam" + i + "' width='160' height='160' role='img' aria-label='" + lbl + "'></canvas>" : "<div class='readout' id='cam2' role='img' aria-label='" + lbl + "'></div>") +
+          "<span class='cl'>" + lbl + "</span><span class='cv' id='camv" + i + "'></span>";
         host.appendChild(d);
       });
     }
@@ -302,28 +311,28 @@
       [0.15, 0.40, 0.65].forEach(function (v, i) { var g8 = Math.round(v * 255); tl += "<span><i style='background:rgb(" + g8 + "," + g8 + "," + g8 + ");border:1px solid " + css("--line") + "'></i>" + esc(nm("terrain", i)) + "</span>"; });
       $("terrlegend").innerHTML = tl;
     }
+    var im = B.meta.image || {}, side = im.side || imageRows(t.img).length, cam = t.camera || {}, rec = Array.isArray(t.encoder) ? t.encoder : null, sr = settingRec(), ig = sr && sr.infogain;
+    $("camnote").textContent = "A top-down patch of terrain around the rover, " + side + " pixels per side" + (im.half_width != null ? ", spanning \u00b1" + im.half_width + (im.half_width === 1 ? " field unit around it" : " field units around it") : "") +
+      ". Brightness and stripe texture mark the terrain, and pixel noise is added. The patch carries no mark of the rover: it identifies the terrain and constrains position along the stripe gradient, through the decoder's linearisation; the position fix is the only modality that locates the rover on both axes.";
     pixels($("cam0"), t.img);
     pixels($("cam1"), t.recon || t.img);
-    var enc = t.encoder, cam = t.camera || {};
-    pixels($("cam2"), t.img, function (g, sz) {
-      var m = imgXY(sz), bx = m.X(t.true_x[0]), by = m.Y(t.true_x[1]);
-      t.belief.components.forEach(function (cm) {
-        var rx = 2 * Math.sqrt(Math.max(cm.cov[0][0], 0)) * m.sx, ry = 2 * Math.sqrt(Math.max(cm.cov[1][1], 0)) * m.sy;
-        g.beginPath(); g.ellipse(m.X(cm.mu[0]), m.Y(cm.mu[1]), rx, ry, 0, 0, 2 * Math.PI);
-        g.strokeStyle = css("--c1"); g.globalAlpha = Math.min(1, cm.w + 0.3); g.lineWidth = 1.5; g.stroke(); g.globalAlpha = 1;
+    var rows = [["believed", t.belief.terrain]];
+    if (rec) rows.push([encoderSetting() ? "recogniser (used)" : "recogniser (comparison)", rec]);
+    var h = "";
+    rows.forEach(function (r) {
+      h += "<div class='rl'>" + esc(r[0]) + "</div>";
+      r[1].forEach(function (p, i) {
+        h += "<div class='rb" + (i === t.true_terrain ? " true" : "") + "'><span class='rn'>" + esc(nm("terrain", i)) + (i === t.true_terrain ? " (true)" : "") + "</span><span class='bar'><i style='width:" + (100 * p).toFixed(1) + "%'></i></span><span class='rp'>" + p.toFixed(2) + "</span></div>";
       });
-      if (enc) {
-        g.beginPath(); g.ellipse(m.X(enc.mean[0]), m.Y(enc.mean[1]), 2 * enc.sd[0] * m.sx, 2 * enc.sd[1] * m.sy, 0, 0, 2 * Math.PI);
-        g.setLineDash([3, 3]); g.strokeStyle = css("--c4"); g.lineWidth = 1.5; g.stroke(); g.setLineDash([]);
-      }
-      g.beginPath(); g.arc(bx, by, 3.5, 0, 2 * Math.PI); g.fillStyle = css("--fg"); g.fill(); g.strokeStyle = css("--bg"); g.lineWidth = 1.5; g.stroke();
     });
+    $("cam2").innerHTML = h;
     $("camv1").textContent = cam.log_evidence != null ? "log evidence " + cam.log_evidence.toFixed(1) :
       cam.covered_term != null ? "covered term " + cam.covered_term.toFixed(1) + ", normaliser " + cam.normaliser.toFixed(1) : "";
-    $("camv2").textContent = enc ? "encoder " + enc.mean[0].toFixed(2) + ", " + enc.mean[1].toFixed(2) + " ± " + enc.sd[0].toFixed(2) + ", " + enc.sd[1].toFixed(2) + (encoderSetting() ? " (used)" : " (diagnostic)") : "";
-    $("camcap").innerHTML = "The camera: the observed 8&times;8 image (left), the decoder's prediction at the belief mean and most likely terrain (middle), and the same image with the belief's components (solid), the encoder's measurement (dashed) and the true position (dot) over it (right). " +
-      (encoderSetting() ? "In this setting the encoder's measurement replaces the inversion of the image; the covered term is the image's expected cost under the belief, and the normaliser is the measurement's evidence." :
-        "In this setting the engine inverts the decoder at the belief; the number under the middle panel is the image's log evidence under that linearisation. The encoder is run for comparison only.");
+    $("camcap").innerHTML = "The camera: the observed " + side + "&times;" + side + " patch (left), the decoder's prediction at the belief mean and most likely terrain (middle), and a terrain readout (right): the rover's belief over terrain, and the true terrain marked. " +
+      (rec ? "The recogniser's probability vector for the image is shown beside the belief. " : "") +
+      (encoderSetting() ? "In this setting the recogniser's probabilities replace the inversion of the image for the terrain factor; the covered term is the image's expected cost under the belief, and the normaliser is the measurement's evidence."
+        : "In this setting the engine inverts the decoder at the belief; the number under the middle panel is the image's log evidence under that linearisation. The recogniser is run for comparison only.") +
+      (ig ? (ig.indexOf("img") >= 0 ? " The planner scores the camera's information gain." : " The planner does not score the camera's information gain.") : "");
   }
   function badge(color, label, value, title, ring) {
     return "<span class='badge' title='" + esc(title || "") + "'><i style='background:" + color + "'></i><span>" + esc(label) + "</span> " + esc(value) +
@@ -381,7 +390,7 @@
         tx.setAttribute("stroke-linejoin", "round"); }
     });
     // energy
-    lab("energy", yE + 12);
+    if (W < 480) el("text", { x: 4, y: yE - 3, "font-size": 10.5, class: "muted" }, svg, "energy"); else lab("energy", yE + 12);
     var nb = names("energy").length || 4, ey = function (b) { return yE + hE - 4 - b / (nb - 1) * (hE - 8); };
     for (var b = 0; b < nb; b++) {
       el("line", { x1: L, x2: W - R, y1: ey(b), y2: ey(b), stroke: css("--line"), "stroke-width": 0.8 }, svg);
@@ -454,7 +463,7 @@
   function approx(tm, lf) { var a = S.tier === "rover" && tick().approximate; return !!(a && a[tm] && a[tm][lf]); }
   function anyApprox() { var a = S.tier === "rover" && tick().approximate; if (!a) return false; for (var tm in a) for (var lf in a[tm]) if (a[tm][lf]) return true; return false; }
   function showTip(ev, it) {
-    var h = "<b>" + esc(it.name) + "</b> &nbsp; qπ=" + it.q.toFixed(3) + "<br>G " + (it.G[0] === it.G[1] ? "= " + it.G[0].toFixed(2) + " (point)" : "[" + it.G[0].toFixed(2) + ", " + it.G[1].toFixed(2) + "]") + "<table>", ap = false;
+    var h = "<b>" + esc(it.name) + "</b> &nbsp; posterior weight qπ=" + it.q.toFixed(3) + "<br>G " + (it.G[0] === it.G[1] ? "= " + it.G[0].toFixed(2) + " (point)" : "[" + it.G[0].toFixed(2) + ", " + it.G[1].toFixed(2) + "]") + "<table>", ap = false;
     leafRows(it.p).forEach(function (r) {
       var a = approx(r[0], r[1]); ap = ap || a;
       h += "<tr><td style='color:" + termColor(r[0]) + "'>" + r[0] + "</td><td>" + esc(r[1]) + (a ? " <span class='ap'>≈</span>" : "") + "</td><td>" + (r[2] === r[3] ? r[2].toFixed(2) : "[" + r[2].toFixed(2) + ", " + r[3].toFixed(2) + "]") + "</td></tr>";
@@ -512,14 +521,14 @@
     var o = objItems(), items = o.items, terms = o.terms;
     $("objnote").textContent = mission
       ? "Mission tier: the slow model is tabular and its option sequences are enumerated exactly, so each G is a point (lower equals upper) and is drawn as a tick, not a bar."
-      : "Rover tier: each bar is the interval the closed-form mixture bounds put around G; the axis is scaled to this tick's policies. The entropy cost over position (uncertainty) is on in every setting; the epistemic switch controls the information-gain leaves." + (anyApprox() ? " Leaves that read the camera are computed on the decoder's linearisation at the belief and are marked ≈ in the per-leaf view; their brackets are brackets of that linearised model." : "");
+      : "Rover tier: each bar is the interval the closed-form mixture bounds put around G; the axis is scaled to this tick's policies. The entropy cost over position (uncertainty) is on in every setting; the epistemic switch controls the information-gain leaves, for the modalities the setting names." + (anyApprox() ? " Leaves that read the camera are computed on the decoder's linearisation at the belief and are marked ≈ in the per-leaf view; their brackets are brackets of that linearised model." : "");
     $("objcap").textContent = (mission
-      ? "Expected free energy of each option sequence at the most recent decision (tick " + o.decided + "), best first; lower is better. "
+      ? "Expected free energy of the kept option sequences (the " + o.items.length + " best of the enumeration) at the most recent decision (tick " + o.decided + "), best first; lower is better. "
       : "Expected free energy G for the current tick (lower is better). ") +
       "Hover or focus a policy for its per-term, per-leaf values. The chosen " + (mission ? "sequence" : "policy") + " is highlighted. " + (B.meta.sign_convention ? "Sign convention: " + B.meta.sign_convention + "." : "") +
       (mode === "terms" ? " Each policy's G is split into its objective terms, stacked from zero: negative terms to the left, positive to the right; a bracket marks each term's interval." : "");
     var btn = $("objall"); btn.hidden = !(mission && items.length > TOP_N);
-    btn.textContent = S.showAll ? "Show top " + TOP_N : "Show all " + items.length;
+    btn.textContent = S.showAll ? "Show top " + TOP_N : "Show all " + items.length + " kept";
     if (mission && !S.showAll && items.length > TOP_N) {
       var top = items.slice(0, TOP_N), ch = items.filter(function (i) { return i.chosen; })[0];
       if (ch && top.indexOf(ch) < 0) top.push(ch);
@@ -639,6 +648,7 @@
       var tr = document.createElement("tr"), un = c.nats == null;
       var a = document.createElement("td"); a.textContent = short(c.name.replace(/^[a-z_]+:/, "")); a.title = c.name; tr.appendChild(a);
       var k = document.createElement("td"); k.className = "kind"; k.textContent = pretty(c.kind); tr.appendChild(k);
+      var pc = document.createElement("td"); pc.className = "num muted"; pc.textContent = c.entries != null ? c.entries.toLocaleString() : ""; pc.title = c.entries != null ? "array entries the params hold at this address" : ""; tr.appendChild(pc);
       var n = document.createElement("td"); n.className = "num" + (un ? " unscored" : ""); n.textContent = un ? "unscored" : c.nats.toFixed(2); tr.appendChild(n);
       var bc = document.createElement("td"); bc.className = "mdlbarcell";
       if (!un) { var bar = document.createElement("span"); bar.className = "mdlbar"; bar.style.width = (100 * Math.log10(c.nats + 1) / (mx || 1)).toFixed(1) + "%"; bar.title = "log10(nats + 1) = " + Math.log10(c.nats + 1).toFixed(2); bc.appendChild(bar); }
@@ -651,13 +661,13 @@
       if (tier !== "model") {
         var sub = 0, ex = 0; cs.forEach(function (c) { if (c.nats != null) { sub += c.nats; if (c.exact) ex += c.nats; } });
         var h = document.createElement("tr"); h.className = "grp light";
-        h.innerHTML = "<td colspan='2'>" + esc(tier + " tier subtotal") + "</td><td class='num'>" + sub.toFixed(2) + "</td><td></td><td>" + ex.toFixed(2) + " of it exact</td>";
+        h.innerHTML = "<td colspan='3'>" + esc(tier + " tier subtotal") + "</td><td class='num'>" + sub.toFixed(2) + "</td><td></td><td>" + ex.toFixed(2) + " of it exact</td>";
         tb.appendChild(h);
       }
       cs.forEach(comp);
     });
-    $("mdltotal").innerHTML = "Total over scored components: <b>" + tot.toFixed(2) + " nats</b>";
-    $("mdlfoot").textContent = "Of this, " + B.mdl.total_exact.toFixed(2) + " nats are exact: the graph and control entries. Every fixed table or density is priced by its family alone and flagged approximate. Bars are proportional to log10(nats + 1).";
+    $("mdltotal").innerHTML = "Total over scored components: <b>" + Number(tot.toPrecision(4)).toLocaleString() + " nats</b>";
+    $("mdlfoot").textContent = "Of this, " + B.mdl.total_exact.toFixed(2) + " nats are exact: the graph and control entries. Every fixed table or density is priced by its family alone and flagged approximate, and its cost grows with its parameter count (entries: the array entries the params hold at that address, a table's whole table or a network's weights). Bars are proportional to log10(nats + 1).";
   }
 
   // ---- state / wiring ----
@@ -684,7 +694,7 @@
     var vs = $("version"); if (vs && B.meta.library_version) vs.textContent = "v" + B.meta.library_version;
     var sel = $("setting"), groups = {};
     B.settings.forEach(function (s) {
-      var gname = s.camera === "encoder" ? "Encoder measurement" : s.epistemic ? "Epistemic on" : "Epistemic off";
+      var gname = s.camera === "encoder" ? "Recogniser replaces the inversion" : s.epistemic ? "Epistemic on" : "Epistemic off";
       if (!groups[gname]) { groups[gname] = document.createElement("optgroup"); groups[gname].label = gname; sel.appendChild(groups[gname]); }
       var o = document.createElement("option"); o.value = s.id; o.textContent = s.label; groups[gname].appendChild(o);
     });

@@ -2,11 +2,12 @@
 
 The mission tier (energy, three rocks, zone; visit, sample or charge) is held per option over
 the fast rover tier (terrain-switched position and velocity, a position fix with a levelled noise
-map, a terrain cue and a camera). The two System declarations are merged; each mind runs on its
+map and a rover-centred camera). The two System declarations are merged; each mind runs on its
 own ``subsystem`` view, and the true world is a separate process wired in with ``couple``. A
-setting is epistemic terms on or off, a steep or mild energy preference, a seed and a camera
-reading (the engine inverts the neural decoder, or a frozen encoder's measurement replaces that
-inversion). The runs of a grid are written to one bundle for the launch page.
+setting is epistemic terms on or off, the modalities that carry information gain, a steep or mild
+energy preference, a seed and a camera reading (the engine inverts the neural decoder, or a frozen
+recogniser's terrain probabilities replace that inversion). The runs of a grid are written to
+one bundle for the launch page.
 
     python examples/showcase_rover.py --out DIR [--settings id,id] [--ticks 120]
     python examples/showcase_rover.py --out DIR --assemble     # merge the part files into bundle
@@ -23,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -38,11 +40,11 @@ from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
 from hybrid_aif.objectives.base import term_sign
-from hybrid_aif.planning import mixed_plan
-from hybrid_aif.planning.mixed import _face
+from hybrid_aif.planning.mixed import make_mixed_planner
 
 PRECISION = 16.0  # the rover's position-target precision (1 / variance)
 PLANNER_STEPS = 40
+PLANNER_STARTS = 4  # warm starts per exposure plan; every (plan, start) pair is a policy
 LIVE_WEIGHT = 1e-3
 MDL_RESOLUTION = 100.0
 NAMES = {
@@ -56,47 +58,62 @@ NAMES = {
 
 
 def settings_grid():
-    """Epistemic on/off x steep/mild x two seeds with the inverted camera, and one run with the
-    encoder's measurement in place of the inversion."""
+    """Epistemic on/off x steep/mild x two seeds with the inverted camera, one run with the
+    recogniser in place of the inversion, and two runs that put information gain on one
+    modality only. Every other epistemic setting scores information gain on the fix and the
+    camera."""
     out = []
+
+    def setting(sid, label, epistemic, sharp, seed, camera, infogain):
+        return dict(
+            id=sid,
+            label=label,
+            epistemic=epistemic,
+            sharpness=sharp,
+            seed=seed,
+            precision=PRECISION,
+            camera=camera,
+            infogain=list(infogain) if epistemic else [],
+        )
+
     for epistemic, sharp, seed in itertools.product((True, False), ("steep", "mild"), (0, 1)):
         sid = f"{'epi' if epistemic else 'pragmatic'}-{sharp}-s{seed}"
         label = (
             f"Epistemic terms {'on' if epistemic else 'off'}, {sharp} energy preference, "
             f"seed {seed}"
         )
-        out.append(
-            dict(
-                id=sid,
-                label=label,
-                epistemic=epistemic,
-                sharpness=sharp,
-                seed=seed,
-                precision=PRECISION,
-                camera="inverted",
-            )
-        )
+        out.append(setting(sid, label, epistemic, sharp, seed, "inverted", ("fix", "img")))
     out.append(
-        dict(
-            id="epi-steep-s0-encoder",
-            label="Epistemic terms on, steep energy preference, "
-            "seed 0, encoder measurement replaces the image inversion",
-            epistemic=True,
-            sharpness="steep",
-            seed=0,
-            precision=PRECISION,
-            camera="encoder",
+        setting(
+            "epi-steep-s0-encoder",
+            "Epistemic terms on, steep energy preference, seed 0, "
+            "recogniser replaces the image inversion",
+            True,
+            "steep",
+            0,
+            "encoder",
+            ("fix", "img"),
         )
     )
+    for sid, what, modality in (
+        ("epi-steep-s0-fix-only", "the position fix", "fix"),
+        ("epi-steep-s0-img-only", "the camera", "img"),
+    ):
+        label = f"Rover information gain on {what} only, steep energy preference, seed 0"
+        out.append(setting(sid, label, True, "steep", 0, "inverted", (modality,)))
     return out
 
 
-def build(epistemic, sharp, camera, decoder, encoder, precision=PRECISION):
-    """The merged composite, the mission view, and a function from an option level to the rover
-    view pinned at that level (built once per level)."""
+def build(epistemic, sharp, camera, decoder, encoder, precision=PRECISION, infogain=("fix",)):
+    """The merged composite, the mission view with its compiled faces, and a function from an
+    option level to the rover view pinned at that level with its compiled faces (built once per
+    level)."""
     ms, mp = mm.mission(sharp, epistemic)
     rs, rp = rm.rover(
-        decoder, encoder if camera == "encoder" else None, precision=precision, epistemic=epistemic
+        decoder,
+        encoder if camera == "encoder" else None,
+        precision=precision,
+        infogain=infogain if epistemic else (),
     )
     cs, cp = merge(
         {"mission": ms, "rover": rs},
@@ -110,11 +127,11 @@ def build(epistemic, sharp, camera, decoder, encoder, precision=PRECISION):
     def rover_view(level):
         if level not in cache:
             view, vparams = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": level})
-            view = dataclasses.replace(view, planner="mixed", num_iters=PLANNER_STEPS, policy_len=3)
-            cache[level] = (view, vparams)
+            view = dataclasses.replace(view, planner="mixed", policy_len=3)
+            cache[level] = (view, vparams, view.compiled())
         return cache[level]
 
-    return cs, cp, (mview, mparams), rover_view
+    return cs, cp, (mview, mparams, mview.compiled()), rover_view
 
 
 def interval_pair(interval, i):
@@ -166,18 +183,18 @@ def position_belief(beliefs):
 
 
 def image_rows(flat):
-    """A flat pixel vector (x-major, as the renderer lays it out) as uint8 rows of the picture:
-    row 0 is the largest y, columns run along x."""
-    grid = np.asarray(flat).reshape(wd.IMG_SIDE, wd.IMG_SIDE)  # [x cell, y cell]
-    return [[int(v) for v in row] for row in wd.to_uint8(grid.T[::-1])]
+    """A flat pixel vector (row-major, as the renderer lays it out) as uint8 rows of the picture:
+    row 0 is the largest y offset from the rover, columns run along x."""
+    grid = np.asarray(flat).reshape(wd.IMG_SIDE, wd.IMG_SIDE)
+    return [[int(v) for v in row] for row in wd.to_uint8(grid)]
 
 
 def camera_record(detail, covered):
     """The camera's contribution to the tick: the engine's log evidence of the image (inverted),
-    or the encoder's normaliser and the covered modality's expected cost (encoder)."""
+    or the recogniser's normaliser and the covered modality's expected cost (encoder)."""
     if covered:
         return dict(
-            normaliser=float(detail.recognition_log_evidence["recognition:rover.x"]),
+            normaliser=float(detail.recognition_log_evidence["recognition:rover.terrain"]),
             covered_term=float(detail.covered_terms["rover.img"]),
         )
     return dict(log_evidence=float(detail.log_evidence["rover.img"]))
@@ -185,49 +202,44 @@ def camera_record(detail, covered):
 
 def make_rover_mind(rover_view, holder, log, decoder, encoder, camera):
     """Infer on the view pinned at the mission's current option, plan a mixed policy, act."""
-    captured = {}
     last = {"sensor": 0}  # the sensor level in force before the first round
-
-    def recording_planner(ctx, use_bound="midpoint", metrics=True):
-        result = mixed_plan(ctx, steps=PLANNER_STEPS, use_bound=use_bound, metrics=metrics)
-        captured["result"] = result
-        return _face(result, ctx)
-
-    recording_planner.needs_key = False
+    planner = make_mixed_planner(steps=PLANNER_STEPS, starts=PLANNER_STARTS)
 
     def respond(key, obs, carry):
         del key
         t_start = time.time()
-        view, vparams = rover_view(holder["option"])
+        _, vparams, view = rover_view(holder["option"])
         previous = {"rover.a_sensor": last["sensor"]}
         beliefs, detail = view.infer_states(
             vparams, obs, priors=carry.beliefs, previous=previous, detail=True
         )
-        q_pi, tree = view.infer_policies(vparams, beliefs, planner=recording_planner, metrics=True)
-        result = captured["result"]
+        q_pi, tree, policies = view.infer_policies(
+            vparams, beliefs, planner=planner, metrics=True, return_policies=True
+        )
+        v_plans, sensor_plans = policies.entries[0], policies.entries[1]  # node order: v, sensor
         best = int(jnp.argmax(q_pi.probs))
         action = {
-            "rover.a_v": result.plan[best, 0],
-            "rover.a_sensor": result.discrete[best, 0, 0].astype(jnp.int32),
+            "rover.a_v": v_plans[best, 0],
+            "rover.a_sensor": sensor_plans[best, 0].astype(jnp.int32),
         }
         last["sensor"] = int(action["rover.a_sensor"])
         pushed = view.update_empirical_prior(vparams, beliefs, action)
         mean = np.asarray(beliefs["rover.x"].mean())
         terrain = int(jnp.argmax(beliefs["rover.terrain"].probs))
         recon, _ = decoder.diag_moments((jnp.asarray(mean), jax.nn.one_hot(terrain, 3)))
-        enc_mean, enc_scale = encoder.diag_moments((jnp.asarray(obs["rover.img"]),))
+        recognised = cam.terrain_probs(encoder, jnp.asarray(obs["rover.img"]))
         g = total(tree)
         policies = [
             dict(
                 id=i,
                 start=[float(mean[0]), float(mean[1])],
-                sensor_plan=[int(s) for s in result.discrete[i, :, 0]],
-                v_plan=[[float(c) for c in step] for step in result.plan[i]],
+                sensor_plan=[int(s) for s in sensor_plans[i]],
+                v_plan=[[float(c) for c in step] for step in v_plans[i]],
                 terms=term_record(tree, i),
                 G=interval_pair(g, i),
                 q_pi=float(q_pi.probs[i]),
             )
-            for i in range(result.discrete.shape[0])
+            for i in range(sensor_plans.shape[0])
         ]
         log.append(
             dict(
@@ -239,10 +251,7 @@ def make_rover_mind(rover_view, holder, log, decoder, encoder, camera):
                 camera=camera_record(detail, camera == "encoder"),
                 free_energy=float(detail.free_energy),
                 recon=image_rows(recon),
-                encoder=dict(
-                    mean=[float(enc_mean[0]), float(enc_mean[1])],
-                    sd=[float(enc_scale[0]), float(enc_scale[1])],
-                ),
+                encoder=[float(p) for p in np.asarray(recognised)],
             )
         )
         return action, carry._replace(beliefs=pushed)
@@ -258,16 +267,16 @@ def collapse(probs):
     return [float(v) for v in out]
 
 
-def make_mission_mind(mview, mparams, holder, log):
+def make_mission_mind(mview, mparams, compiled, holder, log):
     """The mission's inference and planning, held for each option's duration."""
     state = dict(decided=False)
 
     def inner(key, obs, carry):
-        beliefs, _ = mview.infer_states(mparams, obs, priors=carry.beliefs)
-        action, q_pi, tree = mview.act(
+        beliefs, _ = compiled.infer_states(mparams, obs, priors=carry.beliefs)
+        action, q_pi, tree = compiled.act(
             key, mparams, beliefs, metrics=True, selection="deterministic"
         )
-        pushed = mview.update_empirical_prior(mparams, beliefs, action)
+        pushed = compiled.update_empirical_prior(mparams, beliefs, action)
         policies = np.asarray(mview.policies(mparams))
         g = total(tree)
         records = [
@@ -285,7 +294,11 @@ def make_mission_mind(mview, mparams, holder, log):
             rocks=[collapse(beliefs[f"mission.rock_{k}"].probs) for k in (1, 2, 3)],
         )
         state["policies"] = records
-        state["chosen"] = int(np.argmax(np.asarray(q_pi.probs)))
+        # the executed option is the most probable first option (summed over sequences); show the
+        # most probable sequence that starts with it
+        executed = int(action["mission.option"])
+        starting = [i for i, r in enumerate(records) if r["options"][0] == executed]
+        state["chosen"] = max(starting, key=lambda i: records[i]["q_pi"])
         return action, carry._replace(beliefs=pushed)
 
     held = hold(mview, mparams, inner)
@@ -323,18 +336,19 @@ def arrival_summary(rows):
 
 
 def run_setting(setting, ticks, decoder, encoder):
-    cs, cp, (mview, mparams), rover_view = build(
+    cs, cp, (mview, mparams, mcompiled), rover_view = build(
         setting["epistemic"],
         setting["sharpness"],
         setting["camera"],
         decoder,
         encoder,
         setting.get("precision", PRECISION),
+        tuple(setting["infogain"]),
     )
     holder, rover_log, slow_log = {"option": 0}, [], []
-    mission_mind = make_mission_mind(mview, mparams, holder, slow_log)
+    mission_mind = make_mission_mind(mview, mparams, mcompiled, holder, slow_log)
     rover_mind = make_rover_mind(rover_view, holder, rover_log, decoder, encoder, setting["camera"])
-    port_view, port_params = rover_view(0)
+    port_view, port_params, _ = rover_view(0)
     env, env_params = wd.world()
     wiring = couple(
         minds={
@@ -348,7 +362,6 @@ def run_setting(setting, ticks, decoder, encoder):
             Wire("fast.rover.a_sensor", "world.a_sensor"),
             *[Wire(f"world.{m}", f"slow.mission.{m}") for m in mm.MISSION_MODALITIES],
             Wire("world.fix", "fast.rover.fix"),
-            Wire("world.cue", "fast.rover.cue"),
             Wire("world.img", "fast.rover.img"),
         ],
     )
@@ -372,7 +385,6 @@ def run_setting(setting, ticks, decoder, encoder):
             true_terrain=int(st["terrain"][t]),
             belief=rl["belief"],
             fix=[float(c) for c in fast.observations["rover.fix"][t]],
-            cue=int(fast.observations["rover.cue"][t]),
             img=image_rows(fast.observations["rover.img"][t]),
             recon=rl["recon"],
             encoder=rl["encoder"],
@@ -458,6 +470,20 @@ def graph_record(cs, cp):
     return dict(tiers=[dict(name=n, **v) for n, v in tiers.items()], edges=edges)
 
 
+def _entry_size(cp, kind, name):
+    """The number of array entries the params hold at one description address, or None for an
+    address with no params (the graph and the control nodes)."""
+    table = {
+        "likelihood": cp.likelihood,
+        "transition": cp.transition,
+        "initial_state_prior": cp.initial_state_prior,
+    }.get(kind)
+    if table is None or name not in table:
+        return None
+    leaves = jax.tree_util.tree_leaves(eqx.filter(table[name], eqx.is_array))
+    return int(sum(int(np.prod(leaf.shape)) for leaf in leaves))
+
+
 def mdl_record(cs, cp):
     document, arrays = describe(cs, cp)
     dl = description_length(document, MDL_RESOLUTION, arrays=arrays)
@@ -468,7 +494,14 @@ def mdl_record(cs, cp):
         tier_name = name.split(".")[0] if "." in name else "model"
         nats = None if address in unscored else float(links.structure + links.parameters)
         rows.append(
-            dict(name=address, tier=tier_name, kind=kind, nats=nats, exact=bool(links.exact))
+            dict(
+                name=address,
+                tier=tier_name,
+                kind=kind,
+                nats=nats,
+                exact=bool(links.exact),
+                entries=_entry_size(cp, kind, name),
+            )
         )
     scored = [r for r in rows if r["nats"] is not None]
     return dict(
@@ -505,8 +538,11 @@ def meta_record(ticks, camera_report):
         names=NAMES,
         image=dict(
             side=wd.IMG_SIDE,
-            layout="rows of uint8 0..255, row 0 at the largest y, columns along x, over the field",
-            field=[list(wd.FIELD[0]), list(wd.FIELD[1])],
+            layout=(
+                "rows of uint8 0..255, a patch of terrain centred on the rover: row 0 is the "
+                "largest y offset, columns run along x"
+            ),
+            half_width=wd.PATCH_HALF,
             camera_report=camera_report,
         ),
         sign_convention=(

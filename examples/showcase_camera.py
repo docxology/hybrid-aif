@@ -1,12 +1,13 @@
-"""The rover's camera: a frozen decoder and a frozen encoder, trained on synthetic images.
+"""The rover's camera: a frozen decoder and a frozen terrain recogniser, trained on synthetic
+images.
 
 The decoder is an ``MLPConditional`` from the rover's state vector (position and velocity) and a
-one-hot terrain to the image's pixels, trained to the renderer of ``showcase_world`` with the
+one-hot terrain to the pixels of the rover-centred patch of ``showcase_world``, trained with the
 camera's pixel noise. As a likelihood, it is what the engine inverts and plans through. The
-encoder is an ``MLPConditional`` from the image to the state vector's mean and scale, trained as
-a likelihood: on states drawn uniformly over the field (and a wide uniform velocity range), so its
-output is a measurement that carries no prior of its own. Both are trained with optax from a
-fixed seed and cached as files, so a re-run loads them instead of training.
+recogniser is an ``MLPCategorical`` from the image to the three terrain levels, trained by
+cross-entropy on states drawn uniformly over the field (and a wide uniform velocity range) and a
+uniform terrain, so its output is a measurement that carries no prior of its own. Both are trained
+with optax from a fixed seed and cached as files, so a re-run loads them instead of training.
 
     python examples/showcase_camera.py --cache DIR
 """
@@ -23,13 +24,14 @@ import jax.numpy as jnp
 import optax
 import showcase_world as wd
 
-from hybrid_aif.distributions import MLPConditional
+from hybrid_aif.distributions import MLPCategorical, MLPConditional
 
 VELOCITY_RANGE = 4.0  # training velocities are uniform on +-VELOCITY_RANGE
-DECODER_SHAPE = dict(width=96, depth=2)
+DECODER_SHAPE = dict(width=256, depth=3)
 ENCODER_SHAPE = dict(width=128, depth=2)
-DECODER_STEPS = 12000
+DECODER_STEPS = 30000
 ENCODER_STEPS = 12000
+N_TERRAIN = 3
 BATCH = 256
 
 
@@ -86,42 +88,52 @@ def train_decoder(key):
     return dataclasses.replace(net, frozen=True), final
 
 
+def _new_encoder(key):
+    return MLPCategorical.from_shapes((wd.IMG_PIXELS,), 1, N_TERRAIN, key=key, **ENCODER_SHAPE)
+
+
+def _freeze_encoder(net):
+    return dataclasses.replace(net, trunk=dataclasses.replace(net.trunk, frozen=True))
+
+
+def terrain_probs(encoder, image):
+    """The recogniser's probability vector over terrain levels for one image."""
+    return encoder.probs((image,))[0]
+
+
 def train_encoder(key):
-    """The encoder, ``image -> state (mean, scale)``, trained as a likelihood and frozen."""
+    """The recogniser, ``image -> terrain probabilities``, trained by cross-entropy and frozen."""
     k_init, k_fit = jax.random.split(key)
-    net = MLPConditional.from_shapes(
-        (wd.IMG_PIXELS,), 4, key=k_init, init_scale=0.5, **ENCODER_SHAPE
-    )
+    net = _new_encoder(k_init)
 
     def loss(model, k):
         k1, k2 = jax.random.split(k)
         states, terrain = sample_states(k1, BATCH)
         images = sample_images(k2, states, terrain)
-        return jnp.mean(jax.vmap(lambda y, s: model.nll(s, (y,)))(images, states))
+        onehot = jax.nn.one_hot(terrain, N_TERRAIN)[:, None, :]
+        return -jnp.mean(jax.vmap(lambda y, c: model.log_prob(c, (y,)))(images, onehot))
 
     net, final = _fit(net, loss, ENCODER_STEPS, k_fit)
-    return dataclasses.replace(net, frozen=True), final
+    return _freeze_encoder(net), final
 
 
 def evaluate(decoder, encoder, key, n=4000):
-    """Held-out numbers: the decoder's reconstruction error and the encoder's calibration."""
+    """Held-out numbers: the decoder's reconstruction error and the recogniser's accuracy and
+    mean log probability of the true terrain."""
     k1, k2 = jax.random.split(key)
     states, terrain = sample_states(k1, n)
     images = sample_images(k2, states, terrain)
     onehot = jax.nn.one_hot(terrain, 3)
     clean = jax.vmap(wd.render)(states, terrain)
     mean, scale = jax.vmap(lambda s, t: decoder.diag_moments((s, t)))(states, onehot)
-    enc_mean, enc_scale = jax.vmap(lambda y: encoder.diag_moments((y,)))(images)
-    err = enc_mean - states
+    probs = jax.vmap(lambda y: terrain_probs(encoder, y))(images)
+    true_p = jnp.take_along_axis(probs, terrain[:, None], axis=1)[:, 0]
     out = dict(
         decoder_rmse_vs_clean=float(jnp.sqrt(jnp.mean((mean - clean) ** 2))),
         decoder_scale_mean=float(jnp.mean(scale)),
         pixel_noise_sd=wd.PIXEL_SD,
-        encoder_position_rmse=[float(jnp.sqrt(jnp.mean(err[:, i] ** 2))) for i in (0, 1)],
-        encoder_position_scale_mean=[float(jnp.mean(enc_scale[:, i])) for i in (0, 1)],
-        encoder_velocity_rmse=[float(jnp.sqrt(jnp.mean(err[:, i] ** 2))) for i in (2, 3)],
-        encoder_velocity_scale_mean=[float(jnp.mean(enc_scale[:, i])) for i in (2, 3)],
-        encoder_z_sd=[float(jnp.std(err[:, i] / enc_scale[:, i])) for i in range(4)],
+        recogniser_accuracy=float(jnp.mean(jnp.argmax(probs, axis=1) == terrain)),
+        recogniser_mean_log_prob_true=float(jnp.mean(jnp.log(true_p))),
     )
     return out
 
@@ -131,8 +143,8 @@ def _skeletons():
     dec = MLPConditional.from_shapes(
         (4, 3), wd.IMG_PIXELS, key=key, init_scale=wd.PIXEL_SD, **DECODER_SHAPE
     )
-    enc = MLPConditional.from_shapes((wd.IMG_PIXELS,), 4, key=key, init_scale=0.5, **ENCODER_SHAPE)
-    return dataclasses.replace(dec, frozen=True), dataclasses.replace(enc, frozen=True)
+    enc = _new_encoder(key)
+    return dataclasses.replace(dec, frozen=True), _freeze_encoder(enc)
 
 
 def load_or_train(cache, seed=0, verbose=True):
