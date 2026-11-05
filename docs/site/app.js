@@ -670,7 +670,6 @@
     var tr = document.createElement("tr"); tr.className = "grp";
     tr.innerHTML = "<td colspan='3'>total over scored components</td><td class='num'>" + tot.toFixed(2) + "</td><td></td><td>" + B.mdl.total_exact.toFixed(2) + " of it exact</td>";
     tf.appendChild(tr);
-    $("mdltotal").innerHTML = "Total over scored components: <b>" + Number(tot.toPrecision(4)).toLocaleString() + " nats</b>";
     $("mdlfoot").textContent = "Of this, " + B.mdl.total_exact.toFixed(2) + " nats are exact: the graph and control entries. Every fixed table or density is priced by its family alone and flagged approximate, and its cost grows with its parameter count (entries: the array entries the params hold at that address, a table's whole table or a network's weights). Bars are proportional to log10(nats + 1).";
   }
 

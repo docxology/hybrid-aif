@@ -128,6 +128,5 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .lsw{width:28px;height:10px;display:inline-block;vertical-align:middle;margin-right:.3em}
 .mdlbar{display:block;height:.6rem;border-radius:2px;background:var(--c1);min-width:1px}
 .mdlbarcell{width:28%}
-tr.grp.light td{font-weight:400;color:var(--muted);background:transparent;border-top:1px solid var(--line)}
-.mdltotal{font-size:1rem;margin:.6rem 0}
+tr.grp.light td{font-weight:600;color:var(--muted);background:transparent;border-top:1px solid var(--line)}
 .mdlfoot{font-size:.85rem;color:var(--muted);margin:.4rem 0}
