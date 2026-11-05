@@ -236,7 +236,7 @@
       var bx = m.X(B.meta.beacon[0]), by = m.Y(B.meta.beacon[1]), c2 = css("--c2");
       g.beginPath(); g.moveTo(bx, by - 11); g.lineTo(bx + 9, by + 8); g.lineTo(bx - 9, by + 8); g.closePath();
       g.fillStyle = c2; g.globalAlpha = 0.25; g.fill(); g.globalAlpha = 1; g.strokeStyle = c2; g.lineWidth = 2; g.stroke();
-      halo(g, "beacon", bx, by + 22);
+      halo(g, "ridge (fix sharpest here)", bx, by + 22);
     }
   }
   function ellipse(m, comp, color, alpha) {
@@ -297,6 +297,11 @@
         host.appendChild(d);
       });
     }
+    if (!$("terrlegend").children.length) {
+      var tl = "<span>Terrain brightness:</span>";
+      [0.15, 0.40, 0.65].forEach(function (v, i) { var g8 = Math.round(v * 255); tl += "<span><i style='background:rgb(" + g8 + "," + g8 + "," + g8 + ");border:1px solid " + css("--line") + "'></i>" + esc(nm("terrain", i)) + "</span>"; });
+      $("terrlegend").innerHTML = tl;
+    }
     pixels($("cam0"), t.img);
     pixels($("cam1"), t.recon || t.img);
     var enc = t.encoder, cam = t.camera || {};
@@ -320,19 +325,39 @@
       (encoderSetting() ? "In this setting the encoder's measurement replaces the inversion of the image; the covered term is the image's expected cost under the belief, and the normaliser is the measurement's evidence." :
         "In this setting the engine inverts the decoder at the belief; the number under the middle panel is the image's log evidence under that linearisation. The encoder is run for comparison only.");
   }
-  function badge(color, label, value, title) {
-    return "<span class='badge' title='" + esc(title || "") + "'><i style='background:" + color + "'></i><span>" + esc(label) + "</span> " + esc(value) + "</span>";
+  function badge(color, label, value, title, ring) {
+    return "<span class='badge' title='" + esc(title || "") + "'><i style='background:" + color + "'></i><span>" + esc(label) + "</span> " + esc(value) +
+      (ring ? "<b class='tmark' style='border-color:" + ring + "'></b>" : "") + "</span>";
+  }
+  function energyBar(sl) {
+    var nb = sl.energy_belief.length, sw = 50, gap = 3, W = nb * sw + (nb - 1) * gap, H = 40, c = css("--c4"), s = "";
+    s += "<svg class='ebar' viewBox='0 0 " + W + " " + H + "' role='img' aria-label='Energy belief by band; the triangle marks the true band'>";
+    for (var i = 0; i < nb; i++) {
+      var x = i * (sw + gap), pr = sl.energy_belief[i];
+      s += "<g><title>" + esc(nm("energy", i)) + ": belief " + pr.toFixed(2) + (i === sl.energy_true ? " (true band)" : "") + "</title>" +
+        "<text x='" + (x + sw / 2) + "' y='10' text-anchor='middle' font-size='10.5'>" + esc(nm("energy", i)) + "</text>" +
+        "<rect x='" + x + "' y='14' width='" + sw + "' height='14' rx='2' fill='" + c + "' fill-opacity='" + pr.toFixed(3) + "'/>" +
+        "<rect x='" + x + "' y='14' width='" + sw + "' height='14' rx='2' fill='none' stroke='" + css("--line") + "' stroke-width='1'/></g>";
+      if (i === sl.energy_true) {
+        var cx = x + sw / 2;
+        s += "<path d='M" + cx + ",30 l-5,8 h10 z' fill='" + css("--fg") + "'><title>true band: " + esc(nm("energy", i)) + "</title></path>";
+      }
+    }
+    return s + "</svg>";
   }
   function drawBadges(t) {
-    var sl = t.slow, h = "";
-    h += badge(optColor(t.option), "option", optLabel(t.option) + (dur(t.option) ? " (" + dur(t.option) + " ticks)" : ""));
-    h += badge(t.sensor ? css("--c3") : css("--muted"), "sensor", nm("sensor", t.sensor));
-    var eb = argmax(sl.energy_belief);
-    h += badge(css("--c4"), "energy", nm("energy", eb) + " " + sl.energy_belief[eb].toFixed(2), "believed band; true band: " + nm("energy", sl.energy_true));
+    var sl = t.slow, h = "<div class='mslabel'>Mission state</div><div class='msbody'>";
+    h += "<div class='msg'><span class='msl'>energy (triangle: true)</span>" + energyBar(sl) + "</div>";
+    h += "<div class='msg'><span class='msl'>rocks (ring: true quality)</span><span class='msrow'>";
     sl.rocks_belief.forEach(function (b, k) {
       var q = argmax(b);
-      h += badge(qualColor(q), "rock " + (k + 1), nm("rock", q) + " " + b[q].toFixed(2), "believed quality; true: " + nm("rock", sl.rocks_true[k]));
+      h += badge(qualColor(q), "rock " + (k + 1), nm("rock", q) + " " + b[q].toFixed(2), "believed quality; true: " + nm("rock", sl.rocks_true[k]), qualColor(sl.rocks_true[k]));
     });
+    h += "</span></div>";
+    if (sl.zone != null) h += "<div class='msg'><span class='msl'>zone</span><span class='msrow'>" + badge(css("--muted"), "in", pretty(nm("zone", sl.zone)), "the zone the rover is in") + "</span></div>";
+    h += "<div class='msg'><span class='msl'>option and sensor</span><span class='msrow'>" +
+      badge(optColor(t.option), "option", optLabel(t.option) + (dur(t.option) ? " (" + dur(t.option) + " ticks)" : "")) +
+      badge(t.sensor ? css("--c3") : css("--muted"), "sensor", nm("sensor", t.sensor)) + "</span></div></div>";
     $("badges").innerHTML = h;
   }
 
@@ -469,6 +494,19 @@
     });
     return rover ? [lo, hi] : (C.range[key] = [lo, hi]);
   }
+  function stackRange(items, terms) {
+    var lo = 0, hi = 0;
+    items.forEach(function (it) {
+      var neg = 0, pos = 0;
+      terms.forEach(function (tm) {
+        if (!it.p.terms[tm]) return;
+        var s = termSum(it.p, tm), md = (s[0] + s[1]) / 2, hw = (s[1] - s[0]) / 2, c;
+        if (md < 0) { neg += md; c = neg - md / 2; } else { pos += md; c = pos - md / 2; }
+        lo = Math.min(lo, neg, c - hw); hi = Math.max(hi, pos, c + hw);
+      });
+    });
+    return [lo, hi];
+  }
   function drawObjective() {
     var host = $("objective-chart"), mode = $("objmode").value, mission = S.tier === "mission";
     var o = objItems(), items = o.items, terms = o.terms;
@@ -478,7 +516,8 @@
     $("objcap").textContent = (mission
       ? "Expected free energy of each option sequence at the most recent decision (tick " + o.decided + "), best first; lower is better. "
       : "Expected free energy G for the current tick (lower is better). ") +
-      "Hover or focus a policy for its per-term, per-leaf values. The chosen " + (mission ? "sequence" : "policy") + " is highlighted. " + (B.meta.sign_convention ? "Sign convention: " + B.meta.sign_convention + "." : "");
+      "Hover or focus a policy for its per-term, per-leaf values. The chosen " + (mission ? "sequence" : "policy") + " is highlighted. " + (B.meta.sign_convention ? "Sign convention: " + B.meta.sign_convention + "." : "") +
+      (mode === "terms" ? " Each policy's G is split into its objective terms, stacked from zero: negative terms to the left, positive to the right; a bracket marks each term's interval." : "");
     var btn = $("objall"); btn.hidden = !(mission && items.length > TOP_N);
     btn.textContent = S.showAll ? "Show top " + TOP_N : "Show all " + items.length;
     if (mission && !S.showAll && items.length > TOP_N) {
@@ -488,8 +527,8 @@
     }
     host.innerHTML = "";
     if (!items.length) { host.textContent = "No decision yet."; return; }
-    var rg = objRange(terms), lo = Math.min(rg[0], 0), hi = rg[1], padx = (hi - lo) * 0.03; lo -= padx; hi += padx;
-    var W = Math.max(300, host.clientWidth - 16), L = mission ? (W < 520 ? 124 : 190) : 74, R = 14, rowH = mode === "total" ? 36 : 54, top0 = 8, H = top0 + items.length * rowH + 34;
+    var rg = mode === "terms" ? stackRange(items, terms) : objRange(terms), lo = Math.min(rg[0], 0), hi = rg[1], padx = (hi - lo) * 0.03; lo -= padx; hi += padx;
+    var W = Math.max(300, host.clientWidth - 16), L = mission ? (W < 520 ? 124 : 190) : 74, R = 14, rowH = mode === "total" ? 36 : 58, top0 = 8, H = top0 + items.length * rowH + 34;
     var sx = function (v) { return L + (v - lo) / (hi - lo) * (W - L - R); };
     var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img", "aria-label": "Expected free energy per " + (mission ? "option sequence" : "policy") }, host);
     svg.style.height = "auto";
@@ -520,16 +559,31 @@
         mark(g, it.G, y + 8, rowH - 16, css(ch ? "--accent" : "--muted"), ch ? 0.9 : 0.55, ch);
         if (it.G[1] - it.G[0] >= 1e-9 && sx(it.G[1]) - sx(it.G[0]) >= 1.5) { /* midpoint drawn in mark */ }
       } else {
-        var ts = terms.filter(function (tm) { return p.terms[tm]; }), bh = (rowH - 10) / ts.length;
-        ts.forEach(function (tm, j) { mark(g, termSum(p, tm), y + 5 + j * bh + 1, bh - 2, termColor(tm), 0.85, false); });
-        var mg = (it.G[0] + it.G[1]) / 2; el("path", { d: "M" + sx(mg) + "," + (y + rowH - 3) + " l-4,5 h8 z", fill: css("--fg") }, g);
+        var ts = terms.filter(function (tm) { return p.terms[tm]; }), neg = 0, pos = 0, by = y + 18, bhh = 20;
+        ts.forEach(function (tm) {
+          var s = termSum(p, tm), md = (s[0] + s[1]) / 2, from, to;
+          if (md < 0) { from = neg; neg += md; to = neg; } else { from = pos; pos += md; to = pos; }
+          var x0 = Math.min(sx(from), sx(to)), w = Math.abs(sx(to) - sx(from)), cx = (sx(from) + sx(to)) / 2, hw = (sx(s[1]) - sx(s[0])) / 2;
+          if (w > 0.3) el("rect", { x: x0, y: by, width: w, height: bhh, fill: termColor(tm), "fill-opacity": 0.8, stroke: css("--panel"), "stroke-width": 0.6 }, g);
+          if (hw >= 1.2) {
+            el("path", { d: "M" + (cx - hw) + "," + (by - 7) + "v5 M" + (cx + hw) + "," + (by - 7) + "v5 M" + (cx - hw) + "," + (by - 4.5) + "H" + (cx + hw), fill: "none", stroke: css("--fg"), "stroke-opacity": 0.75, "stroke-width": 1.4 }, g);
+          }
+        });
+        var mg = (it.G[0] + it.G[1]) / 2; el("path", { d: "M" + sx(mg) + "," + (by + bhh + 3) + " l-4,6 h8 z", fill: css("--fg") }, g);
       }
       var show = function (e) { showTip(e, it); }, hide = function () { tipEl.hidden = true; };
       g.addEventListener("mousemove", show); g.addEventListener("mouseleave", hide);
       g.addEventListener("focus", show); g.addEventListener("blur", hide);
     });
     var lg = $("objlegend"); lg.innerHTML = "";
-    if (mode === "terms") terms.forEach(function (tm) { lg.innerHTML += "<span><i style='background:" + termColor(tm) + "'></i>" + tm + "</span>"; });
+    if (mode === "terms") {
+      terms.forEach(function (tm) {
+        var lv = {};
+        items.forEach(function (it) { Object.keys(it.p.terms[tm] || {}).forEach(function (k) { lv[k] = 1; }); });
+        lg.innerHTML += "<span><i style='background:" + termColor(tm) + "'></i>" + esc(tm) + " (" + esc(Object.keys(lv).join(", ")) + ")</span>";
+      });
+      lg.innerHTML += "<span>bracket: term interval</span><span>&#9650; total G midpoint</span>";
+    }
     else if (mission) lg.innerHTML = "<span><i style='background:" + css("--muted") + "'></i>G (point)</span><span><i style='background:" + css("--accent") + "'></i>chosen</span>";
     else lg.innerHTML = "<span><i style='background:" + css("--muted") + "'></i>interval</span><span>| midpoint</span><span><i style='background:" + css("--accent") + "'></i>chosen</span>";
     if (mode === "terms" && anyApprox()) lg.innerHTML += "<span class='approx'>≈ approximate leaves (hover)</span>";
@@ -540,26 +594,27 @@
     var c = $("plan"), m = setupCanvas(c), g = m.g, t = tick();
     drawGrid(m); drawZones(m, t);
     var dyn = B.meta.dynamics, terr = argmax(t.belief.terrain), v0 = t.belief.velocity || [0, 0];
-    function path(p, color, w, alpha) {
-      var x = p.start[0], y = p.start[1], vx = v0[0], vy = v0[1], pts = [[x, y]];
+    var longIdx = Math.max(0, names("sensor").findIndex(function (s) { return /long/i.test(s); }));
+    function path(p, color, wLong, wShort, alpha) {
+      var x = p.start[0], y = p.start[1], vx = v0[0], vy = v0[1];
+      g.globalAlpha = alpha; g.strokeStyle = color; g.fillStyle = color; g.lineCap = "round";
       p.v_plan.forEach(function (a, k) {
-        var lv = p.sensor_plan[k] ? 1 : 0, drift = dyn.drift[terr];
+        var lg = p.sensor_plan[k] === longIdx, lv = p.sensor_plan[k] ? 1 : 0, drift = dyn.drift[terr], x0 = x, y0 = y;
         x += dyn.dt * vx; y += dyn.dt * vy;
         vx = dyn.keep[lv] * vx + dyn.gain[lv] * a[0] + drift[0]; vy = dyn.keep[lv] * vy + dyn.gain[lv] * a[1] + drift[1];
-        pts.push([x, y]);
-      });
-      g.globalAlpha = alpha; g.strokeStyle = color; g.lineWidth = w; g.lineJoin = "round"; g.beginPath();
-      pts.forEach(function (q, i) { i ? g.lineTo(m.X(q[0]), m.Y(q[1])) : g.moveTo(m.X(q[0]), m.Y(q[1])); }); g.stroke();
-      pts.slice(1).forEach(function (q, i) {
-        var long = p.sensor_plan[i] ? 1 : 0, r = (long ? 4.2 : 3.6) * (w > 2 ? 1.2 : 1);
-        g.beginPath(); g.arc(m.X(q[0]), m.Y(q[1]), r, 0, 2 * Math.PI);
-        g.fillStyle = long ? color : css("--panel"); g.fill(); g.lineWidth = 1.4; g.stroke();
+        g.lineWidth = lg ? wLong : wShort; g.beginPath(); g.moveTo(m.X(x0), m.Y(y0)); g.lineTo(m.X(x), m.Y(y)); g.stroke();
+        if (lg) { g.beginPath(); g.arc(m.X(x), m.Y(y), wLong * 0.85 + 1, 0, 2 * Math.PI); g.fill(); }
       });
       g.globalAlpha = 1;
     }
-    t.policies.forEach(function (p, i) { if (i !== t.chosen) path(p, css("--muted"), 1.3, 0.5); });
-    var ch = t.policies[t.chosen]; path(ch, css("--accent"), 3.2, 1);
+    var order = t.policies.map(function (p, i) { return i; }).sort(function (a, b) { return t.policies[b].q_pi - t.policies[a].q_pi; }).slice(0, 4);
+    if (order.indexOf(t.chosen) < 0) order.push(t.chosen);
+    order.forEach(function (i) { if (i !== t.chosen) path(t.policies[i], css("--muted"), 2.8, 1, 0.6); });
+    var ch = t.policies[t.chosen]; path(ch, css("--accent"), 5, 1.6, 1);
     g.beginPath(); g.arc(m.X(ch.start[0]), m.Y(ch.start[1]), 6, 0, 2 * Math.PI); g.fillStyle = css("--fg"); g.fill();
+    var lw = function (c, w, dot) { return "<svg class='lsw' viewBox='0 0 28 10'><line x1='2' x2='" + (dot ? 21 : 26) + "' y1='5' y2='5' stroke='" + c + "' stroke-width='" + w + "' stroke-linecap='round'/>" + (dot ? "<circle cx='23' cy='5' r='3.5' fill='" + c + "'/>" : "") + "</svg>"; };
+    $("planlegend").innerHTML = "<span>" + lw(css("--fg"), 4, true) + esc(nm("sensor", longIdx)) + " step: thick, dot at its end</span><span>" +
+      lw(css("--fg"), 1.2, false) + "short exposure step: thin</span><span><i style='background:" + css("--accent") + "'></i>chosen policy</span><span><i style='background:" + css("--muted") + "'></i>other top policies</span>";
     // mission plan
     var d = decTick(), ul = $("missionplan"); ul.innerHTML = "";
     if (!d) { $("missionnote").textContent = ""; return; }
@@ -577,28 +632,32 @@
   function drawMdl() {
     var tb = document.querySelector("#mdltable tbody"), tf = document.querySelector("#mdltable tfoot");
     tb.innerHTML = ""; tf.innerHTML = "";
-    var order = ["model", "mission", "rover"], by = {};
-    B.mdl.components.forEach(function (c) { (by[c.tier] = by[c.tier] || []).push(c); });
+    var order = ["model", "mission", "rover"], by = {}, mx = 0, tot = 0;
+    B.mdl.components.forEach(function (c) { (by[c.tier] = by[c.tier] || []).push(c); if (c.nats != null) { mx = Math.max(mx, Math.log10(c.nats + 1)); tot += c.nats; } });
     Object.keys(by).forEach(function (k) { if (order.indexOf(k) < 0) order.push(k); });
+    function comp(c) {
+      var tr = document.createElement("tr"), un = c.nats == null;
+      var a = document.createElement("td"); a.textContent = short(c.name.replace(/^[a-z_]+:/, "")); a.title = c.name; tr.appendChild(a);
+      var k = document.createElement("td"); k.className = "kind"; k.textContent = pretty(c.kind); tr.appendChild(k);
+      var n = document.createElement("td"); n.className = "num" + (un ? " unscored" : ""); n.textContent = un ? "unscored" : c.nats.toFixed(2); tr.appendChild(n);
+      var bc = document.createElement("td"); bc.className = "mdlbarcell";
+      if (!un) { var bar = document.createElement("span"); bar.className = "mdlbar"; bar.style.width = (100 * Math.log10(c.nats + 1) / (mx || 1)).toFixed(1) + "%"; bar.title = "log10(nats + 1) = " + Math.log10(c.nats + 1).toFixed(2); bc.appendChild(bar); }
+      tr.appendChild(bc);
+      var e = document.createElement("td"); e.textContent = un ? "unscored" : (c.exact ? "exact" : "approximate"); if (!un && !c.exact) e.className = "approx"; tr.appendChild(e);
+      tb.appendChild(tr);
+    }
     order.forEach(function (tier) {
       var cs = by[tier]; if (!cs) return;
-      var sub = 0, ex = 0; cs.forEach(function (c) { if (c.nats != null) { sub += c.nats; if (c.exact) ex += c.nats; } });
-      var h = document.createElement("tr"); h.className = "grp";
-      h.innerHTML = "<td colspan='2'>" + esc(tier === "model" ? "whole model" : tier + " tier") + "</td><td class='num'>" + sub.toFixed(2) + "</td><td>" + ex.toFixed(2) + " of it exact</td>";
-      tb.appendChild(h);
-      cs.forEach(function (c) {
-        var tr = document.createElement("tr"), un = c.nats == null;
-        var a = document.createElement("td"); a.textContent = short(c.name.replace(/^[a-z_]+:/, "")); a.title = c.name; tr.appendChild(a);
-        var k = document.createElement("td"); k.className = "kind"; k.textContent = pretty(c.kind); tr.appendChild(k);
-        var n = document.createElement("td"); n.className = "num" + (un ? " unscored" : ""); n.textContent = un ? "unscored" : c.nats.toFixed(2); tr.appendChild(n);
-        var e = document.createElement("td"); e.textContent = un ? "unscored" : (c.exact ? "exact" : "approximate"); if (!un && !c.exact) e.className = "approx"; tr.appendChild(e);
-        tb.appendChild(tr);
-      });
+      if (tier !== "model") {
+        var sub = 0, ex = 0; cs.forEach(function (c) { if (c.nats != null) { sub += c.nats; if (c.exact) ex += c.nats; } });
+        var h = document.createElement("tr"); h.className = "grp light";
+        h.innerHTML = "<td colspan='2'>" + esc(tier + " tier subtotal") + "</td><td class='num'>" + sub.toFixed(2) + "</td><td></td><td>" + ex.toFixed(2) + " of it exact</td>";
+        tb.appendChild(h);
+      }
+      cs.forEach(comp);
     });
-    var m = B.mdl;
-    tf.innerHTML = "<tr><td colspan='2'>total (all scored components)</td><td class='num'>" + m.total.toFixed(2) + "</td><td class='approx'>approximate</td></tr>" +
-      "<tr><td colspan='2'>exact total (exact components only)</td><td class='num'>" + m.total_exact.toFixed(2) + "</td><td>exact</td></tr>" +
-      (m.library_total != null && Math.abs(m.library_total - m.total) > 1e-6 ? "<tr><td colspan='2'>library_total</td><td class='num'>" + m.library_total.toFixed(2) + "</td><td></td></tr>" : "");
+    $("mdltotal").innerHTML = "Total over scored components: <b>" + tot.toFixed(2) + " nats</b>";
+    $("mdlfoot").textContent = "Of this, " + B.mdl.total_exact.toFixed(2) + " nats are exact: the graph and control entries. Every fixed table or density is priced by its family alone and flagged approximate. Bars are proportional to log10(nats + 1).";
   }
 
   // ---- state / wiring ----
@@ -634,7 +693,7 @@
     S.t = Math.max(0, Math.min(n - 1, +hp.t || 0));
     if (hp.tier === "mission") { S.tier = "mission"; $("objtier").value = "mission"; }
     if (hp.view === "terms") $("objmode").value = "terms";
-    sel.addEventListener("change", function () { S.setting = sel.value; S.t = Math.min(S.t, run().ticks.length - 1); CACHE[S.setting] && delete CACHE[S.setting].range.rover; fullRedraw(); });
+    sel.addEventListener("change", function () { S.setting = sel.value; S.t = $("restart").checked ? 0 : Math.min(S.t, run().ticks.length - 1); $("tick").max = run().ticks.length - 1; CACHE[S.setting] && delete CACHE[S.setting].range.rover; fullRedraw(); });
     $("tick").addEventListener("input", function (e) { S.t = +e.target.value; render(); });
     $("play").addEventListener("click", function () { setPlaying(!S.playing); });
     $("objmode").addEventListener("change", drawObjective);

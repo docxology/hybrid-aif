@@ -32,13 +32,14 @@
 
 <main class="wrap">
 <section id="hero">
-  <h2>A rover, a beacon and a dock</h2>
+  <h2>A rover, a ridge and a dock</h2>
   <p class="lead">Two minds share one body. A slow mission tier decides which rock to visit, whether to sample it, or when to return to the dock, and holds that choice for the option's duration. A fast rover tier steers every tick: it infers a hidden terrain regime (sticky, three levels) that switches the dynamics of a four-dimensional position and velocity state, carries that state as a Gaussian mixture, chooses a continuous velocity and a sensor exposure, and reads a position fix whose noise depends on where it is and how long it looked. It also reads a camera image, inverted through a neural decoder. Drag the tick, switch the setting, and compare the epistemic terms on and off: with them on the rover looks before it samples; with them off it samples blind.</p>
   <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
   <div class="controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
     <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+    <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
   </div>
   <div class="hero-grid">
     <figure class="graphfig">
@@ -47,20 +48,22 @@
     </figure>
     <figure class="fieldfig">
       <div class="canvaswrap"><canvas id="field" width="520" height="420" role="img" aria-label="Rover field"></canvas></div>
-      <div class="badges" id="badges" aria-live="off"></div>
+      <div class="mstate" id="badges" aria-live="off"></div>
       <div class="hud" id="hud"></div>
-      <figcaption>True path (line), belief over position (one ellipse per mixture component, opacity by weight), latest fix (cross). Rocks are coloured by the mission tier's belief about their quality; the dashed ring marks the zone the current option heads for; the beacon is where the fix is sharp.</figcaption>
+      <figcaption>True path (line), belief over position (one ellipse per mixture component, opacity by weight), latest fix (cross). Rocks are coloured by the mission tier's belief about their quality; the dashed ring marks the zone the current option heads for; the triangle marks the ridge, where the position fix is sharpest.</figcaption>
     </figure>
   </div>
   <figure class="camerafig" id="camerafig">
     <div class="camgrid" id="camgrid"></div>
+    <p class="camnote">A top-down view of the whole field, eight pixels per side. Background brightness marks terrain, a bright blob marks the rover, and pixel noise is added.</p>
+    <div class="legend" id="terrlegend"></div>
     <figcaption id="camcap">The camera: the observed 8&times;8 image (left), the decoder's prediction at the current belief (middle), and the field as the image sees it (right). The rover's blob is brighter than the terrain under it.</figcaption>
   </figure>
 </section>
 
 <section id="timescales">
   <h2>Two timescales</h2>
-  <p class="lead">The mission tier decides once per option and the rover tier acts every tick. The timeline shows both: option bands above, per-tick beliefs below, with the shared tick as the cursor. The slow tier's state is energy (four bands, depleting per option and refilling at the dock), one quality belief per rock, and the zone the rover is in. Nothing in the slow tier knows where the beacon is; the beacon is a fast-tier fact, a region where the position fix is sharp.</p>
+  <p class="lead">The mission tier decides once per option and the rover tier acts every tick. The timeline shows both: option bands above, per-tick beliefs below, with the shared tick as the cursor. The slow tier's state is energy (four bands, depleting per option and refilling at the dock), one quality belief per rock, and the zone the rover is in. Nothing in the slow tier knows where the ridge is; the ridge is a fast-tier fact, a region where the position fix is sharp.</p>
   <figure>
     <div id="timeline" class="chartbox"></div>
     <div class="legend" id="tlegend"></div>
@@ -85,10 +88,11 @@
 
 <section id="planner">
   <h2>Planning in the field</h2>
-  <p class="lead">The rover's planner is a mixed one: a gradient step over continuous velocity plans and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows each scored plan's trajectory from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
+  <p class="lead">The rover's planner is a mixed one: a gradient step over continuous velocity plans and an enumeration over the discrete exposure choice, rolled out from the current belief. The field shows the trajectories of the highest-weighted plans from the belief mean, with the chosen plan in colour. Below it, the mission plan: the option sequence the slow tier scored best, with durations.</p>
   <figure class="plannerfig">
     <div class="canvaswrap"><canvas id="plan" width="520" height="420" role="img" aria-label="Planned trajectories"></canvas></div>
-    <figcaption>Lines are rover policy rollouts under the mean dynamics at the most likely terrain, from the belief mean position and velocity (chosen one bold). Filled dots mark long-exposure sensor steps, hollow dots short exposure.</figcaption>
+    <div class="legend" id="planlegend"></div>
+    <figcaption>Lines are rover policy rollouts under the mean dynamics at the most likely terrain, from the belief mean position and velocity. The paths differ mainly in exposure choice. Only the top four policies by posterior weight are shown, plus the chosen one if it is not among them.</figcaption>
   </figure>
   <h3>Mission plan</h3>
   <ol id="missionplan" class="chips"></ol>
@@ -98,7 +102,9 @@
 <section id="mdl">
   <h2>Description length</h2>
   <p class="lead">What each part of the model costs to write down, in nats, for both tiers. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table or density, with no prior over its parameters, is priced by its family alone and flagged approximate; only the graph and the control entries are exact, so the exact total is a small part of the whole.</p>
-  <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">nats</th><th>Status</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div>
+  <p class="mdltotal" id="mdltotal"></p>
+  <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div>
+  <p class="mdlfoot" id="mdlfoot"></p>
 </section>
 
 <section id="start">

@@ -74,7 +74,6 @@ select{max-width:100%;min-width:0}
 html,body{overflow-x:hidden}
 
 h3{font-size:1.05rem;margin:1.2rem 0 .4rem}
-.badges{display:flex;flex-wrap:wrap;gap:.35rem .4rem;margin-top:.5rem}
 .badge{display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;line-height:1.2;padding:.2rem .55rem;border:1px solid var(--line);border-radius:999px;background:var(--panel);white-space:nowrap}
 .badge i{width:.7em;height:.7em;border-radius:50%;display:inline-block;flex:none}
 .badge span{color:var(--muted)}
@@ -108,3 +107,21 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .tip .ap{color:var(--c2);font-size:.75rem}
 .static img{max-width:100%;display:block;margin:1rem 0;border:1px solid var(--line);border-radius:4px}
 #graph text.now{fill:var(--accent)}
+
+/* mission state */
+.mstate{margin-top:.6rem}
+.mslabel{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:.25rem}
+.msbody{display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:flex-end}
+.msg{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.msl{font-size:.7rem;color:var(--muted)}
+.msrow{display:flex;flex-wrap:wrap;gap:.3rem}
+.ebar{width:210px;max-width:100%}
+.tmark{display:inline-block;width:.6em;height:.6em;border:2px solid;border-radius:50%;margin-left:.1rem;flex:none}
+.restart{display:inline-flex;align-items:center;gap:.4rem}
+.camnote{font-size:.85rem;color:var(--muted);margin:.5rem 0 .2rem;max-width:68ch}
+.lsw{width:28px;height:10px;display:inline-block;vertical-align:middle;margin-right:.3em}
+.mdlbar{display:block;height:.6rem;border-radius:2px;background:var(--c1);min-width:1px}
+.mdlbarcell{width:28%}
+tr.grp.light td{font-weight:400;color:var(--muted);background:transparent;border-top:1px solid var(--line)}
+.mdltotal{font-size:1rem;margin:.6rem 0}
+.mdlfoot{font-size:.85rem;color:var(--muted);margin:.4rem 0}
