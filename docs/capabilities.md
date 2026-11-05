@@ -54,6 +54,22 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   its datum from the carry, a factor's previous belief mean or the previous action, so a
   factor can emit what the model just believed (`design/structure-learning.md`).
 
+- **A categorical field over a continuous state** (`design/terrain-field.md`): a tabular
+  factor may name a Gaussian or mixture-carried factor as a parent when the System declares a
+  grid for it, `System(cells={"x": Grid(shape, low, high, axes)})`. The parent's belief reaches
+  the table as its mass per cell (`cell_mass`: per component, the product of the marginal
+  normal masses between the cell edges, the edge cells absorbing the tails, weighted by the
+  mixture weights), flattened row-major as one parent axis of `prod(shape)` entries. The
+  transition prior, the conjugate count update and the transition-novelty term all read that
+  vector, so a `ConditionalDirichlet` over cells is a terrain map the agent learns by standing
+  on it and plans to learn by the novelty term; `merge` and `subsystem` carry the grid; the
+  description document records it beside the variable's `dim`; `description_length` prices the
+  field as cells times one categorical. The read is one tick behind the dynamics (a categorical
+  factor steps before the continuous factor it parents), and a sharp belief deep inside one cell
+  gives the novelty term a flat landscape, so its drive needs `policy_len >= 2` and warm starts.
+  Not built: the upward message from the field to the position, a spatial prior, and a smooth
+  basis (MNLR).
+
 ## Infer
 
 - Discrete: mean-field FPI at pymdp parity (function, term, policy

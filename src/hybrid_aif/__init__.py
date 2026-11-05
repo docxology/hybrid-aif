@@ -37,6 +37,7 @@ from hybrid_aif.durations import accumulated_target, compose, discretise
 from hybrid_aif.factors import (
     DerivedInitial,
     Deterministic,
+    Grid,
     GridNoiseMap,
     LinearGaussianObservation,
     LinearGaussianTransition,
@@ -46,6 +47,7 @@ from hybrid_aif.factors import (
     TabularObservation,
     TabularPrior,
     TabularTransition,
+    cell_mass,
     gaussian_emission,
 )
 from hybrid_aif.interval import Interval
@@ -84,7 +86,9 @@ __all__ = [
     "TabularPrior",
     "TabularTransition",
     "TruncatedGaussian",
+    "Grid",
     "GridNoiseMap",
+    "cell_mass",
     "NoiseMap",
     "Description",
     "DescriptionError",

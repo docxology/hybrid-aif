@@ -340,6 +340,7 @@ def infer_states(
     previous: Mapping[str, Belief | Array] | None = None,
 ) -> tuple[dict[str, Belief], InferenceDetail | None]:
     params = system._params_in(params, "infer_states")
+    validation._validate_cells(system, params, system._facs)
     names = system._names(params)
     positional_priors = (
         None if priors is None else system._beliefs_in(params, priors, "infer_states")
@@ -1116,6 +1117,7 @@ def _update_empirical_prior(
         system.mixture_schedule,
         table=system._table,
         space=system._space(params),
+        cells=system._cell_parents(),
     )
     pushed = transition(_hybrid.prepare_beliefs(beliefs, families, system.mixture_k), action)
     return pushed if key is None else _sample.collapse_beliefs(pushed, key)

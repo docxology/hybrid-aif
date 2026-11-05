@@ -30,6 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from hybrid_aif.cells import Grid
 from hybrid_aif.controls import (
     FLOAT,
     LEVEL,
@@ -509,6 +510,12 @@ class System(eqx.Module):
     #   resolved under its parents, a clamped control node's level selecting its own
     #   distribution and a state parent averaging mean-field, then scored as an unconditional
     #   target is. Design: step-durations.md T5.
+    cells: tuple[tuple[str, Grid], ...] = eqx.field(static=True, default=())
+    #   the grid of each continuous state factor a tabular factor reads as a parent, **by name**:
+    #   ``{"x": Grid(...)}`` at construction, stored as ``(factor, Grid)`` pairs in factor order
+    #   because static fields must hash (``dict(system.cells)`` reads it). A tabular factor
+    #   naming such a factor in ``B_deps`` has a table parent axis of ``Grid.n_cells`` entries,
+    #   the cell the factor's belief falls in, flattened row-major. Design: terrain-field.md.
     modality_names: tuple[str, ...] = eqx.field(static=True, default=None)
     #   one name per modality, in node order; ``None`` at construction fills in ``modality_{m}``
     factor_names: tuple[str, ...] = eqx.field(static=True, default=None)
@@ -666,6 +673,62 @@ class System(eqx.Module):
             self.modality_names = keyed.generated_names("modality", len(self.A_deps))
         self.dims = self._normalized_dims()
         self.C_deps = self._normalized_C_deps()
+        self.cells = self._normalized_cells()
+
+    def _normalized_cells(self) -> tuple:
+        """``cells`` as ``(factor, Grid)`` pairs in factor order (a name that is not a node sorts
+        last, for :meth:`_check_cells` to name). A value of the wrong shape is passed through
+        for :meth:`_check_cells` to refuse."""
+        cells = self.cells
+        if cells is None:
+            return ()
+        pairs = list(cells.items()) if isinstance(cells, Mapping) else cells
+        try:
+            pairs = [(name, grid) for name, grid in pairs]
+        except (TypeError, ValueError):
+            return cells
+        order = {name: i for i, name in enumerate(self.factor_names or ())}
+        return tuple(sorted(pairs, key=lambda pair: order.get(pair[0], len(order))))
+
+    def _check_cells(self) -> None:
+        """``cells``: pairs of a state factor's name and a :class:`~hybrid_aif.cells.Grid`, one
+        per factor. Whether the factor is continuous, and which tabular factors read it, is
+        checked with the params."""
+        cells = self.cells
+        if not isinstance(cells, tuple) or not all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and isinstance(entry[0], str)
+            and isinstance(entry[1], Grid)
+            for entry in cells
+        ):
+            raise TypeError(
+                f"cells must map state factor names to Grid declarations, got {cells!r}"
+            )
+        names = [name for name, _ in cells]
+        repeated = sorted({n for n in names if names.count(n) > 1})
+        if repeated:
+            raise ValueError(f"cells names {repeated} twice: one Grid per factor")
+        states = self.factor_names[: len(self.B_deps) - len(self.controls)]
+        unknown = sorted(set(names) - set(states))
+        if unknown:
+            raise ValueError(
+                f"cells names {unknown}, which are not state factors; the state factors are "
+                f"{sorted(states)}"
+            )
+
+    @property
+    def _cell_grids(self) -> dict[int, Grid]:
+        """The declared grids by state factor index."""
+        index = {name: i for i, name in enumerate(self.factor_names)}
+        return {index[name]: grid for name, grid in self.cells}
+
+    def _cell_parents(self) -> dict[int, Grid]:
+        """The grids of the factors some tabular factor reads as a parent, by factor index: the
+        factors whose belief a transition site reads as a probability vector over cells."""
+        grids = self._cell_grids
+        read = {g for deps in self._B for g in deps}
+        return {g: grid for g, grid in grids.items() if g in read}
 
     def _normalized_C_deps(self) -> tuple:
         """``C_deps`` as ``(key, parents)`` pairs of tuples sorted by key. A value of the wrong
@@ -868,6 +931,7 @@ class System(eqx.Module):
         self._table  # noqa: B018  (validates the control nodes)
         self._check_lagged()
         self._check_C_deps()
+        self._check_cells()
 
     def _check_dims(self) -> None:
         """``dims``: pairs of a node name and a tuple of str, one entry per factor, each list of
@@ -1603,6 +1667,14 @@ class System(eqx.Module):
         amortized path.
         """
         params = self._params_in(params, "as_env")
+        if self.cells:
+            self._validate(params, "as_env")
+        if self._cell_parents():
+            raise NotImplementedError(
+                "as_env on a System with cells: the forward process reads a table's parents as "
+                "discrete levels and would mis-read the cell a continuous factor falls in; "
+                "simulate the world with your own process, or drop cells= for the simulation"
+            )
         if self._is_amortized(params):
             self._amortized_structure(params, "as_env")
             raise NotImplementedError(

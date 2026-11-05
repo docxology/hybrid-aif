@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 from jax import Array
 
-from hybrid_aif.controls import FLOAT, effective_control_deps
+from hybrid_aif.controls import FLOAT, declared_parents, effective_control_deps
 from hybrid_aif.distributions import (
     ConditionalCategorical,
     ConditionalDirichlet,
@@ -217,6 +217,7 @@ def _validate(
     :func:`_validate_analytic_declaration` on these parameters.
     """
     mods, facs = (system.modality_names, system._facs)
+    _validate_cells(system, params, facs)
     targeted_controls = set(facs) | set(
         system._table.control_names
     )  # a control node takes a target
@@ -274,6 +275,7 @@ def _validate(
     _validate_C_deps(system, params, facs)
     system._validate_H_deps(params, facs)
     _validate_control_deps(system, params, facs, face)
+    _validate_cells(system, params, facs)
     _validate_table_arity(system, params, facs)
     system._row_mounts(params)  # raises on a non-amortized System that declares rows
     space = system._space(params)  # node kinds and sizes; readers that disagree raise
@@ -314,6 +316,7 @@ def _validate(
             facs,
             system.mixture_schedule,
             system._sensed_nodes(params, face),
+            system._cell_grids,
         )
 
 
@@ -359,11 +362,41 @@ def _validate_control_deps(
             )
 
 
+def _validate_cells(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
+    """A grid is declared only for a continuous state factor, over coordinates its state has."""
+    if not system.cells:
+        return
+    if system._is_amortized(params):
+        raise NotImplementedError(
+            "cells on an amortized (neural state-space) System: the amortized path carries codes "
+            "and does not read a tabular factor's continuous parent through a grid; drop cells= "
+            "or declare the factors analytically"
+        )
+    hybrid = system._is_hybrid(params)
+    families = system._families(params) if hybrid else None
+    for g, grid in system._cell_grids.items():
+        if families is None or families[g] == _hybrid.CATEGORICAL:
+            raise ValueError(
+                f"cells declares a grid for {facs[g]!r}, which is a categorical factor; a grid "
+                "discretises a continuous factor (a Gaussian or mixture position), so drop the "
+                "entry or declare the factor continuous"
+            )
+        dim = params.initial_state_prior[g].dim
+        beyond = [a for a in grid.axes if a >= dim]
+        if beyond:
+            raise ValueError(
+                f"cells[{facs[g]!r}] spans coordinate(s) {beyond}, but the factor has {dim} "
+                f"dimension(s); name axes below {dim}"
+            )
+
+
 def _validate_table_arity(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
     """A tabular transition has one parent axis per declared parent (``B_deps``, control nodes
     included), plus one size-1 axis when it reads no control node; any other axis would be read
     at level 0 silently."""
+    _validate_cells(system, params, facs)
     table = system._table
+    grids = system._cell_grids
     for f, b in enumerate(params.transition):
         if not isinstance(b, ConditionalCategorical | ConditionalDirichlet):
             continue
@@ -377,6 +410,15 @@ def _validate_table_arity(system: System, params: SystemParams, facs: tuple[str,
                 "one axis per declared parent"
                 + ("" if reads else ", plus at most one trailing axis of size 1")
             )
+        for pos, (what, g) in enumerate(declared_parents(table, f)):
+            grid = grids.get(g) if what == "state" else None
+            if grid is not None and b.parent_shape[pos] != grid.n_cells:
+                raise ValueError(
+                    f"factor {facs[f]!r}: its transition table's parent axis {pos} has "
+                    f"{b.parent_shape[pos]} entries, but the grid declared for {facs[g]!r} has "
+                    f"{grid.n_cells} cells (shape {grid.shape}); give the table one entry per "
+                    "cell, flattened row-major"
+                )
 
 
 def _refuse_shared_controls(

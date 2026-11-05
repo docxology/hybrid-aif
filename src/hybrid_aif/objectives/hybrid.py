@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from hybrid_aif.cells import Grid, with_cell_parents
 from hybrid_aif.controls import (
     LEVEL,
     ControlLayout,
@@ -384,6 +385,7 @@ def validate_structure(
     factor_names: tuple[str, ...],
     mixture_schedule: str = "runnalls",
     sensed: "SensedNodes | None" = None,
+    cells: dict[int, Grid] | None = None,
 ) -> tuple[str, ...]:
     """Validate hybrid declarations; returns the per-factor belief families.
 
@@ -402,6 +404,17 @@ def validate_structure(
     facs, mods = factor_names, modality_names
     families = factor_families(B, D, B_deps, facs)
     kinds, sizes = space.kinds, space.sizes
+    for f, fam in enumerate(families):
+        if fam != CATEGORICAL:
+            continue
+        for g in B_deps[f]:
+            if families[g] != CATEGORICAL and (cells is None or g not in cells):
+                raise ValueError(
+                    f"factor {facs[f]!r}: its transition names the continuous factor {facs[g]!r} "
+                    "as a parent, and a table reads a discrete parent; declare "
+                    f"cells={{{facs[g]!r}: Grid(...)}} on the System to read the cell "
+                    f"{facs[g]!r} falls in"
+                )
 
     for f, fam in enumerate(families):
         if fam == CATEGORICAL:
@@ -1110,6 +1123,15 @@ def predictive_beliefs(qs: tuple[Belief, ...]) -> tuple[Belief, ...]:
     return tuple(q.predictive if isinstance(q, BeliefPair) else q for q in qs)
 
 
+def cell_view(qs: tuple[Belief, ...], cells: dict[int, Grid] | None) -> tuple[Belief, ...]:
+    """``qs`` with each factor in ``cells`` (factor index to grid) replaced by its predictive
+    belief's mass over the grid's cells, the form a tabular factor reads a cell parent in."""
+    if not cells:
+        return qs
+    cat = with_cell_parents(predictive_beliefs(qs), cells)
+    return tuple(cat[i] if i in cells else q for i, q in enumerate(qs))
+
+
 def epistemic_beliefs(qs: tuple[Belief, ...]) -> tuple[Belief, ...]:
     """The carry with every pair read as its epistemic member, the belief before the step's
     observations."""
@@ -1498,6 +1520,7 @@ def make_transition(
     conditioners: tuple[Conditioner, ...] = (),
     present: Presence | None = None,
     sensed: SensedNodes | None = None,
+    cells: dict[int, Grid] | None = None,
 ):
     """Family-dispatched one-step transition over distribution-object beliefs.
 
@@ -1520,8 +1543,11 @@ def make_transition(
     ``conditioners`` (the linear-Gaussian modalities observing it) where ``present``
     (:class:`~hybrid_aif.objectives.presence.Presence`) admits them at the step; a conditioner
     that selects by action node reads its level from the step's ``action`` (``sensed`` names
-    the observed action nodes).
+    the observed action nodes). A tabular factor reads a parent in ``cells`` (factor index to
+    :class:`~hybrid_aif.cells.Grid`) as the mass of its belief in each cell
+    (:func:`~hybrid_aif.cells.cell_mass`).
     """
+    cells = cells or {}
     B = tuple(b.point() if isinstance(b, Learnable) else b for b in B)
     B = tuple(
         _with_process_noise(b)
@@ -1557,9 +1583,10 @@ def make_transition(
         )
 
         new = list(qs)
+        read = cell_view(qs, cells)
         for f, fam in enumerate(families):
             if fam == CATEGORICAL:
-                parents = tuple(qs[i] for i in B_deps[f])
+                parents = tuple(read[i] for i in B_deps[f])
                 if has_control_axes(table, f, B[f].parent_ndims):
                     index = control_read(action, f, table)
                 else:
@@ -1659,6 +1686,7 @@ def make_step_terms(
     c_deps: Mapping[str, TargetParents] | None = None,
     layout: ControlLayout | None = None,
     sensed: SensedNodes | None = None,
+    cells: dict[int, Grid] | None = None,
 ):
     """Per-step term evaluator over distribution-object beliefs.
 
@@ -1716,7 +1744,10 @@ def make_step_terms(
     emission contracts over the node's belief; a linear-Gaussian channel over a Gaussian-carried
     factor whose mode parents are all action nodes takes its head and noise at the node's level,
     which must be a point (:func:`point_level`), and is scored as an unconditional channel over
-    its factor.
+    its factor. ``cells`` (factor index to :class:`~hybrid_aif.cells.Grid`) names the continuous
+    factors a tabular factor reads as a parent: ``StepContext.qs_prev_cells`` holds the previous
+    step's beliefs with each such factor's mass over its cells, which the transition leaves read
+    as a categorical parent; ``qs_prev`` keeps the Gaussian or mixture.
     """
     options = dict(
         decomposition=decomposition,
@@ -1735,6 +1766,7 @@ def make_step_terms(
         cross_entropy_targets=cross_entropy_targets,
         c_deps=c_deps,
         layout=layout,
+        cells=cells,
     )
     if sensed is None:
         return _make_step_terms(
@@ -1821,6 +1853,7 @@ def _make_step_terms(
     cross_entropy_targets: frozenset[str] = frozenset(),
     c_deps: Mapping[str, TargetParents] | None = None,
     layout: ControlLayout | None = None,
+    cells: dict[int, Grid] | None = None,
 ):
     """:func:`make_step_terms` over declarations every channel reads whole."""
     mods, facs = modality_names, factor_names
@@ -2012,8 +2045,10 @@ def _make_step_terms(
         qs_conditioned = conditioned_beliefs(qs) if paired else None
         qs_all = predictive_beliefs(qs)  # the state factors, then the action nodes read
         qs = qs_all[: len(facs)]
+        qs_prev_cells = None
         if qs_prev is not None:
             qs_prev = predictive_beliefs(qs_prev)
+            qs_prev_cells = cell_view(qs_prev, cells) if cells else None
         obs_t = (
             resolve_step_targets(obs_targets, obs_c_deps, action, qs, layout)
             if obs_c_deps
@@ -2188,6 +2223,7 @@ def _make_step_terms(
                 qs=qs_all,
                 action=action,
                 qs_prev=qs_prev,
+                qs_prev_cells=qs_prev_cells,
                 t=t,
                 qs_epistemic=qs_epistemic,
                 qs_conditioned=qs_conditioned,

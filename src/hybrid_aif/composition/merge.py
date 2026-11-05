@@ -582,6 +582,7 @@ def merge(
     external_inputs: list[tuple[str, int]] = []
     epistemic_keys: list[str] = []
     dims: list[tuple[str, tuple[str, ...]]] = []
+    cells: list[tuple[str, object]] = []
     C_deps: list[tuple[str, tuple[str, ...]]] = []
     durations: dict[str, object] = {}
 
@@ -681,6 +682,7 @@ def merge(
         epistemic_keys.extend(namespaced_key(name, key) for key in resolved_epistemic(system, p))
         terms.extend(namespaced_term(name, key) for key in system.terms)
         dims.extend((f"{name}{SEPARATOR}{factor}", names) for factor, names in system.dims)
+        cells.extend((f"{name}{SEPARATOR}{factor}", grid) for factor, grid in system.cells)
         C_deps.extend(
             (namespaced_key(name, key), tuple(namespaced_key(name, p) for p in parents))
             for key, parents in system.C_deps
@@ -1220,6 +1222,7 @@ def merge(
         modality_names=tuple(modality_names),
         factor_names=(*factor_names, *(nodes[k].name for k in live)),
         dims=tuple(dims),
+        cells=tuple(cells),
         recognition=tuple(recognition_decl) or None,
         external_inputs=tuple(external_inputs),
         subsystems=tuple(metadata),
@@ -1636,6 +1639,7 @@ def subsystem(
         modality_names=view_mods,
         factor_names=(*view_facs, *view_nodes),
         dims=tuple((factor, names) for factor, names in composite.dims if factor in view_facs),
+        cells=tuple((factor, grid) for factor, grid in composite.cells if factor in view_facs),
         subsystems=_view_metadata(composite, name, index, mod_index, set(view_nodes), A_deps),
     )
     mine = {c_facs[f] for f in own} | set(view_mods)

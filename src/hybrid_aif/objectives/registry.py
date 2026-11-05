@@ -169,6 +169,8 @@ class StepContext(NamedTuple):
     #   at the plan's earlier steps, before this step's (planning-with-observations.md D1, D2);
     #   None under planning_belief="prior"
     qs_conditioned: tuple | None = None  # the same after this step's expected observations
+    qs_prev_cells: tuple | None = None  # ``qs_prev`` with each continuous factor a tabular
+    #   factor reads through a grid replaced by a Categorical over its cells; ``None`` without cells
     readings: dict | None = None  # channel index -> its ``infogain`` Interval, evaluated once
     #   per Gaussian-carried factor from one factorisation of the stacked predictive covariance
     #   (:func:`~hybrid_aif.objectives.continuous.linear_gaussian_readings`); a channel absent
@@ -355,6 +357,11 @@ def _sub(collection, index: tuple[int, ...]) -> tuple:
     return tuple(collection[i] for i in index)
 
 
+def _prev_tabular(ctx: StepContext) -> tuple:
+    """The previous step's beliefs as a tabular reader takes them: a cell parent as its mass."""
+    return ctx.qs_prev if ctx.qs_prev_cells is None else ctx.qs_prev_cells
+
+
 def _needs_prev(qs_prev) -> None:
     if qs_prev is None:
         raise ValueError(
@@ -479,7 +486,7 @@ def _param_transition(st: Statics) -> Step:
     def step(ctx: StepContext) -> dict[str, Interval]:
         _needs_prev(ctx.qs_prev)
         return discrete.transition_param_info_gain(
-            B, ctx.qs, ctx.qs_prev, ctx.action, index, deps, names, st.B_control_deps
+            B, ctx.qs, _prev_tabular(ctx), ctx.action, index, deps, names, st.B_control_deps
         )[INFOGAIN]
 
     return step
@@ -554,7 +561,7 @@ def _param_transition_compiled(st: Statics) -> Step:
         for f, ctl in zip(index, has_control, strict=True):
             w = take_controls(wB[f], control_read(ctx.action, f, cdeps)) if ctl else wB[f]
             fd = discrete.contract_probs(
-                w, tuple(ctx.qs_prev[g] for g in B_deps[f]), keep_child=True
+                w, tuple(_prev_tabular(ctx)[g] for g in B_deps[f]), keep_child=True
             )
             leaves[discrete.param_key("transition", facs[f])] = Interval.exact(
                 jnp.sum(ctx.qs[f] * fd, axis=-1)
@@ -588,7 +595,7 @@ def _occupancy_transition(st: Statics) -> Step:
             discrete.param_key("transition", name): Interval.exact(
                 discrete.transition_occupancy_leaf(
                     B_f,
-                    tuple(ctx.qs_prev[g] for g in d),
+                    tuple(_prev_tabular(ctx)[g] for g in d),
                     control_read(ctx.action, f, cdeps) if ctl else None,
                 )
             )
@@ -615,7 +622,7 @@ def _occupancy_transition_compiled(st: Statics) -> Step:
             h = -xlogy(table, table).sum(axis=-(len(B_deps[f]) + 1))
             leaves[discrete.param_key("transition", facs[f])] = Interval.exact(
                 discrete.contract_probs(
-                    h, tuple(ctx.qs_prev[g] for g in B_deps[f]), keep_child=False
+                    h, tuple(_prev_tabular(ctx)[g] for g in B_deps[f]), keep_child=False
                 )
             )
         return leaves

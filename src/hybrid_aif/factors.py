@@ -21,6 +21,7 @@ from jax import Array
 from jax.scipy.linalg import cho_solve, solve_triangular
 from jax.scipy.special import gammaln
 
+from hybrid_aif.cells import Grid, cell_mass  # noqa: F401  (re-exported)
 from hybrid_aif.distributions import (
     Categorical,
     ConditionalCategorical,

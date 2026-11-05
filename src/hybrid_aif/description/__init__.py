@@ -41,6 +41,7 @@ from jax import Array
 
 from hybrid_aif import distributions as _dist
 from hybrid_aif import factors as _factors
+from hybrid_aif.cells import Grid
 from hybrid_aif.controls import FLOAT, Box, action_name, control_name, declared_parents
 from hybrid_aif.inference.discrete import SUPPORT_FLOOR, _as_log_likelihood
 from hybrid_aif.objectives import registry as _registry
@@ -1198,6 +1199,13 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         w.variables[s] = _state_domain(params, f, s, where)
         if s in declared_dims:  # only declared names are written; dim0, dim1, … are implied
             w.variables[s]["dims"] = list(declared_dims[s])
+    for s, grid in system.cells:
+        w.variables[s]["cells"] = {
+            "shape": list(grid.shape),
+            "low": list(grid.low),
+            "high": list(grid.high),
+            "axes": list(grid.axes),
+        }
     for k, u in enumerate(nodes):
         if space.kinds[k] == FLOAT:
             box = params.control[u]
@@ -1909,7 +1917,7 @@ class _Learned(NamedTuple):
 
 
 _RECORD_KEYS = ("family", "parents", "parameters", "options", "steps")
-_LEAF_KEYS = ("domain", "levels", "dim", "dims", "low", "high", "shape", "duration")
+_LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
 _TERM_KEYS = ("term", "on", "parameters", "options", "model")
 _RELATIONS = ("controls", "observed", "external")
 _CONFIGURATION = {
@@ -2092,6 +2100,16 @@ def _module_tree(family: str, module: Any) -> Any:
     return _mlp_tree(trunk, "")
 
 
+def _grid_of(record: Mapping[str, Any]) -> Grid:
+    """The :class:`~hybrid_aif.cells.Grid` a variable's ``cells`` record describes."""
+    return Grid(
+        shape=tuple(record["shape"]),
+        low=record["low"],
+        high=record["high"],
+        axes=None if record.get("axes") is None else tuple(record["axes"]),
+    )
+
+
 def _is_leaf(record: object) -> bool:
     """Whether a variable record is a leaf (a domain and a size) rather than a tree node."""
     return isinstance(record, Mapping) and bool(set(record) & set(_LEAF_KEYS))
@@ -2238,6 +2256,8 @@ class _Model:
                 raise self.fail(f"{address}: low and high bound a real domain with its dim")
             if "dims" in record:
                 self._check_dims(record, address)
+            if "cells" in record:
+                self._check_cells(record, address)
             if "duration" in record:
                 self._check_duration(record, address)
             shape = record.get("shape")
@@ -2279,6 +2299,33 @@ class _Model:
             raise self.fail(
                 f"{address}.duration has {len(value)} number(s) for {record['levels']} level(s): "
                 "give one per level, or one number for every level"
+            )
+
+    def _check_cells(self, record: Mapping[str, Any], address: str) -> None:
+        """A real variable's ``cells``: the grid a table reading the variable discretises it by."""
+        grid = record["cells"]
+        if record.get("domain") == "categorical":
+            raise self.fail(
+                f"{address}: cells discretises a real latent (one with dim); this variable is "
+                "categorical"
+            )
+        if "dim" not in record or "low" in record or "high" in record:
+            raise self.fail(
+                f"{address}: cells grids a latent's real domain; write it beside that dim"
+            )
+        if not isinstance(grid, Mapping) or not {"shape", "low", "high"} <= set(grid):
+            raise self.fail(
+                f"{address}.cells must be a mapping with shape, low and high (and optionally "
+                f"axes), got {grid!r}"
+            )
+        try:
+            made = _grid_of(grid)
+        except (TypeError, ValueError) as exc:
+            raise self.fail(f"{address}.cells: {exc}") from None
+        if any(a >= record["dim"] for a in made.axes):
+            raise self.fail(
+                f"{address}.cells spans coordinate(s) {list(made.axes)}, and the variable has "
+                f"{record['dim']} dimension(s)"
             )
 
     def _check_dims(self, record: Mapping[str, Any], address: str) -> None:
@@ -2781,6 +2828,11 @@ class _Model:
         """Sizes of the per-step variables; the control nodes' boxes; the action nodes' match."""
         self.width: dict[str, int] = {}
         self.levels: dict[str, int | None] = {}
+        self.cells: dict[str, Grid] = {
+            v: _grid_of(r["cells"])
+            for v, r in self.variables.items()
+            if _is_leaf(r) and "cells" in r and v in self.per_step
+        }
         for name in self.per_step:
             record = self.variables[name]
             if record["domain"] == "categorical":
@@ -3489,11 +3541,13 @@ class _Model:
 
     def _levels_of(self, fac: _Factor, name: str) -> int:
         levels = self.levels.get(name)
+        if levels is None and name in self.cells:
+            return self.cells[name].n_cells
         if levels is None:
             raise self.fail(
                 f"{fac.address}: a table reads and emits categorical variables, and {name!r} is "
                 "not one (a real variable or a code is read by a linear-Gaussian or network "
-                "family)"
+                f"family); give {name!r} a cells grid to read the cell it falls in"
             )
         return levels
 
@@ -4620,6 +4674,13 @@ class _Model:
                 f"variables {stray} carry dims, which names the dimensions of a latent for the "
                 "epistemic selector; only a latent's record carries it"
             )
+        gridded = [v for v, r in self.variables.items() if _is_leaf(r) and "cells" in r]
+        stray = [v for v in gridded if v not in states]
+        if stray:
+            raise self.fail(
+                f"variables {stray} carry cells, which grids a latent for the tables reading "
+                "it; only a latent's record carries it"
+            )
         kwargs: dict[str, Any] = dict(
             B_deps=B_deps,
             A_deps=A_deps,
@@ -4639,6 +4700,7 @@ class _Model:
             modality_names=tuple(mods),
             factor_names=(*states, *nodes),
             dims={v: tuple(self.variables[v]["dims"]) for v in named},
+            cells=self.cells,
             recognition=recognition_decl or None,
             terms=self.term_keys,
             scoring=self.owned,
@@ -4855,6 +4917,7 @@ def schema() -> dict[str, Any]:
                         "not": {"required": ["shape"]},
                     },
                     "dims": {"required": ["dim"]},
+                    "cells": {"required": ["dim"]},
                     "low": {"required": ["dim"]},
                     "high": {"required": ["dim"]},
                     "duration": {"required": ["levels"]},
@@ -4868,6 +4931,25 @@ def schema() -> dict[str, Any]:
                         "minItems": 1,
                         "uniqueItems": True,
                         "items": {"type": "string", "pattern": "^[^:.*\\[\\]]+$"},
+                    },
+                    "cells": {
+                        "type": "object",
+                        "required": ["shape", "low", "high"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "shape": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "integer", "minimum": 1},
+                            },
+                            "low": number_or_list,
+                            "high": number_or_list,
+                            "axes": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "integer", "minimum": 0},
+                            },
+                        },
                     },
                     "low": number_or_list,
                     "high": number_or_list,

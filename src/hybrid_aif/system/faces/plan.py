@@ -506,6 +506,7 @@ def _context_without_control_risk(
             conditioners=conditioners,
             present=present_mask,
             sensed=sensed,
+            cells=system._cell_parents(),
         )
         step_terms_fn = _hybrid.make_step_terms(
             params.likelihood,
@@ -532,6 +533,7 @@ def _context_without_control_risk(
             c_deps=system._effective_C_deps(),
             layout=space.layout,
             sensed=sensed,
+            cells=system._cell_parents(),
         )
         terminal_terms_fn = _hybrid.make_terminal_terms(
             params.terminal_targets,

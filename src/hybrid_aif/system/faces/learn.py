@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from hybrid_aif.cells import cell_mass
 from hybrid_aif.controls import ControlSpace
 from hybrid_aif.distributions import ConditionalDirichlet, Learnable, MLPConditional
 from hybrid_aif.factors import LinearGaussianObservation, LinearGaussianObservationMNIW
@@ -245,7 +246,10 @@ def _learn(
     for f, r in active:
         b = params.transition[f]
         deps = system._B[f]
-        parents = [prev_beliefs[g] for g in deps]
+        cells = system._cell_parents()
+        parents = [
+            cell_mass(prev_beliefs[g], cells[g]) if g in cells else prev_beliefs[g] for g in deps
+        ]
         control_parents = system._table.control_parents[f]
         if control_parents:
             #  one one-hot per control axis, at its parent position: counts land on the
