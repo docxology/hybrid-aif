@@ -14,6 +14,9 @@ copy of something similar. There is one quantity, and both are evidence about it
 gradient learning that means the shared parameter's gradient is the **sum** of the
 gradients of every loss that reads it, the log-loss analogue of multiplying the
 likelihoods of two evidence streams about one variable.
+*2026-11-06: an identity claim of this kind is a binding of `merge`, which makes the two Systems one
+particle (`nesting-and-coupling.md` N2); between particles joined by `couple` a parameter is never
+shared, only reported as counts through a likelihood (N6).*
 
 The first concrete customer is R-AIF's preference model. Their CRSPP reads the world
 model's encoder, learned initial state and prior head, and its contrast loss trains all
@@ -55,6 +58,10 @@ across Systems, independently of the generic q-graph layer.
 4. **Beliefs are never shared.** Per-tick carries stay per System, as they are now.
    State crosses between Systems as data, through the existing external-input parent
    kind and the `aux_beliefs` seam.
+   *2026-11-06: under `nesting-and-coupling.md` N1 a belief is internal and crosses only as a value:
+   inside one particle as a sibling-belief read, a modality of the reading component whose datum is
+   the source's belief realised by `sample`, `mode` or `stats` (N3); between coupled particles as an
+   action node realised from the belief (N5).*
 5. **Serialization and description.** A reference is encoded as its home address
    (`description/__init__.py`), never duplicated, so a saved model round-trips with the identity
    intact.
@@ -95,10 +102,14 @@ takes `is_first`, with one test.
   then comes for free. Recommendation: yes, as the declaration site. It does not
   cover a scoring-slot System such as the CRSPP, which `merge()` refuses, so the
   address-reference form above is still needed.
+  *2026-11-06: `nesting-and-coupling.md` N2 classes this binding as an identification: the
+  components share the variable outright, with no blanket between them on it.*
 - **S3 — scope of the first build.** Recommendation: parameters across Systems
   composed by `merge()` or nested in a scoring slot. Sharing across members of a
   `vmap` population, meaning tied weights across agents, is a different question and
   stays out of scope.
+  *2026-11-06: 'nested in a scoring slot' means a System held inside a scoring entry, not a nested
+  component of a merge in `nesting-and-coupling.md` N2's sense.*
 - **S4 — R-AIF.** Should the reference tier adopt sharing to match their CRSPP exactly
   (ledger rows 4.1 and 4.14), once the capability exists? Recommendation: run it as an
   experiment, not as a fidelity fix. §28–§29 show it is not needed for parity.
@@ -168,6 +179,9 @@ name, the home and the edge, for homes whose belief is static within an episode 
   match. `subsystem` views carry the homes their readers reference, and a view's learned
   parameters write back into the composite's `parameters` by name, so two views of one composite
   learn one table.
+  *2026-11-06: under `run`, the composite form is to write a learning view back each round and to
+  re-take the other views from the composite, at the build, so the example will need no hand-written
+  write-back (`nesting-and-coupling.md` N4 and its amendment A3).*
 
 ### What stays deferred, and why it is not foreclosed
 
@@ -176,9 +190,17 @@ needs); readers other than table slots (a parameter as a parent of an arbitrary 
 its own expectation rule); parameter ports in `couple`, so a separate mind can take another's
 Dirichlet as a soft observation; promoting the document's `parameters` entry from a group to the
 node list. Each generalises the home or the reader and keeps the name and the reference.
+*2026-11-06: the third item is settled by `nesting-and-coupling.md` N6: under `couple` a parameter
+crosses only as a report of counts, an action node of its variable realised by `stats` (the counts
+since the last report), observed through a multinomial likelihood over the reader's own parameter
+variable; `mode` and `sample` of a parameter stay deferred, and nothing clamps a reader's parameter
+from outside. The second item is pulled in for that count case only; beyond it, it stays deferred.*
 
 ### First customer
 
 The showcase's two tiers: the rover's terrain factor and the scheduler's map factor read one
 field (`docs/design/terrain-field.md`, "The slow tier"). Only the rover counts into it; the
 scheduler's novelty is honoured by the rover's counting on the fast clock.
+*2026-11-06: in `nesting-and-coupling.md` N2's terms the two tiers are a nesting with this one
+identification; N6 keeps `SharedParameter` as bookkeeping of one home inside one particle, not a
+crossing.*

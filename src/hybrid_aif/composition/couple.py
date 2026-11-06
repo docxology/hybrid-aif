@@ -13,14 +13,17 @@ likelihoods; a process's inputs by its env's names, its observations by ``env_pa
 
 A :class:`Wire` is an identity between an out-port and an in-port of one type: an action node to
 a process input, a process observation to a mind's modality, or an action node to a mind's
-modality. It carries no kernel; anything that transforms is a System run as a process. An action
-node is realised once, when its mind chooses, from that mind's ``params.actuator`` (a delta where
-there is no entry); the realised value stands until the mind chooses again, and every wire from
-the node carries it. :func:`couple` checks the participants, the
-ports and the wires once and returns a :class:`Wiring`, which
+modality. It carries no kernel; anything that transforms is a System run as a process. What
+crosses a wire is action or sensation, never a belief: a mind's belief reaches another mind only
+as the realised value of an action node, and a parameter only as a report of counts. An action
+node is realised once, when its mind chooses, by a draw (``sample``) from that mind's
+``params.actuator`` kernel (a delta where there is no entry); the realised value stands until the
+mind chooses again, and every wire from the node carries it. :func:`couple` checks the
+participants, the ports and the wires once and returns a :class:`Wiring`, which
 :func:`~hybrid_aif.composition.driver.run` executes.
 
-Design: docs/design/control-states.md C12, C13; docs/design/nesting-systems.md principle 6.
+Design: docs/design/control-states.md C12, C13; docs/design/nesting-systems.md principle 6;
+nesting-and-coupling.md N1, N2.
 """
 
 from collections.abc import Mapping, Sequence

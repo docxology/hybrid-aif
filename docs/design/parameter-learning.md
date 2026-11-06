@@ -710,12 +710,10 @@ surface. But note what the per-declaration selector above *does* buy: it
 is the same shape as the generic answer, one level short of it, so the
 generic version is a later refactor of one walk rather than a rewrite of
 several code paths. Deliberate stepping stone, not a dead end.
-*Note (2026-10-17):* a consumer case makes the cost concrete. An unknown row offset coupled to
-the pose by the reading is best inferred jointly with the pose, which the library does only
+*Note (2026-10-17):* a consumer case makes the cost concrete. An unknown row offset tied to the pose by the reading is best inferred jointly with the pose, which the library does only
 within a state block, so it is declared as a pose dimension; as a state it then needs a small
 process noise to keep beliefs positive definite (per-variable-infogain.md V10, decision 4).
-Under the generic treatment it would be a parameter inferred jointly with the states it is
-coupled to, an exact constant needing neither.
+Under the generic treatment it would be a parameter inferred jointly with the states it is tied to, an exact constant needing neither.
 
 **This deferral is a recorded debt with a release gate**, not a shrug:
 `project-brief.md` → "Post-v0.1 roadmap candidates", the **[deferred]**

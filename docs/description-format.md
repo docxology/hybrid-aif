@@ -306,6 +306,14 @@ so a document without shared tables is unchanged. Only tabular families are acce
 variables. The variable's own parameters are named `P_<name>` by default (section 10), and its
 learned prior is written once, under that name.
 
+*2026-11-06: planned, under the format's revision rule. The existing `source` field of a
+modality record that reads a sibling component's factor is extended with the read's kernel
+(`identity`, or `indicator` with its grid) and its realisation (`sample`, `mode` or `stats`); a
+merged component is marked `nested` when every binding across its boundary is such a read or an
+`ActionControl`; an action node of a state factor has a record beside the control nodes'
+action-node records, with its kernel and realisation; a control node supplied by another
+participant is marked `held` (`design/nesting-and-coupling.md`, The format). A coupling is not part of the document.*
+
 ## 4. Families
 
 The keys of `parameters` are the family's field names. Every family below lists its parameter
@@ -428,7 +436,7 @@ each naming the field.
 
 | key | value | meaning |
 |---|---|---|
-| `controls` | `{control node: action node}` | the System chooses each key and emits it as the paired action node. A control node is known only by being a key here and by having no initial or transition; an action node only by being a value and by its optional actuator record |
+| `controls` | `{control node: action node}` | the System chooses each key and emits it as the paired action node, unless the control node is marked `held`: another participant supplies it, the System plans no decision for it and its action node is dropped. A control node is known only by being a key here and by having no initial or transition; an action node only by being a value and by its optional actuator record |
 | `observed` | `[observation, ...]` | the variables the System receives data for at every step; each has a likelihood record |
 | `external` | `[input, ...]` | vectors the System receives as data with no likelihood (domain `real` with `dim`), read only by recognition records |
 
@@ -1023,7 +1031,10 @@ carry whose transition reads it: on the amortized path the names are fixed (sect
 
 An agent and a world, merged so that the agent's control node drives the world's location at
 the same step and the agent's observation reads the world's location. The world's own control
-node is absent; the agent's observation `agent.seen` is a bound modality.
+node is absent; the agent's observation `agent.seen` is a bound modality. This is one particle,
+a model of an agent and its world written as one declaration. An agent and its world as
+separate participants are joined by `couple` instead, with the agent's action node wired to the
+world's input and the world's output to the agent's modality (`design/nesting-and-coupling.md` N2).
 
 ```json
 {

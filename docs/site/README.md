@@ -54,7 +54,7 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
   force).
 - Per tick of the two-level run, `slow`: `decision` (true every twelfth tick), and on a decision
-  `option`, `cell`, `efe_by_option` (G of the best sequence per first option), `q_by_option`,
+  `option`, `cell` (the scheduler's cell reading: the cell holding most of the rover's position belief), `efe_by_option` (G of the best sequence per first option), `q_by_option`,
   `policies` (the best option sequences, trimmed to keep at least the best one per first option: `options`, `terms` with the `infogain`
   `transition:mission.map` leaf and the `risk` `mission.energy` leaf, `G`, `q_pi`), `chosen`,
   `belief` (`energy`, `visit`) and `seconds`. The one-level run has no `slow`.

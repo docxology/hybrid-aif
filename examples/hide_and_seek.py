@@ -15,7 +15,8 @@ objective and planner, and one world process holding both positions:
 
 The prey models the predator as chasing (a move that shortens the distance is likelier) and
 the predator models the prey as fleeing; neither sees the other's objective, and the wiring
-is the only channel between them (``docs/design/control-states.md`` C13: beliefs never route).
+is the only route between them: what crosses it is action and sensation, never a belief
+(``docs/design/nesting-and-coupling.md`` N1, ``docs/design/control-states.md`` C13).
 Each mind's objective is its own declaration, which is what the vignette turns.
 
 Run the smallest case::

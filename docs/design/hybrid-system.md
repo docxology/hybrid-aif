@@ -209,6 +209,8 @@ rewrite's `env_step`/`observe` must come out of it.
   path), dissolving the interim mis-routing; planning faces require
   marginal beliefs and point at `initial_priors` otherwise. Conditional
   priors on continuous families remain out of scope.
+  *2026-11-06: in a nest this is how a slow tier hands a descending prior to a fast one as a
+  distribution, an internal interaction rather than a crossing (`nesting-and-coupling.md` N2, N7).*
 
 ## Amendment: LG modality C designations (landed 2026-08-19)
 
@@ -281,3 +283,7 @@ carry a `MixtureGaussian` factor switched by the discrete one, which is the
 mixture likelihood the direct declaration would compile to). Making that
 direct declaration first-class is a roadmap candidate in `../project-brief.md`
 (flagged 2026-09-18). Nothing in D3 or D4 is otherwise changed.
+*2026-11-06: a sibling-belief read (`nesting-and-coupling.md` N3) whose source is a Gaussian factor
+and whose modality is categorical (the cell reading) is not cross-family explaining-away: the source
+is not a parent of the modality, its belief is pushed through a kernel and realised as a datum, and
+the modality's own parents explain it.*

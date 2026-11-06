@@ -1,20 +1,22 @@
-"""Compositional active inference: Systems merged into one, Systems coupled by wires, and the
-clock that runs them.
+"""Compositional active inference: Systems merged into one particle, Systems coupled as separate
+particles by wires, and the clock that runs them.
 
-- :mod:`~hybrid_aif.composition.merge` — :func:`merge` makes several Systems one namespaced
-  composite, identifying latents across them (bindings: control-node identification or relay,
-  a modality's parents, target emission, boundary prior, a shared parameter variable);
+- :mod:`~hybrid_aif.composition.merge` — :func:`merge` makes several Systems one particle: a
+  namespaced composite whose components share latents through bindings (control-node
+  identification or relay, a modality's parents, target emission, boundary prior, a shared
+  parameter variable); a component bound only by blanket-shaped bindings is nested;
   :func:`subsystem` derives one mind's System from the composite and :func:`write_back` returns
   a view's learned parameter variables to it.
-- :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins minds and processes through
-  their blankets: a :class:`Wire` from an action node to a process input or a mind's modality,
-  or from a process observation to a mind's modality, typed and checked into a :class:`Wiring`.
+- :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins separate particles, minds and
+  processes, through their blankets: a :class:`Wire` from an action node to a process input or a
+  mind's modality, or from a process observation to a mind's modality, typed and checked into a
+  :class:`Wiring`.
 - :mod:`~hybrid_aif.composition.driver` — :func:`run` closes the loop under a declared tick
   order, over a :class:`Wiring` (one :class:`MindRecord` or :class:`ProcessRecord` per
   participant) or over a merged composite, each mind acting through its own view (a
   :class:`Trajectory`).
 
-Design: docs/design/nesting-systems.md.
+Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
 """
 
 from hybrid_aif.composition.couple import Wire, Wiring, couple

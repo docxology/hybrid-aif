@@ -95,12 +95,15 @@ with policy search vmapped across both policies and agents.
 Key design commitments (rationale in the companion docs):
 
 - **`System` as the single abstraction**: anything on either side of a Markov
-  blanket. An env *is* a `System`; systems nest and compose; the outermost
+  blanket. An env *is* a `System`; systems compose; the outermost
   boundary interfaces with external environments (robot hardware, simulators,
   other software). **Composition is a first-class theme, not a feature**:
-  hierarchy and multi-agent influence are one mechanism at two timescale
-  tiers (`design/nesting-systems.md`), and its instruments — `couple()` /
-  `subsystem()` and the tick-semantics `driver` — live together under
+  hierarchy and multi-agent influence are two constructs, chosen by topology.
+  `merge()` makes one particle, a hierarchy or any model whose parts share a
+  blanket to the world, with `subsystem()` views of its components; `couple()`
+  joins separate particles, which exchange only action and sensation. The
+  tick-semantics `driver` runs both (`design/nesting-and-coupling.md` N2,
+  `design/nesting-systems.md`); the instruments live together under
   `hybrid_aif.composition` (v0.7).
 - **Per-node objective control and metrics.** Every node carries a mean-field
   block id; epistemic/KL terms toggle per block, and EFE/VFE come back as
@@ -226,7 +229,9 @@ encoder is literally the constant-noise encoder model of the SIGReg
 correspondence — and becomes a belief by uncertainty injection through
 machinery we already have: fixed/learned precision on the pseudo-observation
 node (the default), or input-dependent precision from encoder
-ensemble/dropout passes (workstream H).
+ensemble/dropout passes (workstream H). This is N1 applied to a transducer: a belief of
+another system is never read directly, only a value that crosses the blanket as sensation
+(`design/nesting-and-coupling.md` N1).
 
 Execution cost is dominated by a useful asymmetry: perception runs **once
 per real tick**, while planning rollouts run thousands of times per tick in
@@ -290,12 +295,16 @@ or shared mutable state.** Colocated deployments pass the same pytrees in
 memory and may fuse all three loops into one jit'd program (the
 pymdp-style fused rollout remains the default for simulation); a deployment
 boundary serializes the identical objects (beliefs are small pytrees;
-parameters use the sidecar format; structure uses the versioned spec). This
-contract is AIF-native rather than bolted on: timescale-separated levels
-already communicate by passing distribution parameters as messages —
-pseudo-observations upward, empirical priors downward (parametric depth) —
-so the deployment interface and the hierarchical-model interface are the
-same kind of object. One honest asymmetry: **end-to-end gradient flows
+parameters use the sidecar format; structure uses the versioned spec).
+The three loops are parts of one particle, so what they exchange is internal interaction, and
+serialising it at a deployment cut changes where the parts run, not what they are. This is not
+a crossing of a blanket, and it is not the interface of a nested hierarchy or of two coupled
+minds: inside a nest a slow component reads a fast one's belief as sensing (a sibling-belief
+read, realised as a sample, a mode or the belief's statistics) and the descending empirical
+prior is an internal interaction (`D_deps`, `H_deps`); between separate minds only action and
+sensation cross, and a parameter crosses only as a report of counts (`design/nesting-and-coupling.md` N1,
+N2, N6, N8).
+One honest asymmetry: **end-to-end gradient flows
 cannot cross a serialization boundary** — training that differentiates
 through planning (differentiable EFE, distillation losses through rollouts)
 requires colocation; cloud learning otherwise consumes logged traces.
@@ -348,7 +357,7 @@ ablates correctly (globally and per modality block).
 - **Partial**: C (LG + Runnalls/GPB1 built; IMM, GMM-CAVI, MNLR, smoother
   pending), D (term trees done; estimator registry + SamplerBackend
   pending), E (enumeration only), F (System + rollout done; act↔rollout
-  adapter and nesting pending), G (registry/HDF5/folder/ReplayBuffer done;
+  adapter and composition (`merge`, `couple`) pending), G (registry/HDF5/folder/ReplayBuffer done;
   Lance, goal relabeling, teacher-trace columns pending), J (T-maze only).
 - **Not started**: H, I, K.
 - **Workstream L (performance) — phase 1 landed**: the diagnosis (NOT the
@@ -601,7 +610,7 @@ already designed, carrying a stated gate on when they must be paid.
   the Gaussian emission over categorical parents only (the 2026-09-18 row
   below), `log_evidence` per conjugate family (shared with the description
   length item and the zeroth-harness brief), a modality whose datum is a
-  previous-tick belief of a named factor (AXIOM's recurrent mixture, S8).
+  previous-tick belief of a named factor (AXIOM's recurrent mixture, S8; `System.lagged`, generalised to a source in another component, with a kernel and a declared realisation, by `design/nesting-and-coupling.md` N3).
   Source: AXIOM (Heins et al. 2025, arXiv:2505.24784).
 - **AXIOM's pixel layer** (no priority set, 2026-10-13): the slot mixture
   over pixel tokens whose component parameters are latent states, the
@@ -627,7 +636,7 @@ already designed, carrying a stated gate on when they must be paid.
   — probabilistically grounded in arXiv:2312.07547: `h` as the
   final-state prior reciprocal to `d`, with the derived inductive policy
   prior as a second scoring backend; conditional/learnable `h` chartered
-  there and taken up by the nesting build)
+  there and taken up by the composition build (`H_deps` across a merge boundary))
   already promoted into the preference-node family above — neither has been
   ported by any library.
 - **Threshold-free fault tolerance via online precision learning**
@@ -845,10 +854,13 @@ permissive.
    split (see integration requirements for the default mapping) — these
    decide how much amortization we eventually need, whether jit compile
    times matter operationally, and what the belief-snapshot serialization
-   must guarantee (size, versioning, frequency).
-9. **Production interface.** *[partial: `couple()` wirings with per-participant records (7a356c2, entry 112); the streaming contract open]* What does the boundary expose — observations/
-   actions only, or (some) internal latents too, breaking Markov-blanket
-   discipline for diagnostics? Streaming/online and offline/episodic both
+   must guarantee (size, versioning, frequency). A belief snapshot here is a particle's own
+   internal state saved or moved between compute tiers; it is not something another mind reads
+   (`design/nesting-and-coupling.md` N1).
+9. **Production interface.** *[partial: `couple()` wirings with per-participant records (7a356c2, entry 112); the streaming contract open]* The boundary exposes action and sensation only
+   (`design/nesting-and-coupling.md` N1): a belief reaches another participant only as an action node realised from it, and
+   a host that wants internal latents for diagnostics reads them from the participant's record,
+   which is not a wire. Streaming/online and offline/episodic both
    need support; how far does the info-dict-as-namespace pattern (from
    stable-worldmodel) take us? For the streaming/asynchronous contract,
    RxInfer's reactive message passing (infinite-stream inference with

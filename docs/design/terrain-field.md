@@ -29,7 +29,7 @@ dropped; the first and last cell on each axis absorb the tails. This is a smooth
 component means, so the velocity planner's gradient sees the field through it, and an uncertain
 rover writes fractional counts across the cells it might be in, a bimodal one to two places. No
 bilinear read, no spatial prior: cells are independent Dirichlets, and smoothness, if ever
-wanted, enters as a basis change (piecewise-linear nodes), not a coupling prior.
+wanted, enters as a basis change (piecewise-linear nodes), not a coupling prior. The same indicator serves as the kernel at the source of a sibling-belief read, through which the slow tier's cell modality reads the rover's position (`nesting-and-coupling.md` N3).
 
 **Up, from the cell to the position (F2, deferred).** The terrain seen under the rover is a
 likelihood over position that is piecewise constant across the field: the field's probability of
@@ -134,12 +134,9 @@ Four 200-tick runs of level 1 showed the predicted stall: coverage plateaus at a
 the field by tick 150 and the rover never reaches the ice or the far rough ground, because novelty
 is local (a flat gradient beyond the cells the plan can reach) while a mapping survey is a global
 task. The slow tier is a survey scheduler with both drives: an epistemic drive over the field it
-shares with the rover, and a pragmatic drive over energy. It is composed with the rover by
-`merge` and run as two `subsystem` views on two clocks, as the previous showcase's tiers were.
+shares with the rover, and a pragmatic drive over energy. It is composed with the rover by `merge` as the rover's own slow tier, a nested component in the sense of `nesting-and-coupling.md` N2 with one identification (the field), and its slower clock is T9's `hold` under `run` (N4).
 
-**Factors.** `visit`: the cell the rover stands on, a categorical over the grid's cells, observed
-through a `cell_obs` modality fed with the rover's own cell (the mode of its position belief's
-cell mass) at each slow step; this is the coverage reading from the fast tier. Its transition is
+**Factors.** `visit`: the cell the rover stands on, a categorical over the grid's cells, observed through a `cell_obs` modality that reads the rover's position belief through the cell indicator, a sibling-belief read (`nesting-and-coupling.md` N3) realised by `mode` (the cell of largest mass) to reproduce the page's run and by `sample` thereafter; this is the coverage reading from the fast tier. Its transition is
 conditioned on `(visit, option)`: under "survey sector k" a uniform distribution over sector k's
 cells whatever the previous cell, under "charge" the identity, the rover stays where it is. That
 last clause matters: a first draft gave charge a uniform distribution over the current sector,
@@ -150,7 +147,7 @@ visited cell to sector k's centre plus about twelve ticks of surveying, in bands
 band rises with a probability set by the field-wide mean illumination, since the scheduler does
 not know where light falls. `map`: the terrain at the visited cell, parent `visit`, whose table is
 the parameter variable `field`, identified at `merge` with the rover's
-(`docs/design/shared-parameters.md`, the 2026-11-05 amendment). The scheduler has no observation
+(`docs/design/shared-parameters.md`, the 2026-11-05 amendment). This is the nest's one identification (`nesting-and-coupling.md` N2): the field is one home, because the rover's counts and the scheduler's novelty are one belief by design. The scheduler has no observation
 of `map`'s child: it never counts into the field, and its view is run with the field's rate at
 zero. Its novelty term (`transition:map`) is the expected information about the field from the
 cells its plan visits, and that expectation is honoured by the rover counting on the fast clock.
@@ -171,9 +168,9 @@ whole energy cost and the scheduler never left its first sector; with it the two
 leaves at the fourth decision, surveys all four sectors and covers more than twice the field the
 one-level ablation does by tick 400. With twelve readings under charge as well, the scheduler
 charged at the full band at most of its charges, since a stationary step promised a survey's
-information.
+information. The pooling is a planning-time count under T10, not an inference-time pooling of the readings dropped between a held mind's decisions (`nesting-and-coupling.md` N4).
 
-**Downward.** The option reaches the rover as a control node (`ActionControl`), and conditions
+**Downward.** The option reaches the rover as a held control node, supplied inside the nest by `ActionControl` (`nesting-and-coupling.md` N7), and conditions
 two targets: a position target at the chosen sector's centre under a survey option (none under
 charge), and the image preference on `(energy, option)`, so that charge pulls the rover to light
 at every band while a survey only does so when the band is low.
@@ -183,12 +180,7 @@ is read where the rover stood one fast tick earlier (the order-within-a-tick rul
 slow planner needs `policy_len >= 2` for the same reason the fast one does.
 
 **How the runner drives the tiers.** The composite is one `merge` of the scheduler and the rover,
-run as two `subsystem` views: the mission view decides every twelfth tick, the rover view runs
-between decisions with the option pinned on its control node, the rover's learned field is
-written back to the composite before each decision and the mission view is taken again from it,
-and the scheduler never learns. The scheduler's cell reading is computed from the rover view's
-position belief in the runner, because `couple` wires process outputs only; a wire from a mind's
-belief is a queued composition item.
+run as two `subsystem` views. Today the runner drives this by hand: the mission view decides every twelfth tick, the rover view runs between decisions with the option pinned on its control node, the rover's learned field is written back to the composite before each decision and the mission view is taken again from it, the scheduler never learns, and the scheduler's cell reading is computed in the runner from the rover view's position belief. The reading is not a wire under `couple`: the scheduler is the rover's own slow tier, inside one particle, so the reading is a sibling-belief read (`nesting-and-coupling.md` N3). At the build (N3, N4), the run is to be one `run` call on the composite with the scheduler wrapped in `hold` (built, and the clock); the write-back of the learned field, the re-taking of the mission view and the routing of the option into the rover view move into `run`'s composite form (N4, N9), and the runner's own loop, schedule and write-back go.
 
 **The ablation.** The page shows the one-level run beside the two-level one: the same composite
 with the option pinned to a single survey sector, which is level 1 as run.

@@ -218,6 +218,11 @@ would also see no pragmatic value in knowing. It also needs steps of different d
 (process noise and preference costs scaled by a step's duration, the information gain not), 
 a separate item. A slow tier held exactly between its boundaries is expressible today with a 
 clock factor as a parent (identity off the boundary).
+*2026-11-06: the slow tier is a nested component of a `merge` (`nesting-and-coupling.md` N2): it
+reads the fast tier's belief as a sibling-belief read (N3) and hands its choice down as a control
+node supplied by `ActionControl` (N7) or as a descending prior through `D_deps` and `H_deps`; steps
+of different durations were built (`step-durations.md`), and the slow clock is T9's `hold` under
+`run` (N4), with no loop outside the engine and no clock factor.*
 
 ## Description
 

@@ -499,10 +499,19 @@ would be asked to be about two different sets of variables. The `uncertainty` ro
 
 ## Merging Systems: the bindings
 
-`merge({name: System}, {name: params}, bindings)` makes components one
-`(System, SystemParams)`, namespacing every node `"<component>.<name>"`, and
-identifies latents across them, each binding rewritten as an ordinary edge.
-Bindings name nodes by their namespaced names.
+`merge({name: System}, {name: params}, bindings)` makes components one particle, one
+`(System, SystemParams)` with one blanket to the world, namespacing every node
+`"<component>.<name>"`, each binding rewritten as an ordinary edge. Bindings name nodes by
+their namespaced names. A binding is one of two shapes. A binding that identifies a latent
+outright (`SharedParameter`, the relay, a joint `ObservationLink`, which makes one modality
+read several components' factors) makes the components share that variable, with messages both
+ways and no blanket between them on it. A binding that is blanket-shaped (an `ActionControl`
+from a control node, or, once built, a sibling-belief read, in which a modality of one component
+takes another component's belief as its datum, pushed through a kernel at the source and
+realised by `sample`, `mode` or `stats`) leaves its component *nested*: its beliefs are its own,
+the rest of the particle is its external world, and it reads that world only as sensing. Separate minds
+that exchange only action and sensation are joined by `couple`, not `merge`
+(`design/nesting-and-coupling.md` N2, N3).
 
 **`ActionControl(driver, control)`.** `control` names a control node of one
 component (`"world.u_location"`), identified with the driven control node of
@@ -525,7 +534,14 @@ any order: a chain of same-step bindings is one node, a node identified with one
 a `BoundaryPrior` terminates is terminated with it, and a relay into a node that
 more than one factor reads is refused whichever binding comes first. A lag on a same-step
 read is declared, not configured: an echo state whose table copies a control
-node is an ordinary state, and binding from it gives the relay.
+node is an ordinary state, and binding from it gives the relay. With a control node as the
+driver, the one node in the composite is the driving component's decision, which the driven
+component's factors read as a supplied level (a control node supplied by another participant,
+`design/nesting-and-coupling.md` N7); the driven component plans no decision for it. A decision is not a belief, so no
+belief of the driven component is identified with the driver's, and the binding is
+blanket-shaped at the driven component's boundary: the component is nested. With a state
+factor as the driver, the relay binds a state's belief into the factor's parent set a step
+later and is an identification.
 
 ```python
 from hybrid_aif.composition import ActionControl, BoundaryPrior, ObservationLink, merge
@@ -552,7 +568,13 @@ sugar's, and a composite with native nodes is described like any other.
 tables declared in `SystemParams.parameters`, read through `Parameter("<name>")`) as one:
 the composite keeps `left`'s declaration under its namespaced name, every factor or modality
 that read `right` reads it, and the two must be the same family with the same table shape
-(anything else raises naming both). `subsystem` views carry the variables their readers read
+(anything else raises naming both). The identification is one home shared outright by the
+components of one particle; `write_back` is bookkeeping of that home between views, not a
+crossing. Nothing in one participant clamps another participant's parameters: separate minds
+exchange a parameter only as a report of counts through an action node
+(`design/nesting-and-coupling.md` N2, N6). Today the caller calls `write_back`; write-back inside `run`'s
+composite form, each round it learns, is the build, after which the caller no longer calls it
+(`design/nesting-and-coupling.md` N4). `subsystem` views carry the variables their readers read
 under the composite's names (so a rate key is `"parameter:<component>.<name>"`, which `merge`
 namespaces as it does any key), and `write_back(composite, params, name, before, after)` sets the composite's
 variables to what a view learned: `before` is the view's params as `subsystem` returned them and
@@ -564,7 +586,7 @@ name's component had learned are discarded: only `left`'s declaration survives t
 variable's reader can be kept out of its updates with a static `0.0` on the reader's own rate key
 (`lr_by_slot={"transition:mission.map": 0.0}`), which is how a scheduler that never observes the
 table avoids adding its predictions to the counts.
-table. A binding that rewrites a reader's control axis (a `BoundaryPrior`, a relay) refuses a
+A binding that rewrites a reader's control axis (a `BoundaryPrior`, a relay) refuses a
 reader of a shared variable, since the table is not the reader's alone.
 
 **Names a binding removed.** A node a binding removed is gone from the
@@ -580,7 +602,9 @@ for each same-step identification), `relayed` (`(node, state)`) and `terminated`
 carries under its component's prefix, and a `subsystem` view copies it. A round steps every
 factor once, so a composite has one clock: two components that both declare durations are
 refused at `merge()`, as is a binding that removes the node carrying them
-(`design/step-durations.md` T1).
+(`design/step-durations.md` T1). A slow component is given its own pace by `composition.hold`
+under `run`, which returns the stored action for the duration `System.elapsed` reports, not by
+a second clock inside the composite (`design/nesting-and-coupling.md` N4).
 
 **Legality across a merge.** A same-step binding leaves one choice point, the
 driver's, so a mask on the identified node is the driver's constraint: key it
@@ -595,7 +619,9 @@ terminated by a prior over the partner's node, uniform by default, or given in
 `partner_priors` keyed by the node's name (a relay stub's own control node too).
 The driver's view keeps its node, and a boundary stub of
 the driven mind reads it at the same step. Boxes and targets on a node travel
-with the view that chooses it.
+with the view that chooses it. A view of a nested component is that component's own model; the
+prior over the partner's node is the component's belief about its external world inside the
+particle (`design/nesting-and-coupling.md` N2).
 
 ## The same model as a document
 

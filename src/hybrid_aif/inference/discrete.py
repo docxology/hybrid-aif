@@ -3,13 +3,15 @@
 Each modality's likelihood is a raw log-likelihood tensor ``(num_obs_m, *[num_levels_f for f in
 A_deps[m]])``, a :class:`ConditionalCategorical` (its normalized log table) or a
 :class:`ConditionalDirichlet` (its ``expected_log_params`` table); priors are one
-:class:`Categorical` per factor; observations are integer indices or one-hot arrays, one per
-modality. Collections are canonically tuples; any sequence is accepted. The iteration is
+:class:`Categorical` per factor; observations are integer indices, one-hot arrays or probability
+vectors (a soft observation), one per modality. Collections are canonically tuples; any sequence
+is accepted. The iteration is
 ``Q(s_f) ∝ exp(E_{q(-f)}[log P(o|s)] + log prior_f)`` for a fixed number of sweeps (static
 shapes, jit-safe, vmappable). Adapted from pymdp's ``algos.run_factorized_fpi`` (pymdp/algos.py);
 pymdp is the parity oracle in tests/test_discrete_parity.py.
 
-Design: docs/design/zero-support-evidence.md (tempering and the support flag)
+Design: docs/design/zero-support-evidence.md (tempering and the support flag);
+nesting-and-coupling.md N8
 """
 
 import math
@@ -75,7 +77,13 @@ def _as_log_likelihood(ll: Likelihood) -> Array:
 
 
 def _observed_log_likelihood(log_likelihood: Array, obs: Array) -> Array:
-    """Contract the modality axis with an observation (int index or one-hot)."""
+    """Contract the modality axis with an observation: an int index selects its slice; a float
+    vector, a one-hot or a probability vector, gives the expected log-likelihood under it (the
+    soft observation). Against the log of the expected likelihood it is a lower bound, exact when
+    the vector is a one-hot or the likelihood is constant over its support.
+
+    Design: nesting-and-coupling.md N8.
+    """
     if jnp.issubdtype(obs.dtype, jnp.integer):
         return jnp.take(log_likelihood, obs, axis=0)
     return jnp.tensordot(obs, log_likelihood, axes=([0], [0]))

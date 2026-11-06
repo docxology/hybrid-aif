@@ -41,6 +41,9 @@ library needs so it can, and keeps the objective where hierarchical active infer
 own expected free energy; the upper level's choices become priors for the lower level (our
 `D_deps` and `H_deps`, N1), and the lower level's result returns as an observation the upper level
 has preferences over. The upper level never reads the lower level's costs.
+*2026-11-06: inside one particle that observation is a sibling-belief read of the lower level's
+posterior (`nesting-and-coupling.md` N3); between particles it is an action node realised from it
+(N5). The "N1" here is `nesting-systems.md`'s.*
 
 **A target is a factor record with parents** (18.5a, Alex, 2026-10-12): "A target's `parents` are
 its conditioning variables: the terminal target's today (`H_deps`), and every target's once the
@@ -88,6 +91,13 @@ carried in as the slow System's factor. The colleague's body model composes the 
 System per tick and a choosing System per decision, "two Systems over one belief". A model whose
 slow horizon is short in fast ticks keeps the sticky-factor form instead; the two forms are not
 rivals, they fit different horizons.
+*2026-11-06 (`nesting-and-coupling.md` N2, N3, N5, N7): "coupled" here is the loose word. Merged,
+the two tiers are a nest: the slow choice reaches the fast tier through `ActionControl` or `H_deps`,
+and the fast tier's filtered belief reaches the slow System as the datum of a modality reading it
+through a kernel at the source (the identity or an indicator) and a declared realisation, not as a
+factor of the slow System. Under `couple`, as separate particles, the belief crosses only as an
+action node of the fast tier's state factor wired to the slow System's modality, and the slow choice
+as a wire into a held control node.*
 
 **T3 — A slow step is one application of the option's whole-step kernel.** Each level of the
 duration-carrying control node selects a kernel the user writes for the whole step, in today's
@@ -200,6 +210,8 @@ clock. `System.elapsed(action, params)` returns the duration of a realised keyed
 realised level under a stochastic actuator, since an action node shares its control node's
 levels), for an outer loop to advance its own clock by. A random wait is deferred: a duration is
 one number per level now, its mean, and a distribution per level is the named extension.
+*2026-11-06: the outer loop is T9's `hold` under `run` (`nesting-and-coupling.md` N4); the random
+wait stays deferred there too.*
 
 ## The format
 
@@ -303,6 +315,13 @@ the once-per-choice draw, and T8 reads the duration off the realised level; hold
 level is a follow-on. In the composite form the slow System owns no world process, or the composite
 environment would apply its whole-step kernel (T3) once per fast round. The option node carries no
 target and no score in the fast tier; a cost per option is the slow tier's own.
+*2026-11-06 (`nesting-and-coupling.md` N4, N7): `hold` under `run` is built and is the library's
+clock for a slow tier. At the build, N4 adds one piece to `run`'s composite form: a view that learns
+is written back to the composite each round it learns, the other views are re-taken from it, and the
+driving component's decision is routed into the driven view, so a `SharedParameter` needs no runner
+bookkeeping. The fast tier's option node, which it does not choose, is a control node supplied by
+`ActionControl` (N7's held control node); "held" in this section's title means the wrapper, not
+that.*
 
 ## Build notes (2026-10-20)
 
@@ -375,6 +394,9 @@ twelve-tick survey pools about twelve readings of distinct cells, and scoring on
 scheduler a tenth of the information it would gather against the whole energy cost of the trip
 (measured: the unvisited sector's option stayed a few hundredths of a nat behind the visited one
 at every decision, so the scheduler never left its first sector).
+*2026-11-06: the readings a held scheduler does not see between its decisions are counted here at
+planning time, not pooled at inference (`nesting-and-coupling.md` N4); the shared field is one home
+inside one particle, kept by `SharedParameter` and, at the build, `run`'s write-back (N4, N6).*
 
 - **Declaration.** `System(readings=(("<factor>", "<control node>"),))` with
   `SystemParams.readings[<factor>]`, one positive count per level of that control node: the

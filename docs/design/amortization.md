@@ -788,8 +788,7 @@ qualified key) and the validation errors come for free.
   component's *world model* merges exactly as it did. The same fence
   covers a **policy module** in `policy_prior`, for a different and
   more interesting reason: a module is a conditional prior over its
-  own beliefs, so composing two is a question about the joint action
-  distribution of two minds, not a log-space addition — `subsystem()`
+  own beliefs, so composing two is a question about the joint action distribution of two components of one particle (`merge` makes one particle, `nesting-and-coupling.md` N2), not a log-space addition — `subsystem()`
   refuses to restrict one for the same reason.
 
 **FLAG (3).** A scoring entry is **one** addressable unit: no third
@@ -823,8 +822,7 @@ hazard is the CRSPP: it *is* a declared `System` (A12 item 2), so it
 is exactly the thing someone would pass to `merge()` as a component,
 which would flatten a group-3 row's private model into the agent's own
 declared graph — its factors becoming the agent's factors, planned
-over and learned as if they were world claims. The blanket fence above
-catches it wherever it is detectable: a component with a non-empty
+over and learned as if they were world claims. The wholesale fence above catches it wherever it is detectable: a component with a non-empty
 `System.scoring` raises, so an agent and its own row-owned model
 cannot be merged together. What is *not* detectable is merging the
 CRSPP alone with some third System while an uninvolved agent points at
@@ -944,8 +942,7 @@ mean-field predicts best open loop (`pref-rollout-probe-500k.md`). The
 ruling is therefore **not** made on the replication's behalf. It is made
 because sampled and mean-field belief rollouts are two general shapes the
 library should carry: sampled latent rollouts are the norm of the neural
-world-model family (PlaNet, the Dreamers, R-AIF), a sampled carry is
-one-particle filtering, and expectation propagation is the norm of tabular
+world-model family (PlaNet, the Dreamers, R-AIF), a sampled carry is a particle filter with one sample (particle in the Monte Carlo sense), and expectation propagation is the norm of tabular
 AIF; the engine sits across both, the brief already routes expectations
 through pluggable samplers, and with both present their difference becomes
 a first-class diagnostic on any model. Costs weighed: the choice is static,
@@ -2054,7 +2051,7 @@ its retnorm key on first call, so the whole-agent carry is not
 *[LANDED 2026-09-14 — `System.init_learn_state` now seeds `moments` declaratively through `objectives.amortized.scoring_moments`, `imagine` raises on a missing entry, and `run_mc.scan_stable` is deleted (ledger entry 14 paid; divergence 29).]*
 `system.md` gains a dated paragraph distinguishing **population**
 (`vmap`: independent replicas, one declaration) from **composition**
-(`merge()`: one merged model, a new System).
+(`merge()`: one merged model, a new System, one particle in the sense of `nesting-and-coupling.md` N2).
 
 ### (e) The complete resolved-config diff — the config surface, exhausted
 
@@ -2648,7 +2645,7 @@ spaces are not supported.
   "derived" is a positive claim about where the number comes from.
   `reduction` names how the transition's distribution is reduced to the
   carried value. `"mode"` is the only one built, because the initial-prior
-  seam takes no PRNG key, so `"sample"` would have nothing to draw with.
+  seam takes no PRNG key, so `"sample"` would have nothing to draw with. These are the same names as the realisations of `nesting-and-coupling.md` N3 (`sample`, `mode`, `stats`), and mean the same thing applied to a distribution.
 
 **A12 item 6 — `reference/raif/seed.py`: why bang-bang works on Mountain Car.**
 The car is an undamped oscillator, so pushing *with* the velocity pumps energy

@@ -21,6 +21,12 @@ does with a recognition entry, and what the engine does not do.
 A second, smaller gap is in the driver: a two-tier model is two Systems with one clock each (T2),
 and the driver calls every mind each round, so a slow mind that decides once per option has had
 to be driven by a hand-written outer loop.
+*2026-11-06: with `hold` built (R8), which is the clock, the survey runner kept its own loop only
+because the slow tier's reading of the fast tier's position belief had no declared form and the
+driver does not yet route the slow tier's decision into the fast view; `nesting-and-coupling.md` N3
+gives the reading a declared form (a sibling-belief read) and at the build N4 retires the loop,
+`run`'s composite form taking write-back, re-taken views and the routing of the decision, the two
+Systems being components of one merge with the slow one nested (N2, N9).*
 
 ## What was settled before, quoted
 
@@ -33,6 +39,9 @@ node". The scope line: "no inference semantics for foreign models". The brief's 
 section states the hierarchical form of the same reading: "pseudo-observations upward,
 empirical priors downward". `test_recognition_slot.py` records that "workstream H's transducers
 are exactly this, a frozen module in this slot".
+*2026-11-06: between components of one particle this is a nest (`nesting-and-coupling.md` N2): the
+upward reading is a sibling-belief read (N3), realised as a value, and the downward prior an
+empirical prior through `D_deps` and `H_deps` (N7).*
 
 **A1** (`amortization.md`): `MLPConditional` is one role-free family whose contract is
 "(i) conditional log-density evaluation, (ii) ancestral sampling, (iii) an inference strategy
@@ -203,6 +212,17 @@ per option is the slow tier's. Observations the slow mind does not read mid-opti
 the model: the fast tier reads them, which is T7's division. Alongside: `System._durations` checks
 positivity by converting a boolean that is a tracer under any `jit`, although `elapsed` is
 documented as jit-legal; the check reads the value concretely where it can and skips otherwise.
+*2026-11-06: in the fast tier the option is a held control node (`nesting-and-coupling.md` N7): the
+fast tier plans no decision for it and drops its action node, and another participant supplies it,
+by `ActionControl` inside a nest or by a wire under `couple`. What is supplied, a level or a
+belief's statistics, is N8's question.*
+*2026-11-06: `run`'s composite form is to write back each round the params of a view that learns and
+to re-take the other views from the composite, at the build (`nesting-and-coupling.md` N4 and its
+amendment A3; `hold`, built, is the clock), so a `SharedParameter` between the tiers will need no
+hand-written bookkeeping; the slow tier's reading of the fast tier's belief is a sibling-belief read
+in the same merge (N3).*
+*2026-11-06: readings a held mind does not take between its decisions are accounted for at planning
+time (T10), not pooled at inference (`nesting-and-coupling.md` N4).*
 
 **R9, release.** 0.19.0. The capabilities entry records R1 to R8 and the calibration requirement
 of R3; the sentence "the rest fall back to the structured row" in the inference section is
@@ -252,7 +272,7 @@ Review before build: an adversarial read of this record against the code and the
 - A1(a): conditioning through a neural likelihood by linearisation, the extended Kalman row per
   component, and the linearised predictive as an alternative planning channel.
 - The same-tick factor link ("cross-factor continuous parents", queued 2026-10-18): a continuous
-  child of a continuous parent at the same tick, with the upward soft-observation message and the
+  child of a continuous parent at the same tick, with the upward likelihood message and the
   downward empirical prior resolved in the sweep. With it a free latent between an image and the
   state is declarable, and factor-valued recognition parents (R2) become admissible.
 - Training a recognition module on the analytic path by the free energy through the sweep.

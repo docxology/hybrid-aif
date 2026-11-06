@@ -3,9 +3,12 @@
 :class:`GenerativeEnv` takes and returns observations ``{modality: value}``, states
 ``{factor: value}`` and actions ``{action: value}``, keyed by action node
 (:mod:`hybrid_aif.system.keyed`), and its :class:`GenerativeEnvParams` key their containers
-by name. The environment is the actuator: an action node with a kernel ``P(a | u)``
-(``actuator``) has the action it is given realised as a draw from that kernel, and the world
-moves on the realised action. Underneath, a positional process samples in node order:
+by name. An action node with a kernel ``P(a | u)`` (``actuator``) has the action it is given
+realised as a draw from that kernel when the environment is stepped on its own, and the world
+moves on the realised action. Under ``run`` and ``couple`` the draw is made once, at the node, by
+the driver, and the world steps on the realised value with no kernel of its own. Design:
+control-states.md C13; nesting-and-coupling.md N1. Underneath, a positional process samples in
+node order:
 :meth:`System.as_env <hybrid_aif.system.System.as_env>` builds one from the System's own
 declarations (the discrete or the hybrid process, chosen by the declarations), and
 :meth:`GenerativeEnv.wrap` adopts an outside positional (pymdp-style) environment given the

@@ -13,7 +13,7 @@ reflex arc). Sources: Friston 2019, *A free energy principle for a particular ph
 (arXiv:1906.10184, the partition and the synchronisation map); Friston, Da Costa,
 Sakthivadivel, Heins, Pavliotis, Ramstead & Parr 2023, *Path integrals, particular kinds, and
 strange things* (Physics of Life Reviews 47, arXiv:2210.12761; Definitions 1 and 4 and the
-sufficient-statistics remark, quoted under Fundamentals); Friston, Rosch, Parr, Price &
+sufficient-statistics remark, referred to under Fundamentals); Friston, Rosch, Parr, Price &
 Bowman 2017, *Deep temporal models and active inference* (Neuroscience & Biobehavioral Reviews
 77, doi:10.1016/j.neubiorev.2017.04.009, the ascending message is a posterior); Pearl 1988,
 *Probabilistic Reasoning in Intelligent Systems*, section 2.2.2 (virtual evidence); Hinton 2012,
@@ -158,9 +158,12 @@ belief by design.
 
 **`couple` joins particles.** Each participant is outside the other's blanket, and what crosses
 is action and sensation. A belief crosses only as an action node realised from it; a parameter
-crosses only as a report; a distribution never crosses as a distribution, only as a value, which
-may be the belief's statistics. Two agents, an agent and a ground station, an agent and its
-world: coupling.
+crosses only as a report; nothing crosses as a belief of the receiver, only as a value, and that
+value may be distribution-shaped, the sender's statistics (N8). Two agents, an agent and a
+ground station, an agent and the world it runs in: coupling. A world merged in as a component,
+as the composing guide's agent-and-world example does, is the agent's own model of its world
+inside one particle, run forward as the composite's environment for simulation; the true world of
+a run is a process under `couple`.
 
 **The topology selects.** Is the reader inside the holder's blanket? Then nest, and read.
 Outside? Then couple, and act. The `merge` question of the earlier draft is answered by this:
@@ -241,10 +244,17 @@ draft, whether `merge` survives, is closed by this.
 as its source a state factor of another component, through a kernel at the source (the identity,
 or an indicator such as F1's `c = cell(x)`), realised by `sample`, `mode` or `stats`, default
 `sample`. The datum is the source's belief in the carry, pushed through the kernel and realised,
-at the tick the reading component infers; the modality's own parents explain it, as S8 says. This
-is `System.lagged` with three generalisations: the source may be in another component, a kernel
-may sit at the source, and the realisation is declared (today's `lagged` is `stats` with the
-identity). A read is sensing inside one particle, so it needs no action node; the belief it reads
+when the reading component infers; the carry holds the source's belief as of the end of the
+previous round, so S8's one-tick lag is kept, and it is the lag a reader that infers after its
+source sees in any case. The modality's own parents explain the datum, as S8 says. This is
+`System.lagged` with three generalisations: the source may be in another component, a kernel may
+sit at the source, and the realisation is declared (today's `lagged` is the identity kernel with
+`stats` for a categorical source and `mode`, the location alone, for a Gaussian one). How the
+planner predicts a `stats`-realised modality is settled at the build: the information-gain
+estimators score hard outcomes, which overstate what a soft datum delivers by the same Jensen
+gap, so the first build scores a read exactly under `sample` and `mode` and documents the
+hard-outcome estimate as an upper bound under `stats`. A read is sensing inside one particle, so
+it needs no action node; the belief it reads
 stays internal to the particle and external to the reader. For the rover, the scheduler's cell
 modality reads the rover's position through the cell indicator.
 
@@ -266,18 +276,26 @@ slot, outside the scored model (S2), held once per tick (C13). Nothing else is n
 belief read from outside, this is the only form.
 
 **N6. Under coupling, a parameter crosses as a report of counts.** The holder declares an action
-node of the parameter variable, realised by `stats` (the concentrations), `mode` (the expected
-table) or `sample` (a table). The reader observes the report through a likelihood over its own
-parameter variable: for counts, the multinomial, whose conjugate update adds the reported counts
-to the reader's concentrations, which equals a copy when the reader's prior is the holder's and it
-has no counts of its own, and combines correctly otherwise. This is the "parameter as the parent
-of a likelihood" the shared-parameters amendment deferred, pulled in for the count case. Nothing
-clamps a reader's home from outside: that would write an internal state, principle 6's
-telekinesis. Inside one particle, `SharedParameter` and `write_back` stay as built; they are
-bookkeeping of one home between views of one particle, not a crossing. The sentence of the
-shared-parameters walk, "parameters can be part of a blanket and so observed", is restated: a
-parameter belief is internal, and a parameter is observable by others only as reported through
-an action node of its variable, or as a sibling read inside a nest.
+node of the parameter variable, realised by `stats`. What `stats` reports for a Dirichlet is the
+counts since the last report, the per-call statistic that learning already separates from its
+absorption, so that the reader's conjugate update adds each report to its own concentrations and
+no evidence is counted twice; a report of the holder's whole concentration would carry the
+holder's prior as well as its counts, and is the named variant, consumed by replacing what that
+sender reported before. The reader observes the report through a likelihood over its own
+parameter variable, the multinomial, whose conjugate update adds the reported counts to the
+reader's concentrations; when the reader's prior is the holder's and it has no counts of its own
+the result is a copy of the holder's posterior, and otherwise the two bodies of evidence combine
+correctly. This is the "parameter as the parent of a likelihood" the shared-parameters amendment
+deferred, pulled in for the count case; `mode` (the expected table) and `sample` (a table) of a
+parameter are not count vectors, need a likelihood over tables, and stay deferred with the rest of
+that item. Nothing clamps a reader's home from outside: that would write an internal state,
+principle 6's telekinesis. Inside one particle, `SharedParameter` and `write_back` stay as built;
+they are bookkeeping of one home between views of one particle, not a crossing, and a component
+of one particle that runs on another host is still that particle, its home crossing a deployment
+cut and not a blanket. The claim made in the walk's dialogue (Alex, 2026-11-06) that parameters
+can be part of a blanket and so observed is restated: a parameter belief is internal, and a
+parameter is observable by others only as reported through an action node of its variable, or as
+a sibling read inside a nest.
 
 **N7. Who supplies a control node.** Two questions were entangled in the earlier draft and are
 separated here. This decision is only about who chooses. A mind may declare a control node as
@@ -330,12 +348,13 @@ adopted and before the build.
 
 ## The format
 
-The description document marks a modality record that reads a sibling with its source, its
-kernel (`identity`, or `indicator` with its grid) and its realisation; marks a merged component
-`nested` when N2 says so; gives an action node of a state factor a record beside the control
-nodes' action-node records, with its kernel and realisation; and marks a held control node and a
-held parameter variable `held`. A coupling is not part of the document and stays so; a run's
-record names the wires. Details at build, under the format's own revision rule.
+The description document extends the `source` field a bound observation's record already
+carries (today it names the component and state the modality was bound to) with the kernel
+(`identity`, or `indicator` with its grid) and the realisation of a sibling read; marks a merged
+component `nested` when N2 says so; gives an action node of a state factor a record beside the
+control nodes' action-node records, with its kernel and realisation; and marks a control node
+another participant supplies `held`. A coupling is not part of the document and stays so; a
+run's record names the wires. Details at build, under the format's own revision rule.
 
 ## Acceptance
 
@@ -367,3 +386,71 @@ record names the wires. Details at build, under the format's own revision rule.
 - A random wait between decisions (T8's own deferral).
 - A nest that reads both ways at once, the joint `ObservationLink` form, on two clocks; the
   one-way read is what the clocks force today.
+
+## Amendments after the N10 audit (2026-11-06, Fable; for Alex's confirmation)
+
+The audit of the other documents and the docstrings against this note found the following
+places where the note was wrong about the code, inconsistent with itself, or silent. Each is
+recorded here as a correction of wording or fact; none reopens a ruling.
+
+**A1. `ActionControl`: which form is the nest's acting binding.** C12 calls a control-node
+`ActionControl` "an identification of two latents", and the merge module says "the two nodes
+become one". Both are true of the composite's node count and both stand. The binding is
+nonetheless blanket-shaped at the driven component's boundary, and N2 and N7 mean the
+control-node form: the one node is the driver's decision, the driven component's factors read it
+as a supplied level, a decision is not a belief, and no belief of the driven component is
+identified with any of the driver's. The state-driver form of `ActionControl`, the relay, binds
+a state factor's belief into the driven factor's parent set a step later and is an
+identification. C12's sentence is wording N10 revises; its ruling, that `ActionControl` is a
+merge and not a coupling, is unchanged.
+
+**A2. Today's `lagged`, exactly.** For a categorical source the datum is the probability vector
+(`stats`); for a Gaussian source it is the location alone (`mode`); an action node may be a
+source (the level taken), and the generalisation keeps that. The read is of the previous
+round's belief, and N3 keeps that lag. A `(modality, source)` pair as declared today keeps its
+behaviour; `sample` is the default of the new declaration form only, so no shipped model changes.
+`merge` drops `System.lagged` today, which the N3 build fixes.
+
+**A3. N4, exactly.** `hold` is built and is the clock. The rest of N4 is the build: `run`'s
+composite form today neither learns nor writes back and cannot re-take a view, because each
+respond closes over its view's params outside `run`; and the driver does not route a driving
+component's decision into the driven view, which the survey runner does by a partner prior on
+the view. Both move into `run`'s composite form. `hold`'s two restrictions stand: a mind wrapped
+in it owns no world process, and none of its action nodes declares a non-identity actuator.
+
+**A4. "held" and `hold`.** T9's "a mind held for an option" and N7's "a held control node" share a
+stem and mean different things. In prose, a control node another participant supplies is
+"supplied" where the two could be confused; `held` stays the mark in the format. Inside a merge,
+`held` names what a driven node under `ActionControl` already is; the new piece is only the
+in-port under `couple`.
+
+**A5. N8, exactly.** The per-tick consumption of a probability vector by a control node's readers
+is the planner's contraction (`take_controls`); `BoundaryPrior` is the static case, averaged
+once at merge time. A reader with no table, a nonlinear transition, cannot average, so a vector
+wired into a held node it reads is refused naming `sample` or `mode`. Gaussian statistics into a
+nonlinear reader would go by moment matching, which has no Jensen-type bound, and are deferred.
+The receiver's expected free energy under a soft supplied node inherits the convexity record of
+`mixed-control-planning.md`, for which no bound is stated. A `stats` value into a process input is
+the mean-field departure the physics paragraph names, and is allowed on those terms.
+
+**A6. Planning over reads and reports.** The information-gain estimators score hard outcomes;
+under `stats` they overstate a soft datum by the Jensen gap (N3, as amended). A count report
+(N6) has no estimator entry; its information gain is novelty about the reader's variable reached
+through a report. Both are settled at the build.
+
+**A7. Labels.** This note's N1 to N10 collide with `nesting-systems.md` N1 to N3 and
+`nonlinear-transitions.md` N1 to N6. Other documents cite this note's labels file-qualified,
+"nesting-and-coupling N2", and this note cites the others file-qualified.
+
+**A8. T2's wording.** T2's "the fast tier's filtered belief carried in as the slow System's
+factor" is wording N3 changes: the belief enters as a modality's datum, explained by the
+reader's own parents, not as a factor of the reader. The quotation under "What was settled
+before" stands as the record; `step-durations.md` carries the dated pointer.
+
+**A9. Open at the build, not needed by the demo.** Whether a nested component may carry its own
+policy module (`merge` refuses one today) and its own policy precision (`merge` carries one);
+the demo uses neither.
+
+**A10. Names at the build.** `System.act` already has a `mode` keyword meaning marginal against
+policy, and its `selection` takes "stochastic" and "deterministic". The realisations `sample` and
+`mode` map onto those values; the build does not reuse `mode` as a keyword name.

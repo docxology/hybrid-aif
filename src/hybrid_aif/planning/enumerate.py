@@ -459,6 +459,10 @@ def sample_action(
     :class:`~hybrid_aif.controls.ControlStep` with leading axes ``(P, policy_len)``, takes
     ``mode="policy"`` and returns the drawn policy's first step as a ``ControlStep`` with one
     entry per control node.
+
+    ``selection`` is the action's realisation: ``"stochastic"`` corresponds to the realisation
+    ``sample`` (a draw) and ``"deterministic"`` to ``mode`` (the argmax); a mixed strategy
+    (``stats``) is not emitted here. Design: nesting-and-coupling.md N3.
     """
     stepped = isinstance(policies, ControlStep)
     continuous = (

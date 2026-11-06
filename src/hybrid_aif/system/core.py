@@ -320,9 +320,12 @@ class SystemParams(eqx.Module):
     #   the kernel P(a | u) of each action node that is not a delta, keyed by the action node's
     #   name: a (levels, levels) probability table, column u the distribution over the realised
     #   action given the decision u (a discrete control node only). An action node without an
-    #   entry realises its control node's decision exactly. The kernel is process-side: the
-    #   environment's actuator draws the realised action from it (System.as_env); the control
-    #   node stays clamped to the decision. Design: docs/design/control-states.md C12
+    #   entry realises its control node's decision exactly. The action node is realised once per
+    #   tick, at the node, by a draw from the kernel (``sample``; ``System.act``'s ``selection``
+    #   gives the other realisation, ``mode``, for the decision itself), by System.as_env when
+    #   the env is stepped on its own and by the driver under ``run`` and ``couple``; the control
+    #   node stays clamped to the decision. Design: docs/design/control-states.md C12, C13;
+    #   nesting-and-coupling.md N3, N5
     durations: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
     #   a round's duration per level of one discrete control node, keyed by the node's name:
     #   a positive (levels,) array or a scalar for every level. The objective never reads it.
@@ -672,7 +675,12 @@ class System(eqx.Module):
     #   probability vector as a soft observation) or an action node (the level taken). The
     #   modality's own parents explain that value, so a factor can emit what the model just
     #   believed. An explicit observation for the modality wins over the carry; without either
-    #   (the first tick) the modality is absent. Design: structure-learning.md S8
+    #   (the first tick) the modality is absent. By source, the datum is ``stats`` for a
+    #   categorical source, ``mode`` (the location) for a Gaussian one, and the level for an
+    #   action node; the read is of the previous round's belief. A read inside one component,
+    #   identity kernel, the source's belief itself: the case of a sibling-belief read in which
+    #   source and reader share a component. Design: structure-learning.md S8;
+    #   nesting-and-coupling.md N3
     readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
     #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
     #   at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
@@ -693,7 +701,8 @@ class System(eqx.Module):
     #   parents, initial prior or terminal target of its own. A policy
     #   carries one column per control node, in this order
     action_names: tuple[str, ...] = eqx.field(static=True, default=None)
-    #   one action node per control node, in ``controls`` order: the actuator channel, a child of
+    #   one action node per control node, in ``controls`` order: the node through which the
+    #   decision leaves the System, a child of
     #   its control node (kernel ``P(a | u)``, a delta unless ``SystemParams.actuator`` declares
     #   one). Declared with the control nodes, as ``modality_names`` with ``A_deps``, paired with
     #   them by position, both names free. The sugar's node for factor ``f`` is ``u_<f>`` with
@@ -1376,7 +1385,8 @@ class System(eqx.Module):
     def _bound_away(self, prefix: str = "") -> tuple[tuple[str, str], ...]:
         """Each control node, and its action node, a ``merge()`` binding removed, by name, with
         the rest of the sentence that refuses a mapping keyed by it (what the node became), read
-        off ``subsystems``. ``prefix`` qualifies every name, for a merge that nests this one."""
+        off ``subsystems``. ``prefix`` qualifies every name, for a merge that takes this one as a
+        component."""
         if not self.subsystems:
             return ()
         return _bound_away(self.subsystems, self._table.control_names, self.action_names, prefix)
@@ -1768,8 +1778,8 @@ class System(eqx.Module):
                 "forward as an environment means sampling the code prior and decoding its heads "
                 "— which is imagination, not an environment (nothing in it emits a reward the "
                 "agent has not predicted, so it cannot score the agent, only agree with it — and "
-                "every as_env consumer, from test oracles to the nesting driver's ground truth, "
-                "assumes scoring). The rollout face for it is "
+                "every as_env consumer, from test oracles to the composition driver's ground "
+                "truth, assumes scoring). The rollout face for it is "
                 "hybrid_aif.train.imagine.imagine over predict_beliefs (design: "
                 "amortization.md A6/A11); predict_beliefs itself is the open-loop "
                 "prediction, run against a concrete environment of the caller's. "
@@ -1847,8 +1857,10 @@ class System(eqx.Module):
     ) -> tuple[dict[str, Belief], InferenceDetail | None]:
         """Mean-field state posteriors for one tick's observations: ``(beliefs, detail)``.
 
-        ``observations`` is keyed by modality name, one entry per modality: an ``int32`` level (or
-        one-hot) for a categorical modality, a float array for an LG one. ``priors`` and the
+        ``observations`` is keyed by modality name, one entry per modality: an ``int32`` level, a
+        one-hot or a probability vector over the levels (a soft observation: the expected
+        log-likelihood under the vector) for a categorical modality, a float array for an LG
+        one. Design: nesting-and-coupling.md N8. ``priors`` and the
         returned beliefs are keyed by factor name; ``priors=None`` uses :meth:`initial_priors`.
         A discrete control node's entry is optional in ``priors`` and always returned: no
         inference runs on it, so it passes through (its uniform prior when absent). An action
@@ -2831,7 +2843,10 @@ class System(eqx.Module):
         emits a posterior over a continuous plan (the gradient planner under
         ``posterior="laplace"``, a truncated Gaussian on the box) has the action drawn from that
         posterior's first step under ``selection="stochastic"``, and its mode under
-        ``"deterministic"``. ``legal`` is this
+        ``"deterministic"``. ``selection`` is the action's realisation: ``"stochastic"``
+        corresponds to the realisation ``sample`` (a draw) and ``"deterministic"`` to ``mode``
+        (the argmax, or the mean of a continuous belief); a mixed strategy (``stats``) is not
+        emitted here. Design: nesting-and-coupling.md N3. ``legal`` is this
         tick's hard constraint: a mapping keyed by control-node name, each entry a boolean mask
         over that node's levels (``(levels,)`` for the first step, ``(policy_len, levels)`` per
         step; a node left out is unrestricted, an unknown key raises), or one bool per policy of
@@ -2974,7 +2989,8 @@ def _bound_away(
 ) -> tuple[tuple[str, str], ...]:
     """Each control node, and its action node, a ``merge()`` binding removed, by name, with
     the rest of the sentence that refuses a mapping keyed by it (what the node became), read
-    off ``subsystems``. ``prefix`` qualifies every name, for a merge that nests this one."""
+    off ``subsystems``. ``prefix`` qualifies every name, for a merge that takes this one as a
+    component."""
     live = set(control_names)
     live_action = dict(zip(control_names, action_names, strict=True))
 

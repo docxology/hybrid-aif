@@ -79,6 +79,10 @@ unscented 0.118). The information-gain and ambiguity leaves read that spread.
   neural path builds its one-hot inside the step because a network takes a vector, and a
   user's `f` indexes by the level itself. Within a rollout a discrete control is one level per
   policy step, never a belief; uncertainty over it lives in the policy posterior.
+  *2026-11-06: a held control node (`nesting-and-coupling.md` N7) supplied with `stats`, a
+  probability vector over levels (N8), cannot reach `f` as a level, and a nonlinear `f` has no table
+  to average over the vector, so such a wire into a nonlinear reader is refused naming `sample` or
+  `mode`, N8's last case.*
 - **A continuous control carried as a belief** (the gradient planner) enters as on the linear
   path, generalised: to first order its spread through the Jacobian in `u`, `J_u S J_uᵀ`, added;
   unscented, the sigma points are drawn over the joint `(x, u)`. A truncated control belief
@@ -114,7 +118,7 @@ would need `f` to take the mode, or one `f` per mode, an API with no consumer ye
 - **Description length.** `f`'s numeric fields count as parameters, point values with no
   prior, as other point declarations are counted.
 - **Composition.** `merge` carries the declaration through; a binding that would slice `f`'s
-  inputs (remove a control node it reads) is refused, since `f`'s signature is fixed code.
+  inputs (remove a control node it reads) is refused, since `f`'s signature is fixed code. Under `couple` nothing is sliced: a control node `f` reads may be held and supplied by a wire (`nesting-and-coupling.md` N7), with the level arriving as from a planner.
 
 ## N6 — acceptance
 
@@ -179,8 +183,7 @@ would need `f` to take the mode, or one `f` per mode, an API with no consumer ye
   pass it through, and a rate on it is refused as a point value. `merge` carries it; a binding
   that would remove a control node `f` reads (a `BoundaryPrior`, a state relayed into the node,
   a `subsystem` view cutting a partner's node) raises `NotImplementedError` in
-  `_drop_control_axis`; an `ActionControl` identifying two control nodes keeps `f`'s inputs
-  whole and is allowed. A belief over a continuous control node is admitted for a nonlinear
+  `_drop_control_axis`; an `ActionControl`, which supplies one component's control node from another's (the acting binding of a nested component: the driver's decision is the one node, read as a supplied level, and no belief is identified; `nesting-and-coupling.md` N2 and N7), keeps `f`'s inputs whole and is allowed. A belief over a continuous control node is admitted for a nonlinear
   reader in `score_policies` (it was refused for every reader but a linear-Gaussian one).
 - **The registry** (`description/__init__.py`, exported from `hybrid_aif`; tests in
   `tests/test_transition_registry.py`). `register_transition(name, cls)` takes a name of at

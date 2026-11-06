@@ -474,7 +474,10 @@ def take_controls(
 
     A level may be a probability vector over the axis (a belief-valued policy's entry): the
     axis is then contracted against it, as a mixture of the slices. ``log`` says ``table``
-    holds log-probabilities, so the mixture is taken in probability space.
+    holds log-probabilities, so the mixture is taken in probability space. The same contraction
+    is the per-tick consumption of a control node supplied as a probability vector by its readers;
+    :class:`~hybrid_aif.composition.merge.BoundaryPrior` is the static case, averaged once at
+    merge time. Design: nesting-and-coupling.md N8.
     """
     if isinstance(index, ControlRead):
         order = sorted(zip(index.positions, range(len(index.index)), strict=True), reverse=True)
@@ -856,7 +859,9 @@ def action_node_beliefs(action: object, sensed: SensedNodes) -> tuple[Array, ...
     kernel and the kernel's column ``u`` under a declared one; a probability vector over the
     node's levels (a soft step) gives the mixture of the kernel's columns it weights, the
     vector itself under the delta kernel. ``action`` is the step, one level per control node, a
-    flat vector or a :class:`ControlStep`."""
+    flat vector or a :class:`ControlStep`. A belief pushed through the kernel at the node: the
+    planning-side counterpart of a realised ``stats`` value. Design: nesting-and-coupling.md N3,
+    N5."""
     out = []
     for k, n in zip(sensed.columns, sensed.levels, strict=True):
         entry = node_entry(action, k, sensed.layout)

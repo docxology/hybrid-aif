@@ -51,6 +51,9 @@ clamped level. (Reaffirmed 2026-10-21: the gain about `a` is not scored because 
 plan reads `a`, transitions reading the control node; a model that wants to value knowing what
 it did declares its effector as a state factor, as the control-states ruling says. Learning the
 kernel `P(a | u)` itself would be a parameter gain, and is a queued item.)
+*2026-11-06: under `couple` an action node may also have a state factor as parent
+(`nesting-and-coupling.md` N5); it stays outside the scored model by this ruling and is realised by
+`sample`, `mode` or `stats` once per tick (C13).*
 
 **S3 — A Gaussian-carried factor selects, a categorical parent contracts.** A linear-Gaussian
 channel observing a Gaussian-carried factor whose mode parents are all action nodes takes the

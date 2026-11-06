@@ -63,6 +63,11 @@ has convex terms in the relaxed node, re-score its rounded result clamped, and r
 clamped `G`. What it buys is cost polynomial rather than exponential in the horizon, and
 gradients through the discrete choice.
 
+*2026-11-06: distinct from this, a control node's `stats` realisation emits the mixed strategy as a
+value across a blanket, and a held control node may receive one (`nesting-and-coupling.md` N8); the
+receiver then scores its own plans under a soft held node, and the reasons above apply to that
+score.*
+
 ## Build notes (2026-10-22)
 
 Built as `src/hybrid_aif/planning/mixed.py` (`mixed_plan`, `MixedResult`, `make_mixed_planner`,

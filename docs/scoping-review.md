@@ -5,6 +5,11 @@ repos (`/reference`) and papers (`/papers`), plus open questions and a
 parallelization map for development. The README itself is preserved as-is; all
 commentary lives here.
 
+Status 2026-11: where this review speaks of observations, beliefs or messages passing between
+levels or systems, read `design/nesting-and-coupling.md` N1 to N3: beliefs are internal, a higher level reads a lower one as
+sensing, and separate systems exchange action and sensation only. "Nested" in this review means
+"composed in levels", not the per-component shape of `design/nesting-and-coupling.md` N2.
+
 Method: the three reference codebases and all eight papers were read in full
 (repos file-by-file; papers end-to-end including appendices). File paths,
 function names, and equation numbers below refer to the reference material.
@@ -260,7 +265,9 @@ Grouped; roughly ordered by how much they block other work.
    uniformly across node types? This is the load-bearing interface.
 2. `System` semantics: is an env just another `System`? How do nested systems
    compose objectives and share the info-dict namespace? What exactly lives on
-   the boundary (Markov blanket = typed observation/action edges?)?
+   the boundary (Markov blanket = typed observation/action edges?)? [Settled: an env is a
+   `System`; the boundary carries action and sensation only, `design/nesting-and-coupling.md` N1; components inside one
+   particle are a merge, separate participants a coupling, `design/nesting-and-coupling.md` N2.]
 3. Do we adopt pymdp's cross-factor transition mechanism
    (`B_dependencies`), or support more general coupling?
 4. Equinox (pymdp precedent) vs flax/nnx for module system? mctx for tree
@@ -305,6 +312,8 @@ Grouped; roughly ordered by how much they block other work.
 15. Multi-agent: is homogeneous-batch (pymdp-style independent agents) enough,
     or do agents share an env / interact? Heterogeneous shapes needed? (Both
     are expensive; pymdp's padding kernels show the engineering cost of heterogeneity.)
+    [Settled: interacting agents are separate particles joined by `couple`, exchanging action and
+    sensation (`design/nesting-and-coupling.md` N2); batched independent agents are a separate matter.]
 
 **Project**
 

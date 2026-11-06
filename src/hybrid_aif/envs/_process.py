@@ -8,8 +8,8 @@ Params hold per-modality likelihood tensors ``A[m]`` shaped
 tensors ``B[f]`` shaped ``(num_levels_f, *[num_levels_g for g in B_deps[f]],
 num_actions_f)``, and initial priors ``D[f]`` — the same tensor conventions as
 ``fpi``'s model representation. States and observations are drawn from
-:class:`Categorical` heads built by indexing these tensors: the env is just
-another system's generative model.
+:class:`Categorical` heads built by indexing these tensors: the env is the System's own
+generative model run forward.
 
 :class:`HybridProcess` is the hybrid sibling (design doc "as_env"):
 its params hold the *declaration objects* of a hybrid System directly, and

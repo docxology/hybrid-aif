@@ -1,4 +1,4 @@
-"""System: the unit of coupling and of model specification.
+"""System: the unit of composition and of model specification.
 
 ``from hybrid_aif.system import System, SystemParams`` is the import path. The package is split
 across:

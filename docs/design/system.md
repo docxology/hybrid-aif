@@ -142,13 +142,10 @@ leading batch axis — `SystemParams`, the belief carry, `LearnState`
 (optimizer moments and the return normalizer's EMAs), the replay buffer,
 the env state, the key. No interaction, no declaration change, no
 synchronisation, because there is nothing shared to synchronise. A
-**composition** is `merge()`: several minds inside one joint generative
-model, interacting through shared latents, and it returns *a new
-System* — a different declaration, one belief carry, one G. So "four
+**composition** is `merge()` or `couple()`. `merge()` makes one particle: several components inside one joint generative model, a nested component reading a sibling's belief and acting through `ActionControl`, an identification sharing a latent outright, and it returns *a new System*, a different declaration (`nesting-and-coupling.md` N2). `couple()` joins separate particles that exchange only action and sensation. So "four
 training seeds" is a population (`reference/raif/run.py` runs exactly that:
 a seed is an agent whose entire numeric state is batched, which is why a
-reboot loses one checkpoint interval rather than one seed), while "two
-agents in a room" is a composition, and a population **of** coupled
+reboot loses one checkpoint interval rather than one seed), while "two agents in a room" is a coupling, and a population **of** coupled
 Systems is a `vmap` over `couple()`'s output needing no further machinery.
 The brief's "vmapped across agents" commitment is now a tested thing rather
 than a claim: `tests/test_population.py` runs `infer_states`, conjugate and
@@ -187,6 +184,9 @@ edges). v0.1 builds exactly one coupling shape: agent-System × env
 `policy_fn(key, history, t)` seam is where `act` plugs in. Hierarchical
 nesting (System-of-Systems, transducer slots at the outermost boundary)
 is designed here in vocabulary but deliberately unbuilt until after v0.1.
+*2026-11-06: hierarchical nesting is now a shape of `merge` (a component whose bindings are a
+sibling-belief read and an `ActionControl`), and blanket pairing is `couple`
+(`nesting-and-coupling.md` N2, C13).*
 
 ## Addendum 2026-08-21: kernels, and the three groups of `SystemParams`
 

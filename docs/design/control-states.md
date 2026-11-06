@@ -36,7 +36,7 @@ Three further things argue against keeping the index as the core representation:
   a table cannot receive a message.
 - **The library already does it at its boundaries.** `merge()`'s `ActionControl` rewrites a
   bound control node into an ordinary `B_deps` parent, and `BoundaryPrior` with a distribution
-  averages over the control axis — a belief pushed through a control node. The core is the odd
+  averages over the control axis — a belief pushed through a control node. (A held control node consumes `stats` per tick by the planner's contraction (`take_controls`), `nesting-and-coupling.md` N8; `BoundaryPrior` is the static case, averaged once at merge time, and a reader with no table, a nonlinear transition, refuses the vector naming `sample` or `mode`.) The core is the odd
   one out.
 - **The declaration is redundant.** `num_controls` restates a table's shape, and `controlled`
   restates "has a control parent", except where it means something else (a continuous control
@@ -46,8 +46,7 @@ Three further things argue against keeping the index as the core representation:
 
 1. **The control state** — an internal latent: what the agent intends to do at a step.
 2. **The policy** — the control states over the horizon: what a planner chooses among.
-3. **The emitted action** — the active state at the blanket: a draw (or mode) from the control
-   posterior, sent out like the dual of an observation. Ports belong here and only here.
+3. **The emitted action**, the active state at the blanket: the control posterior realised as a value, by `sample` (a draw, the default), `mode`, or `stats` (the posterior's probability vector, a documented efficiency), sent out like the dual of an observation (`nesting-and-coupling.md` N3, N8). Out-ports belong here and only here; under coupling an action node may also have a state factor as its parent (N5).
 
 The index representation ran (1) and (3) together. Making (1) a node does not touch (3): an
 emitted action stays a port value.
@@ -115,8 +114,7 @@ Consequences the brief asked about:
   echoes it (the one-tick relay); the node named decides, there is no default (C8), and existing
   composites, which name states, are unchanged.
 - **Prices over controls need no echo state**: a target on a control node contributes, under a
-  clamped policy, `KL(δ_u ‖ C) = −log C(u)` — a per-control price. An echo state is kept only
-  where a lagged read is wanted.
+  clamped policy, `KL(δ_u ‖ C) = −log C(u)` — a per-control price. An echo state is kept only where a read one tick late is wanted.
 
 ## Decisions to walk
 
@@ -135,6 +133,9 @@ latent leaves the composite's `controls` and becomes an ordinary driven parent (
 already does this). Cf. Friston et al. (2024, *Supervised structure learning*, Biological
 Psychology 193:108891; [doi:10.1016/j.biopsycho.2024.108891](https://doi.org/10.1016/j.biopsycho.2024.108891)): a control variable is "a path
 that may or may not be controllable".
+*2026-11-06: a node may also be declared held, supplied by another participant, a wire under
+coupling or `ActionControl` inside a nest; the mind plans no decision for it and its action node is
+dropped (`nesting-and-coupling.md` N7).*
 
 **C2 — The policy object.** *ADOPTED (Alex, 2026-10-04); path dynamics deferred to the next
 build.* a policy is an assignment to the
@@ -260,8 +261,7 @@ reader sizes takes its level count from the declarations that name it, which mus
 each other: the parent axis of a `C_deps` target; the per-level axis of a modality that
 observes its action node; the length of a per-level `durations` entry. A box in
 `params.control` sizes a continuous node as before. The node is refused only when nothing
-reads or sizes it, in the sentence that lists these ways. The
-option node of a held mind (step-durations.md T9) is the case: the fast tier reads it only
+reads or sizes it, in the sentence that lists these ways. The option node of a mind wrapped in `hold` (step-durations.md T9) is the case: the fast tier reads it only
 through a target, a modality or a duration. The sugar form (`controlled=`) keeps its refusal,
 having no other declaration to size an unread node.
 
@@ -279,6 +279,9 @@ search one refuses with a sentence until a use needs the product search.
 current step (the act face's sampling, `act_sampling`'s rule), or its mode; ports attach to
 the action nodes; `ActionControl` and `BoundaryPrior` retarget from a factor's control
 axis to a control node. *ADOPTED (Alex, 2026-10-04)*; the one-tick relay through a bound state stays.
+*2026-11-06: a draw and the mode are `sample` and `mode` of `nesting-and-coupling.md`'s
+realisations; `stats`, the posterior's probability vector (the mixed strategy), is the third, a
+bounded efficiency that may cross any wire (N3, N8).*
 
 **C6 — Sugar.** `num_controls`, `controlled` and `continuous_controls` remain as declarations
 that create one control node per controlled factor, placed as that factor's last transition
@@ -356,6 +359,10 @@ that is neither a control node nor a state of the driver is refused naming both 
 Legality across a merge: a mask on the node is A's constraint, the only choice point it has, keyed
 by A's name; a mask keyed by B's former name is refused naming A's node (the mask-at-every-choice-
 point rule across the merge).
+*2026-11-06 (`nesting-and-coupling.md` N2, N7): this holds for B as a separate particle under
+coupling. Inside a merge where B is nested, A's decision supplies B's held control node through
+`ActionControl`, which is acting inside one particle, not telepathy. Routing A's decision into B's
+`subsystem` view under `run` is part of the build (`nesting-and-coupling.md` N4).*
 
 **C12 — The active state is a node; `couple()` was a merge.** *ADOPTED (Alex, 2026-10-09).*
 The design keeps three objects apart (control state, policy, emitted action), but the code attached
@@ -385,6 +392,17 @@ is the name for coupling through blankets: a wire from one System's action node 
 observation node, typed, with no latent shared (the build plan's 4b, now inside the arc). (4) A
 thorough audit of design docs, user docs and docstrings purges the conflation of control states
 with actions, and code resting on it goes unless a feature stands on its own.
+*2026-11-06 (`nesting-and-coupling.md` N2, N7): these merges are read by shape. A control-node
+`ActionControl` makes one node in the composite, the driver's decision, which the driven component's
+factors read as a supplied level (a held control node, N7); a decision is not a belief, so no belief
+of the driven component is identified with the driver's, and the binding is blanket-shaped at the
+driven component's boundary. The state-driver form, the relay, binds a state's belief into a
+factor's parent set a step later and is an identification, as are `SharedParameter` and a joint
+`ObservationLink`. C12's ruling stands: `ActionControl` is a merge, not a coupling.*
+*Under coupling a state factor may parent an action node too, with the same kernel slot and
+realisations, outside the scored model (`nesting-and-coupling.md` N5).*
+*`merge()` makes one particle, whose components may be nested or identified
+(`nesting-and-coupling.md` N2).*
 
 **C13 — Coupling through blankets.** *ADOPTED (Alex, 2026-10-09).* A run is a set of
 participants wired together: **minds** (a System with a respond function, planning or not) that
@@ -404,6 +422,18 @@ an out-port read by nothing is ignored. The record is one entry per participant,
 name given at `couple()`: a mind's observations as received, intended and realised actions, and
 carry; a process's states and emitted observations. `run` on a merged composite stays as it is,
 the one-process case with wires by name, and its record is unchanged.
+*2026-11-06 (`nesting-and-coupling.md` N5, N7, N8): C13 is unchanged; the out-ports now include an
+action node of a state factor, the in-ports a held control node, and a wire may carry the sender's
+sufficient statistics (`stats`), which the receiver consumes by its kind: a modality as a soft
+observation, a process input by marginalising its kernel, a held control node through the planner's
+contraction (`take_controls`; `BoundaryPrior` is the static case, averaged once at merge time). A
+receiver that cannot marginalise, a reader with no table such as a nonlinear transition, refuses the
+wire naming `sample` or `mode`.*
+*2026-11-06: `hold` is built and is the clock. At the build (`nesting-and-coupling.md` N4 and its
+amendment A3), `run`'s composite form gains one piece of bookkeeping: the composite's params are the
+single home, a view that learns is written back each round it learns, and the other views are
+re-taken from the composite; the driver also routes a driving component's decision into the driven
+view.*
 
 *Reading (2026-10-11):* how C11 and C13 correspond to the predictive-coding account of motor
 control, where the actuator kernel is the reflex arc and a wired action node is proprioception,
@@ -421,6 +451,8 @@ ride it (Alex, 2026-10-05, from reading zeroth-harness's serialised models): `ob
 state records already say `transition_parents` — with `observes` accepted as an alias on read for
 one version; and `source` is written only for an observation `merge()` bound, `"external"` being
 the default it already is on read (the schema does not require it and `build` never reads it).
+*2026-11-06: a modality that reads a sibling's belief extends this `source` field with the kernel
+and the realisation (`nesting-and-coupling.md`, "The format").*
 
 **C10 — Names at the faces, order inside.** *ADOPTED (Alex, 2026-10-05).* Every public face
 takes and returns beliefs and actions as mappings keyed by node name (`act` returns

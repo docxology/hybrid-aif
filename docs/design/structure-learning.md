@@ -189,6 +189,11 @@ which under the tick semantics of `nesting-systems.md` (amendment 2026-10-14) is
 that responds every tick, not one that skips ticks; a colleague's multi-timescale coupling (the slow
 states setting the fast ones at each option and reading them back) is a modelling pattern on
 that rule and belongs to the coupling row.
+*2026-11-06: a slow tier now runs under T9's `hold`, which returns its stored action between
+decisions and infers nothing (`step-durations.md` T9), and the set-and-read exchange is settled by
+`nesting-and-coupling.md`: the slow tier sets the fast one through `ActionControl` and reads it back
+through a sibling-belief read (N3), clocked by `hold` under `run` (N4). Neither is this schedule's
+customer.*
 
 **Rejected in the first build.** AXIOM's acceptance test, an ELBO on ancestrally sampled data
 scored through the downstream multinomials over reward and next switch. It is a task-specific
@@ -242,13 +247,14 @@ read at the filter step. A point datum first, the carried belief's mean (AXIOM t
 filtered state as data); the expected score under the full belief is closed under the point head
 and not under the Student-t, and is an option later. This is a general device (autoregressive
 observation models, anything that explains what it just believed), not a stopgap.
+*2026-11-06: generalised by `nesting-and-coupling.md` N3, the sibling-belief read: the source may be
+in another component of a merge, a kernel (the identity or an indicator) may sit at the source, and
+the realisation (`sample`, `mode`, `stats`) is declared, default `sample`.*
 
 Rejected: the discriminative direction, a conditional table from previous-tick parents to `z`,
 which has no row for a continuous parent and loses the mixture reading; a deterministic lag copy
 of the state with `z` emitting the copy, which gives the copy two factors (a copy and an
-emission) that the one-transition-per-factor structure cannot hold. Not this device: one
-System's state emitted to another System next tick across a blanket, which is the Env recast row
-(`control-overhaul-build-plan.md`) and stays there.
+emission) that the one-transition-per-factor structure cannot hold. Not this device: one System's state emitted to another System across a blanket, which is an action node of that state factor wired to the other's modality (`nesting-and-coupling.md` N5). Inside one particle, a component reading another's belief is this device generalised (N3).
 
 First build: the recurrent mixture over features supplied by the driver, which is what an
 acceptance task with object state given provides; the lagged datum when the state is inferred.
@@ -283,8 +289,14 @@ Pins, each against the arithmetic it replaces or a reference it does not share c
   names the gap.
 - **A colleague's multi-timescale coupling** (the set-and-read exchange between a slow and a fast
   tier), on the coupling row.
+  *Settled 2026-11-06 by `nesting-and-coupling.md` N3, N4 and N7 (a nest: `ActionControl` sets, a
+  sibling-belief read reads back, `hold` under `run` clocks).*
 - AXIOM's sampled-ELBO acceptance (S4) as a scoring option; the expected score under a full
   carried belief for a lagged datum (S8).
+  *2026-11-06: for a categorical source this is the `stats` realisation consumed as a soft
+  observation (`nesting-and-coupling.md` N3, N8), Jensen-bounded; for a Gaussian source today's
+  `lagged` is `mode`, the location, and Gaussian statistics into a linear-Gaussian modality are
+  exact and deferred by the note.*
 
 ## As-built notes (2026-10-15)
 
@@ -359,6 +371,11 @@ above, each a reading of the rulings rather than a change to them:
   carry (the first tick absent). An explicit observation wins over the carry. The description
   writes it as the likelihood record's `options.datum`, `"<source>[t-1]"`. The expected score
   under the full belief stays open, as the text says.
+  *2026-11-06: in `nesting-and-coupling.md`'s terms this is a read of the previous round's belief
+  with the identity kernel, realised by `stats` for a categorical source, by `mode` (the location)
+  for a Gaussian one, and by the level for an action-node source (N3); an existing `(modality,
+  source)` pair keeps its behaviour, and the format's record of source, kernel and realisation for a
+  sibling read extends `options.datum` at build.*
 - **Acceptance.** The Gameworld-style task has object state given: a player and food on a
   plane, four moves, the reward the sign of the change in distance to the nearest food. The
   model's tuple is the direction to the nearest food (a Gaussian emission), the move and the

@@ -165,6 +165,9 @@ To design (RESOLVED — see `system.md` for the decisions):
   `System` = structure + params + optional preference block; `as_env()` /
   `act()` faces; nesting via blanket-typed edges. F also recommends a
   declared action-space structure on `Env`.
+  *2026-11-06: nesting is now a shape a `merge` can have (`nesting-and-coupling.md` N2): a component
+  whose every binding across its boundary is a sibling-belief read or an `ActionControl`; edges
+  between separate particles are `couple`'s wires (C13).*
 - **Trajectory logging conventions** (G's warnings): T+1 obs vs T actions —
   decide once before any dataset accumulates; float32 casting at the
   logger; an attrs note for action alignment.

@@ -34,6 +34,12 @@ The two readings coincide whenever the control belief is a clamp (the enumeratio
 and CEM planners) and the reflex arc is exact. They can part under a belief-valued control (C3)
 on a message-passing backend (C7): predictive coding emits the prediction, a sampler emits a
 draw. Which the action face emits there is the backend's question, not settled here.
+*2026-11-06: settled by `nesting-and-coupling.md` ("Realising a belief as a value"): what an action
+node emits is a declared realisation of the belief pushed through the kernel, `sample` (a draw, the
+default), `mode` (the argmax, or the mean of a continuous belief) or `stats` (the sufficient
+statistics), whatever backend formed the belief. Emitting the prediction is `mode` for a Gaussian
+control belief; `stats` at a motor is the documented bounded efficiency, with no fast-scale
+realisation.*
 
 ## Where interoceptive observations come from
 
@@ -46,6 +52,8 @@ transformed proprioception needs the process, as any transformation does under C
 the engine side: a modality whose parent is an action node is accepted by `infer_states`,
 `update_empirical_prior` and `as_env` only (build-plan gap table). Planning through the actuator
 is what the predictive-coding control story needs, so that row is the one this reading leans on.
+*2026-11-06: a port's value may also be the sender's sufficient statistics (`stats`), which every
+wire may carry and each receiver consumes by its kind (`nesting-and-coupling.md` N8).*
 
 ## Inference backends
 
@@ -89,9 +97,8 @@ The layering Alex asked for, a core generative model that is bidirectional under
 coding and peripheral transducers and effectors around it, has a first form in the engine
 already: an actuator kernel is periphery declared with the mind and realised process-side. The
 general form is a **body**: a mind wired to its peripheral processes and presented to a larger
-wiring as one participant, whose ports are the bundle's unbound ports and whose record nests its
-members' records. That is a `Wiring` as a participant of a `couple()`, nothing more; strictly the
-periphery could stay environment, but a body is what one wants to name, save and reuse.
+wiring as one participant, whose ports are the bundle's unbound ports and whose record contains its members' records. That is a `Wiring` as a participant of a `couple()`, nothing more; strictly the
+periphery could stay environment, but a body is what one wants to name, save and reuse. A body is a coupling of particles, not a nest in the sense of `nesting-and-coupling.md` N2: its members stay outside one another's blankets.
 
 ## Roadmap items this reading adds
 

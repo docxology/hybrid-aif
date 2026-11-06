@@ -82,6 +82,11 @@ class Parameter(eqx.Module):
     ``SystemParams.parameters``. Every reader of one name reads one table, and ``learn`` updates it
     once from the sum of the readers' count statistics. The token carries no array: the name is
     static, so a reference is a pytree node with no leaves.
+
+    The variable is internal to one particle: its readers share it outright, and another particle
+    sees it only as a report of counts (by ``stats``, the counts since the last report; ``mode``
+    and ``sample`` of a parameter stay deferred). Design: shared-parameters.md;
+    nesting-and-coupling.md N6.
     """
 
     name: str = eqx.field(static=True)

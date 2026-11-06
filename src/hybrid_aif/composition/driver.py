@@ -4,23 +4,26 @@ A mind is a :data:`RespondFn`, ``respond(key, obs, carry) -> (action, carry')``.
 :func:`agent_respond` and :func:`ancestral_respond` build the two ends of that spectrum.
 :func:`run` closes the loop in one of two forms:
 
-- **Wired** (:func:`~hybrid_aif.composition.couple.couple`): minds and processes joined by
-  typed wires, from an action node to a process input or a mind's modality, and from a process
-  observation to a mind's modality. Each action node is realised from its mind's
+- **Wired** (:func:`~hybrid_aif.composition.couple.couple`): separate particles, minds and
+  processes joined by typed wires, from an action node to a process input or a mind's modality,
+  and from a process observation to a mind's modality. Each action node is realised from its mind's
   ``params.actuator`` when the mind chooses, and every wire from it carries the realised value;
   the processes step on their realised inputs. The record is one entry per participant,
   :class:`MindRecord` or :class:`ProcessRecord`.
-- **Composite** (:func:`~hybrid_aif.composition.merge.merge`): one process, the composite's
-  ``as_env``, with the wires by name: observations route in by the ``subsystems`` metadata
-  (each mind sees its own modalities, keyed by name); actions route out by action-node name,
-  each mind's action nodes merged into the composite action, realised at its nodes, on which the
-  world moves. The record is a :class:`Trajectory`.
+- **Composite** (:func:`~hybrid_aif.composition.merge.merge`): one particle, whose components
+  are the minds' views; the world is the composite's ``as_env``, with the wires by name:
+  observations route in by the ``subsystems`` metadata (each mind sees its own modalities, keyed
+  by name); actions route out by action-node name, each mind's action nodes merged into the
+  composite action, realised at its nodes, on which the world moves. The record is a
+  :class:`Trajectory`.
 
 In both forms a realised action is drawn once, when its mind chooses, and every wire from the
 node carries it for the rest of the round; no other mind's choice redraws it.
 
-Beliefs never route: each mind's posterior lives in its own carry, and minds reach each other
-only through the wires (in the composite form, through the world).
+A belief is internal: each mind's posterior lives in its own carry and never crosses as a
+distribution. Minds reach each other only through the wires (in the composite form, through the
+world), and what a wire carries is the realised value of an action node, which may be the
+belief's statistics.
 
 A round is one tick of time under every order, and every factor steps once per round; the
 orders are algorithms for one update, not amounts of time. ``"simultaneous"`` (default): every
@@ -36,7 +39,7 @@ one row per tick. The driver is a Python loop, so carries need no shared structu
 ``respond`` may be jitted.
 
 Design: docs/design/nesting-systems.md (architecture sketch; tick semantics);
-docs/design/control-states.md C13.
+docs/design/control-states.md C13; nesting-and-coupling.md N1, N4.
 """
 
 import dataclasses
@@ -67,6 +70,8 @@ class MindCarry(NamedTuple):
     ``beliefs`` is ``None`` before the first tick (use the declared initial priors); ``learn_state``
     holds the carry of ``System.learn`` once a mind learns online. Carries are never merged, so two
     minds share no leaf.
+
+    Design: nesting-and-coupling.md N1.
     """
 
     beliefs: Mapping[str, Belief] | None = None
@@ -266,7 +271,7 @@ def hold(
     must own no world process: its factors are beliefs and the world is a separate component,
     or the composite environment would apply the option's whole-step kernel once per round of
     the fast tier. The wired form (:func:`~hybrid_aif.composition.couple.couple`) has no such
-    restriction. This is not checked. Design: step-durations.md T9.
+    restriction. This is not checked. Design: step-durations.md T9; nesting-and-coupling.md N4.
     """
     scalar = isinstance(ticks_per_unit, numbers.Real) or (
         isinstance(ticks_per_unit, np.ndarray | Array) and ticks_per_unit.ndim == 0

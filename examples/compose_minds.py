@@ -1,4 +1,4 @@
-"""Two robots, two charging docks: one mind by ``merge()``, two minds by ``couple()``.
+"""Two robots, two charging docks: one particle by ``merge()``, two by ``couple()``.
 
 A corridor of ``n`` cells with a charging dock at each end. Two robots move one cell a tick
 (left, stay or right; a move into a wall stays) and the task is to end up one robot per dock.
@@ -16,7 +16,9 @@ The two robots' models are composed two ways:
   modalities read the robots' own position factors (each model's ``other`` goes unread), and
   one mind plans over both robots' moves jointly, acting on a whole joint policy
   (``act(..., mode="policy")``; on each node's own marginal, ``act``'s default, the two
-  dock assignments tie node by node and the one mind behaves as the coupled pair does);
+  dock assignments tie node by node and the one mind behaves as the coupled pair does); the
+  joint ObservationLinks identify the robots' position factors outright, so the two components
+  share them with messages both ways;
 - **coupled** (:func:`coupled_episode`): each robot is a mind of its own, its model as
   declared, wired to a world process through ``couple()``, as ``hide_and_seek.py`` does.
 
@@ -30,7 +32,8 @@ Run as a script it prints the identity check and the comparison::
 
     .venv/bin/python examples/compose_minds.py
 
-Design: docs/design/nesting-systems.md; docs/composing-systems.md
+Design: docs/design/nesting-and-coupling.md, docs/design/nesting-systems.md;
+docs/composing-systems.md
 """
 
 from __future__ import annotations

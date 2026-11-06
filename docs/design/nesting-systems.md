@@ -10,12 +10,17 @@ scope)" (blanket-typed port pairing — the vocabulary this makes real).
 The sequencing note at the bottom is historical: parameter learning
 (v0.3) and the per-variable epistemic API (v0.4) both landed first,
 as it prescribed.*
+*2026-11-06: what `merge` and `couple` mean, and what crosses a blanket, is settled in
+`nesting-and-coupling.md` (N1, N2).*
 
 ## The requirements (a priori)
 
 1. **A `System` is implicitly open** — it produces actions and consumes
    observations for other systems; openness = unbound blanket ports
    (action nodes, observation modalities; `as_env` flips them).
+   *2026-11-06: an action node may have a state factor as its parent under coupling
+   (`nesting-and-coupling.md` N5), and a control node declared held is an in-port supplied by
+   another participant (N7); both are blanket ports in this sense.*
 
 2. **A merge of Systems is itself a System**, whose ports are the
    components' unbound ports minus the bound pairs. This dissolves the
@@ -46,15 +51,21 @@ as it prescribed.*
    **bounded**: runnable with no external feed. (A derivable predicate,
    never a type; "isolated" — exchange-free boundaries — is at most an
    optimization remark about dead ports.)
+   *2026-11-06: a third termination exists, a held control node supplied by another participant: a
+   wire under coupling, `ActionControl` inside a nest (`nesting-and-coupling.md` N7). A supplied
+   distribution is consumed per tick by the planner's contraction (`take_controls`), `BoundaryPrior`
+   being the static case averaged once at merge time (N8); a reader with no table, a nonlinear
+   transition, refuses the vector naming `sample` or `mode`.*
 
 5. **Time alignment.** Coupling requires shared tick semantics: whose
    transition fires when. The within-step declaration-order rule
    generalizes to a cross-System order; v1 synchronous. The
    asynchronous case is already chartered by the edge/near-edge/cloud
    lattice (loops exchanging serializable sufficient statistics).
+   *2026-11-06: two clocks need no asynchrony: a slow tier is T9's `hold` under the synchronous
+   `run` (`nesting-and-coupling.md` N4); sufficient statistics are first-class on every wire (N8).*
 
-6. **No telepathy, no telekinesis.** Couplings connect blanket ports
-   only — wires from action nodes to observation nodes. Reads: one
+6. **No telepathy, no telekinesis.** Couplings connect blanket ports only: wires from action nodes to observation nodes, to process inputs, or to a held control node (C13, `nesting-and-coupling.md` N7). Reads: one
    System's posterior enters another only through observations.
    Writes: nothing may rewrite another System's internal state
    directly — all influence enters as evidence or dynamics through the
@@ -65,6 +76,13 @@ as it prescribed.*
    inference honest. The experimenter's `reset(state=...)` override is
    out-of-model scaffolding, not an in-model operation.)
    *2026-10-09 (C12): scope is coupling; a `merge()` identifies latents.*
+   *2026-11-06 (`nesting-and-coupling.md` N1, N2, N3, N5, N6): sharpened by the invariant that
+   beliefs are internal and what crosses a blanket is action or sensation. Under coupling a
+   posterior enters another System only as an action node realised from it (by `sample`, `mode` or
+   `stats`) into a modality; a parameter crosses only as a report of counts through a likelihood,
+   and nothing clamps a reader's parameter from outside. A `merge` is one particle: a component
+   whose bindings across its boundary are a sibling-belief read and an `ActionControl` is nested,
+   and this rule holds at its own blanket, where a sibling read is sensing.*
 
 7. **Faces survive flattening.** After composition it must remain
    possible to run `infer_states`/`act` *for a sub-System* — its factor
@@ -131,6 +149,11 @@ flattening?** Two answers at two levels, and they differ:
   beliefs *about* the other. Intra vs inter is soft bookkeeping for the
   world model and a hard boundary for inference — which is the
   no-telepathy invariant (req. 6) seen from the other side.
+  *2026-11-06 (`nesting-and-coupling.md` N2, N3): the two levels split into two minds inside one
+  `merge` are a nest: each keeps its own carry, and the upper level may read the lower one's belief
+  as sensing, through a sibling-belief read with a kernel at the source and a declared realisation.
+  That read is blanket traffic at the nested component's own blanket; split into separate particles
+  under `couple`, the same belief crosses only as an action node realised from it (N5).*
 
 Env-like components need no special ontology: the homogenization lives
 at the **driver seam** — every participant implements one protocol,
@@ -183,6 +206,9 @@ it** — world-side, boundaries are metadata; belief-side, they are the
 carries; and the one-mind/many-minds choice is precisely the choice of
 particle decomposition (one mind = one carry = the internal boundaries
 dissolved, legitimately).
+*2026-11-06 (`nesting-and-coupling.md` N2): carries and particles now come apart one level: `merge`
+makes one particle, and a nested component inside it holds its own carry behind its own blanket. The
+many-minds choice inside a merge is a nesting; the choice of separate particles is `couple`.*
 
 ## Architecture sketch
 
@@ -219,6 +245,8 @@ The residue — what is genuinely new (small, nameable):
   Per-mind planner assignment is a dict entry (`planner: str | None`;
   `None` = env-like ancestral response). One mind is the degenerate
   case: the composite plans all controls jointly — works today.
+  *2026-11-06: a bound control a view does not choose is a held control node in
+  `nesting-and-coupling.md` N7, supplied inside a nest by `ActionControl`.*
 - **Tick-order semantics across minds**: sequential (declaration order;
   mind B sees A's action this tick) vs simultaneous (last-tick
   actions) — a semantic choice that changes the game structure, and the
@@ -232,7 +260,7 @@ attach — ports are the encoder registry's natural home.
 ## Design criteria
 
 Minimal: one type (`System`), two builders (`merge`, `couple`), one view
-(`subsystem`), one driver protocol (`respond`). Efficient: flattening
+(`subsystem`), one driver protocol (`respond`) (`merge` makes one particle, `couple` joins several; `nesting-and-coupling.md` N2). Efficient: flattening
 adds namespacing, never inference machinery. Usable — loud validation 
 errors that name their fix, declaration-time statics that make wrong 
 programs unrepresentable, canonical usage living in tests/examples 
@@ -309,6 +337,8 @@ is emergent EFE behavior, not code. **Separator: `.`** (`"boat.x"`,
 `"arm.likelihood:pose"`) — namespace prefix on the left via `.`,
 slot-qualification via `:` unchanged; the per-variable-infogain doc's
 `/` example is superseded.
+*2026-11-06: a tier that ticks at task boundaries is T9's `hold` under the synchronous `run`
+(`nesting-and-coupling.md` N4), not the asynchronous case.*
 
 ### Tick semantics (resolved at chunk-2 review, 2026-08-18)
 
@@ -339,8 +369,7 @@ steps once per round is a factor: in the merged form each component's
 factors step at that component's turn, and a component with no respond
 steps at the end of the round; in the wired form a process's factors step
 together, at the end of the round. A realised action is consumed once, by
-the one step of what it drives; a held control is a mind choosing it
-again, a slow tier is a sticky mind, and turn-taking on a board is one tick
+the one step of what it drives; a repeated control is a mind choosing it again (T9's `hold` does this for a slow tier), a slow tier is a sticky mind, and turn-taking on a board is one tick
 per move with "pass" a legal action. This replaces "one world step per
 mind" above, which made a mind's model of its own action depend on how
 many other minds were wired in, and keeps the spin-glass point: asynchrony
@@ -386,6 +415,12 @@ modeling choice, wanted when the body has its own dynamics (inertia,
 temporally correlated noise) or should be directly observable by
 others; it is an option, not the paradigm, and neither pattern is a
 degenerate case of the other. *(Amended 2026-10-09, C12.)*
+*2026-11-06 (`nesting-and-coupling.md` N2, N7): inside the merge, a control-node `ActionControl`
+makes one node, the driver's decision, which the driven component's factors read as a supplied
+level; a decision is not a belief, so no belief of the driven component is identified with the
+driver's, and the binding is blanket-shaped at that component's boundary (the acting of a nested
+component). An identification (`SharedParameter`, the relay, a joint `ObservationLink`) shares a
+latent outright.*
 
 **Hierarchy and multi-agent influence are ONE mechanism at two
 tiers (Alex's unification, recorded as principle).** A parameter is
@@ -400,6 +435,13 @@ timescale, not kind. **Principle: hierarchical models and
 multi-agent models are formally indistinguishable, apart from
 special machinery for modeling other agents' policies.** Subjective
 distinctions are not to be reified into channels.
+*2026-11-06 (`nesting-and-coupling.md` N2, N6): restated. A parameter belief is internal, never a
+blanket state; a parameter is observable by others only as reported through an action node of its
+variable, or as a sibling read inside a nest. Telekinesis-freedom for target emission holds because
+a descending prior through `D_deps` or `H_deps` is an internal interaction of one particle, which a
+nest permits as a distribution. The difference between a hierarchy and several agents is topology,
+not machinery: levels inside one particle are a nest, and read each other's beliefs; separate
+particles couple, and act.*
 
 **There is no partner ontology (deflated at adjudication — Alex's
 challenge, upheld against the first draft's "ladder").** What
@@ -431,6 +473,9 @@ Gaussian target takes a level only, since a mixture of Gaussian targets is not
 a Gaussian. The other parents keep their order,
 a target left with none is unconditional, and the node's entry in
 `partner_priors` is required (no uniform default for a target).
+*This averaging is the static case of the per-tick consumption `nesting-and-coupling.md` N8 assigns
+to a held control node receiving `stats`, which is the planner's contraction (`take_controls`); a
+reader with no table, a nonlinear transition, refuses the vector naming `sample` or `mode`.*
 
 **The one bright line: latents modeled as planners.** Dedicated
 machinery is justified only where the modeled dynamics of a latent
@@ -446,8 +491,7 @@ contribution — avoiding nested planning). How ordinary latent-factor
 learning could *bootstrap into* the transform representation is
 recorded as an open, paper-grade research question, not a roadmap
 item. No-telepathy is untouched throughout: modeling a partner's
-beliefs as one's own latents is beliefs-about-beliefs; telepathy
-would be reading their carry.
+beliefs as one's own latents is beliefs-about-beliefs; telepathy would be reading a separate particle's carry. Inside one particle a nested component may read a sibling's belief as sensing (`nesting-and-coupling.md` N3), which is not telepathy, since the belief stays internal to the particle and external to the reader.
 
 **Recorded convergence, not built:** the observation/latent
 distinction may not be context-free — an observed variable is a

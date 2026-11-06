@@ -96,6 +96,8 @@ bare name is a state *variable*, an `obs:` prefix an observation *variable*
 (`per-variable-infogain.md` V1/V8) — so the document adopts it. The runtime
 field names (`factor_names`, `modality_names`, `A_deps`, `B_deps`) are
 unchanged; `describe`/`build` translate.
+*2026-11-06: precisely, a lower level's belief about its states, realised as a value, is the datum
+of an upper level's modality (`nesting-and-coupling.md` N1, N3).*
 
 The two lists are ordered records, so the wiring is written by name and
 resolved to indices on `build`:
@@ -112,6 +114,8 @@ component's state — read off the `subsystems` provenance when present. An
 internally bound observation is still listed here, because it *is* an
 observation of the flat runtime System; `source` is what keeps it from being
 mistaken for an input.
+*2026-11-06: superseded by 0.3; the sibling-belief read of `nesting-and-coupling.md` N3 adds a
+kernel and a realisation to such a source (the note, "The format").*
 
 Consequence: `describe` **requires** names (`factor_names` and
 `modality_names` today optional). A `System` without them is described with
@@ -244,8 +248,9 @@ A scoring row that owns a `System` (the CRSPP:
 `scoring:cosine_sim_to_pref_rollout`) is described as
 `{"family": "System", "system": {…}, "params": {…}}` — one document nested in
 another, the same grammar. `merge()`'s `subsystems` provenance is carried
-verbatim as metadata (no face reads it, `system.md`), and the coupled System is
-described flat, as it is at runtime.
+verbatim as metadata (no face reads it, `system.md`), and the merged System is described flat, as it is at runtime.
+*2026-11-06: 'nested' in M8 means a System held inside a scoring entry, not the nested component of
+a merge in `nesting-and-coupling.md` N2, which the description marks `nested`.*
 
 ### M9. The round-trip contract, and the fixtures that enforce it
 

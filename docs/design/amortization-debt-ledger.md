@@ -50,6 +50,11 @@ Entries 1–3 are the three places 2b fell short of it.
   joint policy? how do two components' `occupancy` leaves key without
   the row-name collision? `log_E` had a clean answer (sum over the joint
   policy set); modules and rows do not yet.
+  *2026-11-06: `nesting-and-coupling.md` N2 states half of the principle. A merge is one particle; a
+  nested component (one whose only bindings across its boundary are sibling-belief reads and an
+  `ActionControl`) keeps its own beliefs and plans its own decisions, so its critic scores its own
+  policy and no joint policy arises for it. The question stands for components joined by an
+  identification (`SharedParameter`, the relay, a joint `ObservationLink`).*
 - **Follow-up:** an adjudication first, then the build. **Size: a design
   round + a chunk.** **Gate:** the first composite customer with an
   amortized component (the downstream mission executor is classical today).

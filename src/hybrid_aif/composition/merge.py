@@ -3,10 +3,17 @@
 :func:`merge` runs at declaration time and returns a plain ``(System, SystemParams)``, so every
 face applies to a composite unchanged. It namespaces every node as ``"<sub>.<name>"`` (the whole
 key grammar with it: ``"likelihood:arm.pose"``), concatenates state factors, modalities and control
-nodes in ``subsystems`` order with every dependency index offset, and applies the bindings, each an
-identification of latents across components: :class:`ActionControl`, :class:`ObservationLink`,
-:class:`TargetEmission`, :class:`BoundaryPrior`, and of parameter variables,
-:class:`SharedParameter`. Control nodes no binding touches stay the
+nodes in ``subsystems`` order with every dependency index offset, and applies the bindings:
+:class:`ActionControl`, :class:`ObservationLink`, :class:`TargetEmission`,
+:class:`BoundaryPrior`, and, for parameter variables, :class:`SharedParameter`. A merge makes one
+particle with one blanket to the world. :class:`ObservationLink`, the state-driver form of
+:class:`ActionControl` (the relay) and :class:`SharedParameter` identify a latent outright,
+sharing that variable with messages both ways. The control-node form of :class:`ActionControl`
+makes one node in the composite, the driver's decision, which the driven component's factors
+read as a supplied level; a decision is not a belief, so no belief of the driven component is
+identified with the driver's, and the binding is blanket-shaped at the driven component's
+boundary. A component whose every binding across its boundary is of that form keeps a blanket
+of its own inside the particle, and is nested. Control nodes no binding touches stay the
 composite's own, chosen by its planner. An ``ActionControl`` names a control node of one component,
 and the latent it is identified with decides the timing: another component's control node is read
 at the same step (the two nodes become one), a state of another component at the previous step (a
@@ -16,7 +23,8 @@ one-tick relay). A composite may be merged again (``"outer.inner.x"``).
 stubs for the neighbours it must model. The driver that interleaves the views is
 :mod:`hybrid_aif.composition.driver`.
 
-Design: docs/design/nesting-systems.md; docs/design/control-states.md C12.
+Design: docs/design/nesting-systems.md; docs/design/control-states.md C12;
+nesting-and-coupling.md N2.
 """
 
 import dataclasses
@@ -47,8 +55,8 @@ from hybrid_aif.planning.enumerate import enumerate_policies
 from hybrid_aif.system import _KEY_KINDS, Subsystem, System, SystemParams, _is_pattern
 
 SEPARATOR = NAMESPACE_SEPARATOR
-#: The namespace separator (N3, superseding the per-variable-infogain doc's ``/``
-#: example): prefix on the left via ``.``, slot-qualification via ``:`` unchanged.
+#: The namespace separator (nesting-systems.md N3, superseding the per-variable-infogain doc's
+#: ``/`` example): prefix on the left via ``.``, slot-qualification via ``:`` unchanged.
 
 
 # ------------------------------------------------------------------ the bindings
@@ -69,6 +77,13 @@ class ActionControl(NamedTuple):
       state becomes a ``B_deps`` parent of the one factor reading ``control``, in its place, the
       table's control axis re-read as that parent and a no-op axis of size 1 appended. The
       state's level count must equal the node's.
+
+    The control-node form makes one node in the composite, the driver's decision, which the driven
+    component's factors read as a supplied level; a decision is not a belief, so no belief of the
+    driven component is identified with the driver's, and the binding is blanket-shaped at the
+    driven component's boundary (a held control node). The state-driver form, the relay, binds a
+    state's belief into a factor's parent set a step later and is an identification. A component
+    bound only by control-node ``ActionControl`` is nested. Design: nesting-and-coupling.md N2, N7.
     """
 
     driver: str
@@ -105,6 +120,9 @@ class BoundaryPrior(NamedTuple):
     level (a delta: slices every reading factor's control axis, pinning the dynamics) or a
     :class:`~hybrid_aif.distributions.Categorical` / probability vector over the node's levels
     (averages every reading factor's table over the axis; uniform means no one is steering).
+    The average is taken once, at merge time, with a fixed vector: the static case of a node
+    consumed as a probability vector. The per-tick consumption is the planner's contraction
+    (:func:`~hybrid_aif.controls.take_controls`). Design: nesting-and-coupling.md N8.
     """
 
     control: str
@@ -121,6 +139,12 @@ class SharedParameter(NamedTuple):
     the same table shape; anything else raises, naming both. ``right``'s counts are discarded:
     only ``left``'s declaration survives, so bind before ``right``'s member has learned anything
     worth keeping.
+
+    An identification inside one particle: the variable has one home and the readers share its
+    counts. It is bookkeeping, not a crossing; under
+    :func:`~hybrid_aif.composition.couple.couple` a parameter is reported by
+    ``stats``, the counts since the last report, and ``mode`` and ``sample`` of a
+    parameter stay deferred. Design: nesting-and-coupling.md N2, N6.
     """
 
     left: str
@@ -739,7 +763,7 @@ def merge(
         for name, off in fac_offset.items()
         for f in range(off, off + subsystems[name]._table.num_states)
     }
-    #  the nodes a nested composite's own bindings removed, with what each became
+    #  the nodes an inner composite's own bindings removed, with what each became
     nested_gone = {
         node: tail
         for name, system in subsystems.items()
@@ -1169,8 +1193,9 @@ def merge(
     identified = list(dict.fromkeys([*identified, *sorted(same_step.items())]))
 
     # ---------------------------------------------------------- the metadata
-    # One entry per component, plus a re-qualified, offset entry per nested component. A nested
-    # entry inherits its own merge's record, with this merge's bindings added on top.
+    # One entry per component, plus a re-qualified, offset entry per component of an inner
+    # composite. An inner entry inherits its own merge's record, with this merge's bindings added
+    # on top.
     live_names = [node.name for node in nodes if node.live]
     action_of = {node.name: node.action for node in nodes}
     for name, system in subsystems.items():
@@ -1382,7 +1407,9 @@ def write_back(
     that several views gather at once is accumulated by learning on the composite, not by writing
     views back. An ``after`` missing a variable ``before`` holds, a ``before`` of another shape
     or type, and a concentration in ``after`` that is not positive all raise. Nothing else is
-    written: a view's own tables are its own to carry.
+    written: a view's own tables are its own to carry. Bookkeeping of one home between the views of
+    one particle; nothing writes another particle's parameters. Design: nesting-and-coupling.md N4,
+    N6.
     """
     params = composite._params_in(params, "write_back")
     unknown = sorted(set(before.parameters) - set(params.parameters))
@@ -1621,7 +1648,11 @@ def subsystem(
     variables are dropped; ``policy_prior`` is carried only when the view's policy set is the
     composite's, and raises otherwise.
 
-    Design: docs/design/nesting-systems.md (architecture sketch; partner modeling).
+    A view is one component's side of one particle: the neighbours it models are stubs, not other
+    minds' beliefs.
+
+    Design: docs/design/nesting-systems.md (architecture sketch; partner modeling);
+    nesting-and-coupling.md N1, N2.
     """
     params = composite._params_in(params, "subsystem")
     if composite._is_amortized(params):
@@ -1629,7 +1660,7 @@ def subsystem(
             f"subsystem({name!r}) of an amortized composite: a per-mind view would have to slice "
             "the recognition declaration too — which q-side factors this mind owns, and what a "
             "conditioning set that reached across the old boundary becomes — and that is a "
-            "genuine nesting question about *inference* structure, not a projection of the "
+            "genuine composition question about *inference* structure, not a projection of the "
             "generative one (design: amortization.md A11, nesting-systems.md req. 7). merge() "
             "itself namespaces recognition and works; only this view is deferred."
         )
@@ -1648,7 +1679,7 @@ def subsystem(
     n_cols = len(composite.B_deps)
     sensed = {g - n_cols for m in mods for g in composite.A_deps[m] if g >= n_cols}
     ours = [k for k, node in enumerate(c_nodes) if node in chosen or k in sensed]
-    #  another mind's node a factor of the view reads, by node name
+    #  another component's node a factor of the view reads, by node name
     partner_nodes = {
         c_nodes[k]: k for f in facs for k, _ in table.control_parents[f] if k not in ours
     }
@@ -1902,7 +1933,8 @@ def _view_metadata(
     chosen: set[str],
     A_deps: tuple[tuple[int, ...], ...],
 ) -> tuple[tuple[str, Subsystem], ...]:
-    """This component's record (and its nested children's) re-expressed in the view's frame.
+    """This component's record (and its inner composite's components') re-expressed in the view's
+    frame.
 
     A stub belongs to no entry, which is what marks the own/stub boundary.
     """

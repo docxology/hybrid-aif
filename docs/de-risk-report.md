@@ -249,8 +249,9 @@ time. The space splits cleanly:
   `block` (mean-field block id = toggle/metrics granularity), `inference`
   method, named shape labels (keep pymdp's `elements`), and wiring by parent
   names (`depends_on` / `controlled_by`). Hierarchy = named levels whose nodes
-  reference lower levels' outputs as pseudo-observations (O3PRM precedent:
-  fragment templates with interfaces, not arbitrary nesting). `compile()`
+  read lower levels' beliefs as sensing (a sibling-belief read, realised as a sample, a mode or
+  the belief's statistics, `design/nesting-and-coupling.md` N3; O3PRM precedent: fragment templates with interfaces, not
+  arbitrary composition). `compile()`
   turns spec → equinox runtime pytree (dynamax-style params + props).
 - **Layer 2 (interchange)**: `to_json()`/`from_json()` with `format_version`
   and a checked-in JSON Schema **generated from the pydantic classes** (never

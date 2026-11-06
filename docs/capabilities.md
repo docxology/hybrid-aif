@@ -51,8 +51,14 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   column) carry a growth propensity `growth`; its cap is its size, a level with zero weight
   is dead, and `learn` wakes a level for a datum no live level explains better than the prior
   does. **A lagged datum** (`System(lagged=(("modality", "source"), ...))`): a modality reads
-  its datum from the carry, a factor's previous belief mean or the previous action, so a
-  factor can emit what the model just believed (`design/structure-learning.md`).
+  its datum from the carry, a state factor's previous belief or the previous action, so a
+  factor can emit what the model just believed (`design/structure-learning.md` S8). The datum
+  is the previous round's belief, by source: for a categorical source its probability vector
+  (a soft observation), for a Gaussian source its location, for an action-node source the level
+  taken; a pair declared today keeps its behaviour. It is the within-component case of the
+  sibling-belief read, in which one component's modality takes another component's belief,
+  pushed through a kernel at the source and realised by `sample`, `mode` or `stats`, as its
+  datum (`design/nesting-and-coupling.md` N3).
 
 - **A categorical field over a continuous state** (`design/terrain-field.md`): a tabular
   factor may name a Gaussian or mixture-carried factor as a parent when the System declares a
@@ -68,7 +74,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   factor steps before the continuous factor it parents), and a sharp belief deep inside one cell
   gives the novelty term a flat landscape, so its drive needs `policy_len >= 2` and warm starts.
   Not built: the upward message from the field to the position, a spatial prior, and a smooth
-  basis (MNLR).
+  basis (MNLR). The cell mass is also the kernel at the source when another component of a
+  merge reads the position as a modality (the cell indicator, `design/nesting-and-coupling.md` N3).
 
 - **Parameters as named variables** (`design/shared-parameters.md`): a tabular parameter (a
   conditional table, or a Dirichlet over one) may be declared once under a name in
@@ -78,7 +85,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   (a rate keyed by a reader raises and names it); novelty on each reader is unchanged; the
   description length prices the variable once; the description document records it under a
   top-level `parameters` entry with each reader pointing at it; `merge` identifies two
-  components' variables with `SharedParameter`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build.
+  components' variables with `SharedParameter`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build. A `SharedParameter` identifies a variable outright: the two components of one particle share it, with no blanket between them on it, and `write_back` is bookkeeping of that one home between views (`design/nesting-and-coupling.md` N2, N6). A separate mind joined by `couple` never takes another's table this way; it receives a report of counts through an action node.
 
 - **A slow factor's reading pooled over an option level** (`design/step-durations.md` T10):
   `System(readings=(("<factor>", "<control node>"),))` with `SystemParams.readings[<factor>]`, a
@@ -106,7 +113,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   entry is inferred by the structured rules. A recognition parent may be an **externally
   supplied vector** (`"external:<name>"`), which is how one model
   conditions on another's embedding as data rather than by sharing a
-  module. `predict_beliefs` is the open-loop rollout.
+  module. An externally supplied vector is a sensation of this System; whatever another mind
+  sends arrives as a value realised from an action node of the sender (`design/nesting-and-coupling.md` N1, N8).
+  `predict_beliefs` is the open-loop rollout.
 
 ## Plan
 
@@ -367,20 +376,31 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   by namespaced graph-merge, identifying latents across components —
   control-node identification or relay, a modality's parents,
   **target emission** (`H_deps` across the boundary), boundary-prior
-  termination. The one-mind composite is **bitwise identical** to the
+  termination. The one-particle composite is **bitwise identical** to the
   hand-flattened declaration (the composite's arrays ARE the
-  components'). Every face inherits: nesting adds namespacing, never
-  inference machinery.
-- Bindings name control nodes, native or the sugar's; a node driver is read at the same step (the two nodes become one), a state driver a step later. Actions speak action nodes (`a_<f>`, one per control node); a kernel `P(a | u)` in `params.actuator` is drawn by the environment.
+  components'). Every face inherits: a merge adds namespacing, never
+  inference machinery. A merge makes one particle, one set of internal states with one blanket
+  to the world. A component is *nested* when every binding across its boundary is a
+  sibling-belief read or an `ActionControl`: its beliefs are its own and the rest of the
+  particle is its external world. A binding that identifies a latent outright
+  (`SharedParameter`, the relay, a joint `ObservationLink`) makes the components share that
+  variable, with messages both ways (`design/nesting-and-coupling.md` N2).
+- Bindings name control nodes, native or the sugar's; a node driver is read at the same step (the two nodes become one), a state driver a step later. A control-node `ActionControl` makes one node in the composite, the driver's decision, which the driven component's factors read as a supplied level (a control node supplied by another participant, `design/nesting-and-coupling.md` N7); a decision is not a belief, so no belief of the driven component is identified with the driver's, and the binding is blanket-shaped at the driven component's boundary. The state-driver form, the relay, binds a state's belief into a factor's parent set a step later and is an identification. Actions speak action nodes (`a_<f>`, one per control node); a kernel `P(a | u)` in `params.actuator` is drawn by the environment.
 - `subsystem(name)`: a bona-fide per-mind System (private beliefs,
   boundary neighbours as ordinary latent factors — no partner
-  ontology; partners are inferred and learned like any latent).
+  ontology; partners are inferred and learned like any latent). On a nested component the view
+  is that component's own model: the rest of the particle is its external world, and it reads
+  that world through sibling reads and `ActionControl` only (`design/nesting-and-coupling.md` N2).
 - `driver.run()` with three tick orders, each one tick of time per round
   and every factor stepping once: simultaneous (a Jacobi sweep), sequential,
   and **async** (Gauss-Seidel sweeps in declaration or random order, each
   component's factors stepping at its turn — the statistically faithful mode
   for equilibrium/Ising-like composites; `nesting-systems.md`, tick
-  semantics and its 2026-10-14 amendment).
+  semantics and its 2026-10-14 amendment). `run` is synchronous: every round every mind
+  responds. A slow tier is a mind wrapped in `composition.hold`, which returns its stored action
+  until the last action's `elapsed` duration has passed (below, v0.19.0); there is no second
+  clock (`design/nesting-and-coupling.md` N4). `couple` joins separate particles into a `Wiring` that `run` takes, and what
+  crosses a wire is action or sensation (`design/nesting-and-coupling.md` N1, N2).
 - Dynamic action sets: the hard constraint is **`legal=`** (v0.8, below);
   `policy_prior = −inf` masking remains valid (leaf-swap, no re-jit — the
   mission executor's task-selection pattern) and E is the soft prior alone.
@@ -528,7 +548,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   - Faces are keyed by name: `infer_states`, `step`, `rollout` and the rest take and return
     mappings keyed by factor and modality name; positional tuples are refused.
   - `couple()` on Systems is `merge()`; `couple()` now wires participants' ports into a
-    `Wiring` that `run` takes.
+    `Wiring` that `run` takes. (`merge` makes one particle; `couple` joins separate particles,
+    and what crosses a wire is action or sensation, `design/nesting-and-coupling.md` N1, N2.)
   - A control node's state factor is `u_<f>` and its action node `a_<f>`; the action face is
     keyed by action node. `num_controls` and `continuous_controls` are gone: a control node's
     size is its levels or its box, declared with the node.
@@ -951,7 +972,13 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   a whole number of rounds is refused. A System with no `params.durations`, or with a non-identity
   actuator kernel in `params.actuator`, is refused at construction. In the composite form the
   held System must own no world process (documented, not checked); the wired form has no such
-  restriction. `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
+  restriction. `hold` is built and is the clock of a slow tier under a merge: wrap the slow
+  component's respond in `hold` and the fast component runs every round, with the slow
+  component's option reaching it through `ActionControl`. The slow component's reading of the
+  fast one as a sibling-belief read, write-back inside `run`'s composite form (what a view
+  learns reaching the composite's parameters each round it learns, so a `SharedParameter`
+  needs no bookkeeping by the caller), re-taking views and routing a driving component's
+  decision into the driven view are the build (`design/nesting-and-coupling.md` N3, N4, N9). `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
   `params.durations` reads concrete values and skips traced ones. Nothing changes for a model
   that does not call `hold`. Design: `design/step-durations.md` T9.
   `examples/demo.ipynb` re-executes clean under this release.
@@ -963,7 +990,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   stage-2 learns localization noise online).
 - **Integration underway**: the downstream mission executor — AIF task
   selection + recovery (retry/skip/escalate emergent from the term
-  tree) against its policy sockets, using v0.5 nesting.
+  tree) against its policy sockets, using v0.5 `merge`.
 - **Amortization program, R-AIF replication**: R-AIF's `tiny`
   architecture is declared, scores G over its own beliefs, learns, and its
   module tree is proven theirs leaf for leaf by execution

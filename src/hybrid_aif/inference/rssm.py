@@ -274,7 +274,7 @@ class RSSMCore(eqx.Module):
                 f"the RSSM assembly is one carry node and one code factor; this System declares "
                 f"carries {[factor_names[f] for f in carries]} and codes "
                 f"{[factor_names[f] for f in codes]}. Several world models in one System is a "
-                "nesting question (merge()), not an assembly one."
+                "composition question (merge()), not an assembly one."
             )
         carry, code = carries[0], codes[0]
         posterior = next((p for p in structure.plan if p.factor == code), None)

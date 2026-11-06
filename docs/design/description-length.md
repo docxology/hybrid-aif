@@ -130,6 +130,12 @@ factor and modality, a control count. Its code:
   count plus one throughout, here and for the modality and control counts;
 - names, declaration order, role labels, `decomposition` sugar, inline against file, `simplex`
   against `log_simplex`: nothing (the 0.3 note).
+  *2026-11-06: `nesting-and-coupling.md` ("The format") adds to a modality record that reads a
+  sibling component its source, its kernel (identity, or an indicator with its grid) and its
+  realisation (`sample`, `mode` or `stats`), and a record for an action node of a state factor. The
+  source is a parent choice and is priced as one; the kernel and realisation are choices this code
+  does not yet price, to be settled when the format records them. The `nested` mark is derived from
+  the bindings and costs nothing, like a role label.*
 
 Alternatives considered: a per-candidate-parent bit (a Bernoulli edge prior; costs `P log 2`
 regardless of sparsity, so a sparse graph is overpriced); a fixed-width code for every count

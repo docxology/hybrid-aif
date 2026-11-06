@@ -155,7 +155,7 @@ declaration and its parameter addresses would move this from "an expert can" to
 
 ## Corrections found while preparing this PR
 
-Both are places where the probe was right about the friction and wrong about a
+The first two are places where the probe was right about the friction and wrong about a
 detail; they are recorded here rather than edited above, so the report stays
 the artefact it was.
 
@@ -180,3 +180,6 @@ the artefact it was.
    this because no document mentions it.
 
 Both corrections are folded into `docs/composing-systems.md`.
+
+3. **`couple()` at the time of the probe was the Systems-composition call.** It is now
+   `merge()`; `couple()` joins separate particles into a `Wiring` (`design/nesting-and-coupling.md` N2).

@@ -1,6 +1,6 @@
 # Design: `legal=` — a hard constraint on action selection, separate from E
 
-*Status: ADJUDICATED 2026-09-18 (Alex): L1–L5 as written after the reshape (one interface for level and policy masks; no continuous analogue for now); L6 amended to land in this chunk. **LANDED 2026-09-18:** `legal=` on `infer_policies`, `act` and `replay`; `planning.enumerate.legal_logits` is the one expansion and `System._plan` the one composition point, after the planner, over the policies it returned (no `PlannerContext` field — see L5 as built); refusals on continuous controls and module E; `tests/test_action_legality.py`; N2 carries a dated note; the roadmap item is marked landed. *As built:* `score_policies` does **not** take `legal=` — it scores G, and L2 says G is never modified by legality, so there is nothing for it to do there.
+*Status: ADJUDICATED 2026-09-18 (Alex): L1–L5 as written after the reshape (one interface for level and policy masks; no continuous analogue for now); L6 amended to land in this chunk. **LANDED 2026-09-18:** `legal=` on `infer_policies`, `act` and `replay`; `planning.enumerate.legal_logits` is the one expansion and `System._plan` the one composition point, after the planner, over the policies it returned (no `PlannerContext` field — see L5 as built); refusals on continuous controls and module E; `tests/test_action_legality.py`; `nesting-systems.md` N2 carries a dated note; the roadmap item is marked landed. *As built:* `score_policies` does **not** take `legal=` — it scores G, and L2 says G is never modified by legality, so there is nothing for it to do there.
 Companion to `system.md` (faces), `amortization.md` A3 (the E designation),
 `nesting-systems.md` N2 (the −inf-in-E pattern this replaces).*
 
@@ -135,7 +135,7 @@ composing a posterior by hand. No `System` field: a mask is per call, not per
 declaration, and a traced array, so changing its *values* never retraces
 (switching between `None` and an array does — pass an all-true array to mask
 intermittently within one trace). An entry for an uncontrolled factor is
-refused: it has no action to constrain.
+refused: it has no action to constrain. So is an entry for a held control node (`nesting-and-coupling.md` N7): another participant supplies it and the mind plans no decision for it.
 
 ### L6. Replay carries it too — in this chunk (Alex: "we do want to land this now")
 

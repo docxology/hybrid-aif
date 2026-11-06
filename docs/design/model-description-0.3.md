@@ -46,6 +46,9 @@ states/observations and factors/modalities.
 replacing `structure`/`declarations`. *Names ADOPTED (Alex, 2026-10-10):* `relations` and
 `clamps`, the plain words; `blanket` and `ports` were set aside because bindings and
 `external_inputs` are not blanket ports.
+*2026-11-06: under `nesting-and-coupling.md` N2, some bindings are blanket-shaped at a nested
+component's own blanket (a sibling-belief read, an `ActionControl`) and the identifications are not;
+the names `relations` and `clamps` stand.*
 
 **D2 — Parameters as variables, clamp or prior.** *ADOPTED (Alex); AMENDED (Alex, 2026-10-12).*
 Each parameter is a variable; a factor names it among its arguments; it is either clamped
@@ -63,6 +66,8 @@ linear-Gaussian factor's variables by role (input; `H`, `c`, noise slots), live 
 record. The relations section holds only relations no single factor owns: `controls` (the
 variables the System chooses, `control-states.md` C1), `source` (where a composite's
 observation comes from), composition bindings, and `external_inputs`.
+*2026-11-06: a modality that reads a sibling records its source, its kernel (`identity`, or
+`indicator` with its grid) and its realisation (`nesting-and-coupling.md` N3, "The format").*
 
 **D4 — Evidence on states.** *DEFERRED (Alex).* Clamps on state or observation variables given
 with the model are not needed: initial-state priors cover what is known at the start, and data
@@ -81,6 +86,8 @@ array field to the variable, joined by `categorical` with `levels` and `real` wi
 optional bounds for the per-step variables. `describe` writes a parameter's domain from the
 family, `build` checks it against the family's field and refuses a mismatch; a hand-written
 document may omit it on a parameter.
+*2026-11-06: what the upper level observes is the lower level's belief, realised as a value through
+a kernel (`nesting-and-coupling.md` N1, N3); the ruling stands.*
 
 **D5 — Naming the arrays file.** *ADOPTED, tentatively (Alex: "not confident on this one").* "Sidecar" is a bare engineering term. Keep
 `"arrays_file"` and per-array `{"ref": …}`; drop the top-level `"sidecar"` flag, which
@@ -199,6 +206,9 @@ section a reader scans for structure and `clamps` is where the bulk lives). A fa
 arguments are `parents`, ordered, mapping to table axes or to the linear-Gaussian inputs by
 position; its static arguments are `parameters`, by the family's field names; the variables'
 derived kinds let the reader check that each names only its own kind.
+*2026-11-06: `nesting-and-coupling.md` ("The format") adds a `held` mark on a control node another
+participant supplies (N7) and an action-node record for a state factor, its parent the factor, with
+its kernel and realisation (N5).*
 
 **A worked example** (two state factors, one control with a stochastic actuator, one learned
 likelihood; a `Categorical`'s parameter is its `logits`, unnormalised, and a normalised table's
@@ -283,7 +293,7 @@ difference, 2026-10-13.)
 **Q18.2 — A merged composite.** *ADOPTED (Alex, 2026-10-12).* A composite is written flat, as
 M8 writes it, and `describe` on a merged System can write nothing else: `merge()` returns a plain
 System with its bindings already applied and keeps no copy of its components. The bindings
-dissolve into structure. An `ActionControl` identification is the driver's control node in the
+dissolve into structure. An `ActionControl` binding is the driver's control node in the
 parent list of every factor that read the identified one; a relay is that node's state as a
 parent at offset 1; an `ObservationLink` is a modality whose parent lies under another prefix; a
 `TargetEmission` is a terminal target's parent under another prefix; a `BoundaryPrior` is a
@@ -299,11 +309,17 @@ prefix). Component order is the document's variable order. What this loses is on
 a round trip a System no longer knows that a removed node ever existed, so naming it gets
 "unknown variable" rather than what it became; the runtime record's fields that hold this
 (`identified`, `relayed`, `terminated`) do not survive the round trip and the build brief
-decides whether to drop them from the record and keep that refusal at merge time. A nested
-spelling, each component's own document under `components` with a `bindings` list, lowered by
+decides whether to drop them from the record and keep that refusal at merge time. A per-component spelling, each component's own document under `components` with a `bindings` list, lowered by
 running the merge, is a later second spelling for hand-authored composites and is not in 0.3.
 A `Wiring` (C13) is not described in 0.3; a wire is an identity between typed ports and lives
 in the harness.
+*2026-11-06 (`nesting-and-coupling.md` N2, N7): a control-node `ActionControl` makes one node in the
+composite, the driver's decision, which the driven component's factors read as a supplied level (a
+held control node); a decision is not a belief, so no belief of the driven component is identified
+with the driver's, and the binding is blanket-shaped at the driven component's boundary. The relay,
+which binds a state's belief into a factor's parent set a step later, `SharedParameter` and a joint
+`ObservationLink` identify a latent outright. A sibling read keeps a record of its kernel and
+realisation, and a merged component may be marked `nested` (the note, "The format").*
 
 **Q18.3 — The family field names.** *ADOPTED (Alex, 2026-10-12).* The keys of a factor's
 `parameters` are the family's constructor field names, and a field that is itself a module

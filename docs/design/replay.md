@@ -67,6 +67,9 @@ the exact reading is the one a real consumer already relies on.
   pure and jit-safe; nothing scans it over recorded data. `composition.run` is
   a Python loop for *simulating* many minds against `as_env`, not for replaying
   a record.
+  *2026-11-06: `run` now drives the participants of a coupling (C13) and a merged composite, minds
+  wrapped in T9's `hold` included; `nesting-and-coupling.md` N4 adds write-back to its composite
+  form at the build. It is still not for replaying a record.*
 - The amortized path already has the sequence face: `RSSMCore.observe` filters
   a `(T, …)` observation sequence under `actions[t]` producing `observations[t]`
   (`inference/rssm.py`), and `train.world.posterior_states` batches it.
@@ -122,8 +125,9 @@ settles it, and it is worth writing down:
 > from its own state, across its own blanket — `infer_states`, `learn`,
 > `act`, `update_empirical_prior`, `predict_beliefs`, `score_policies`,
 > `as_env`. A **function** is something an outside party does *with* a
-> System: represent it (`describe`, `build`), compose it (`merge`,
-> `subsystem`), drive it (`composition.run`), train it (`imagine`,
+> System: represent it (`describe`, `build`), compose it (`merge`, which makes
+> one particle, and `subsystem`, a view of one), couple it (`couple`, which
+> joins particles), drive it (`composition.run`), train it (`imagine`,
 > `fit_world`).
 
 A replay drives a model over a record; it is the sibling of `composition.run`

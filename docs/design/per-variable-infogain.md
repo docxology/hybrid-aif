@@ -7,6 +7,8 @@ public release). Gates the generic `infer(query, clamped)` layer, and —
 per the 2026-07-28 sequencing decision — precedes the nesting-Systems
 build, so that nesting namespaces the refactored selector surface
 rather than the one being retired.*
+*2026-11-06: "nesting" here is composition by `merge`, which namespaces every component's keys;
+nesting-and-coupling.md N2 now reserves "nested" for one shape a merged component can have.*
 
 ## The debt being paid
 
@@ -94,10 +96,7 @@ the resolver (`_term_targets` / `_check_slot_key`), so
 `lr_by_slot`/`decay_by_slot` inherit sub-block addressing in the same
 change — closing the v0.3 rate-granularity gap as a side effect.
 
-**Nesting constraint (forward-looking, costs nothing now).** Keys must
-survive path-qualification on the left under the nesting graph-merge
-(`"arm/likelihood:pose:noise"`). Bare-vs-qualified stays decidable
-after a prefix; nothing else in this design inspects key internals.
+**Composition constraint (forward-looking, costs nothing now).** Keys must survive qualification by a component's prefix under `merge`, whether or not the component is nested (nesting-and-coupling.md N2): the prefix lands on the name segment, joined by `.` (`"likelihood:arm.pose:noise"`). Bare-vs-qualified stays decidable after the prefix; nothing else in this design inspects key internals.
 
 ### V2 — **RESOLVED**: The API shape (what replaces three toggles)
 
@@ -215,6 +214,13 @@ by (variable kind, family):
 *2026-10-17:* the MNIW row has an estimator, `blended_entropy`, its leaf an estimate rather
 than a bracket; an MNIW emission with discrete parents still raises (parameter-learning.md
 D10).
+*2026-11-06:* nesting-and-coupling.md adds two modalities this table meets at their build. A
+sibling-belief read (N3) is an ordinary modality whose parents explain its datum, scored by the
+entries above under `sample` and `mode`; how a `stats`-realised datum (a probability vector,
+consumed as a soft observation) is predicted when planning is settled at that build. A count report
+(N6: `stats`, the counts since the last report; `mode` and `sample` of a parameter stay deferred) is
+a modality whose parent is the reader's own parameter variable, so its information gain is novelty
+about that variable reached through a report; it has no estimator entry yet.
 
 **Proposal.** This dispatch table *is* workstream D's pending
 "estimator registry," landed at its natural size: a static mapping
@@ -678,7 +684,7 @@ next after V10.*
 
 *Adjudicated (Alex + Opus, 2026-10-17) on a consumer case.* An agent learns a map's row offset
 `b` by carrying it as a static dimension of its pose factor: a pile reading `y = n·p + b − n·a
-+ e` couples `b` to the pose, so the two must share one Gaussian block (across factors,
++ e` ties `b` to the pose, so the two must share one Gaussian block (across factors,
 mean-field inference would drop their covariance, the thing that lets a reading teach `b`).
 Its planning value is the information about `b` alone, the pose marginalised, ½ log(1 + σ_b² /
 (σ_r² + nᵀΣ_pose n)) for one reading. The selector names whole factors; this decision lets it
@@ -723,8 +729,7 @@ name dimensions.
    hour against a 0.3 m prior). This is a numerical concession, not a modelling claim: a
    noiseless state dimension and a parameter are the same object, an uncertain constant; the
    state route is taken because only within a state block does the library keep the
-   covariance between the constant and the pose. Parameters are unaffected (a clamped one is
-   known, a learned one changes only by `learn`). A generative process (`as_env`) only samples
+   covariance between the constant and the pose. Parameters are unaffected (a point-valued one is known; a learned one changes only by its own System's `learn`, nothing writing it from outside, nesting-and-coupling.md N6). A generative process (`as_env`) only samples
    and may be noiseless; a model description's `cholesky` domain keeps its strictly positive
    diagonal for every factor, as before. A continuous control carried as a belief now
    adds its spread to the process noise as a non-square factor, exact whatever the sum's rank.

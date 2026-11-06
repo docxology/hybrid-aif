@@ -30,7 +30,10 @@ Tables, all built here from the world's maps:
   the field-wide mean illumination (the scheduler does not know where light is) less the drain
   at rest. The distance enters only through this energy cost.
 - ``cell_obs`` is right with probability ``CELL_ACC``, the rest spread uniformly over the other
-  cells; ``gauge`` is the rover model's confusion.
+  cells. This table says how the rover's cell belief relates to the scheduler's own ``visit``
+  variable: the scheduler's belief about where the rover is, a different variable at a different
+  level, so the reading is an ordinary likelihood on the modality. ``gauge`` is the rover
+  model's confusion.
 - The initial beliefs: the start cell and the full band, uniform terrain.
 
 The objective scores the novelty of the field and an energy target with the same logits as the
