@@ -84,7 +84,8 @@ Posterior = Literal["mode", "laplace"]
 class PlanPosterior(NamedTuple):
     """A continuous plan and the Laplace posterior around it.
 
-    ``mode`` is the plan as a one-member policy set ``(1, policy_len, action_dim)``;
+    ``mode`` is the plans as a policy set ``(starts, policy_len, action_dim)`` (one member for one
+    start), the best start's at the index ``q_pi`` is a point mass on;
     ``posterior`` is the :class:`~hybrid_aif.distributions.TruncatedGaussian` on the box over
     the flattened plan ``(policy_len · action_dim,)``, time-major.
     """
@@ -99,15 +100,19 @@ class PlanPosterior(NamedTuple):
 
 
 class GradientResult(NamedTuple):
-    """One gradient plan: ``plan`` ``(policy_len, action_dim)``, its ``G`` and term ``tree``
-    (``None`` under ``metrics=False``), ``q_pi`` the point mass on it, ``curvature`` the Laplace
+    """One gradient plan: ``plan`` ``(policy_len, action_dim)``, the best start's. ``start_plans``
+    ``(starts, policy_len, action_dim)`` holds every start's plan and ``pick`` the int32 index of
+    ``plan`` among them; ``start_G`` ``(starts,)`` and ``start_tree`` (``None`` under
+    ``metrics=False``) are evaluated over ``start_plans``, a policy axis of ``starts`` entries,
+    and ``q_pi`` ``(starts,)`` is the point mass on ``pick``. ``curvature`` the Laplace
     Gaussian ``N(plan, (γ∇²G)⁻¹)`` over the flattened plan and ``posterior`` its restriction to
     the box (both ``None`` under ``posterior="mode"``), and ``trace`` the scored ``G`` before
     each step. ``gradient_trace`` ``(steps,)`` is the root mean square of the gradient over all
     plan coordinates before each step, and ``best_step`` is the int32 index of the plan returned:
     ``t`` for the plan held before step ``t`` (``0`` is the warm start) and ``steps`` for the
     final plan. ``plan`` is the best plan scored over the descent (the warm start and the final
-    plan included), ``G`` and ``tree`` are its own, and ``curvature`` is taken at it. With
+    plan included), ``G`` ``(1,)`` and ``tree`` are its own (the picked start's slice of
+    ``start_G`` and ``start_tree``), and ``curvature`` is taken at it. With
     several starts, ``plan`` is the best start's and ``trace``, ``gradient_trace`` and
     ``best_step`` are its own; ``start_scores`` ``(starts,)`` is each start's final score (the
     descended point of ``G``; ``(1,)`` for one start)."""
@@ -116,6 +121,10 @@ class GradientResult(NamedTuple):
     tree: TermTree | None
     plan: Array
     G: Interval
+    start_plans: Array
+    pick: Array
+    start_G: Interval
+    start_tree: TermTree | None
     posterior: TruncatedGaussian | None
     curvature: Gaussian | None
     trace: Array
@@ -290,8 +299,9 @@ def gradient_plan(
     ``init`` is the starting plan, ``(policy_len, action_dim)`` or ``(action_dim,)`` broadcast
     over the steps (default: the box midpoint). ``starts`` descends from that many warm starts
     together (``init`` first, then spread points of the box; or ``init`` with a leading ``(starts,
-    policy_len, action_dim)`` axis) and returns the best final plan, with every start's final
-    score in ``start_scores``. ``steps`` and ``lr`` set the descent;
+    policy_len, action_dim)`` axis) and returns the best final plan, with every start's plan in
+    ``start_plans``, the best one's index in ``pick`` and every start's final score in
+    ``start_scores``. ``steps`` and ``lr`` set the descent;
     ``optimizer`` is ``"adam"`` or ``"gradient"``. Adam's ``lr`` is its first step, decayed
     linearly to zero (default :data:`DEFAULT_LR_FRACTION` of the box width per dimension); a
     plain gradient step's size depends on ``G``'s scale, so ``"gradient"`` takes an explicit
@@ -334,32 +344,40 @@ def gradient_plan(
             score, plan0[0], low, high, rate, steps=steps, optimizer=optimizer
         )
         start_scores = final[None]
+        start_plans, pick = plan[None], jnp.zeros((), jnp.int32)
     else:
         plans, best_steps, traces, gradient_traces, start_scores = jax.vmap(
             lambda p0: descend_scored(score, p0, low, high, rate, steps=steps, optimizer=optimizer)
         )(plan0)
-        pick = jnp.argmin(jnp.where(jnp.isnan(start_scores), jnp.inf, start_scores))
+        pick = jnp.argmin(jnp.where(jnp.isnan(start_scores), jnp.inf, start_scores)).astype(
+            jnp.int32
+        )
+        start_plans = plans
         plan, best_step = plans[pick], best_steps[pick]
         trace, gradient_trace = traces[pick], gradient_traces[pick]
 
     if metrics:
         tree = evaluate_policies(
-            plan[None],
+            start_plans,
             ctx.init_beliefs,
             ctx.transition_fn,
             ctx.step_terms_fn,
             ctx.terminal_terms_fn,
         )
-        G = total(tree)
+        start_G = total(tree)
     else:
         tree = None
-        G = evaluate_policies_total(
-            plan[None],
+        start_G = evaluate_policies_total(
+            start_plans,
             ctx.init_beliefs,
             ctx.transition_fn,
             ctx.step_terms_fn,
             ctx.terminal_terms_fn,
         )
+    start_tree = tree
+    G = jax.tree_util.tree_map(lambda x: x[pick][None], start_G)
+    if tree is not None:
+        tree = jax.tree_util.tree_map(lambda x: x[pick][None], tree)
     curvature = restricted = None
     if posterior == "laplace":
         curvature = _laplace(score, plan, ctx.gamma)
@@ -370,10 +388,18 @@ def gradient_plan(
             high=jnp.tile(high, horizon),
         )
     return GradientResult(
-        q_pi=Categorical(logits=jnp.zeros((1,), low.dtype)),
+        q_pi=Categorical(
+            logits=jnp.where(
+                jnp.arange(start_plans.shape[0]) == pick, 0.0, jnp.finfo(low.dtype).min
+            ).astype(low.dtype)
+        ),
         tree=tree,
         plan=plan,
         G=G,
+        start_plans=start_plans,
+        pick=pick,
+        start_G=start_G,
+        start_tree=start_tree,
         posterior=restricted,
         curvature=curvature,
         trace=trace,
@@ -416,10 +442,10 @@ def make_gradient_planner(**kwargs) -> Planner:
 
 
 def _face(result: GradientResult, ctx: PlannerContext):
-    policies = result.plan[None]
+    policies = result.start_plans
     if result.posterior is not None:
         policies = PlanPosterior(mode=policies, posterior=result.posterior)
-    return result.q_pi, result.tree, policies
+    return result.q_pi, result.start_tree, policies
 
 
 @register_planner("gradient")
@@ -429,7 +455,8 @@ def gradient_planner(
     """The :class:`~hybrid_aif.planning.base.Planner` face of this module.
 
     Registered as ``"gradient"`` with :func:`gradient_plan`'s defaults (Adam, the mode alone).
-    Returns ``(q_pi, tree, policies)``: the point mass, the tree at the plan, and the plan as
-    a one-member policy set ``(1, policy_len, action_dim)``.
+    Returns ``(q_pi, tree, policies)``: the point mass on the best start, the tree over every
+    start's plan, and those plans as the policy set ``(starts, policy_len, action_dim)`` (one
+    member for one start).
     """
     return _face(gradient_plan(ctx, use_bound=use_bound, metrics=metrics), ctx)

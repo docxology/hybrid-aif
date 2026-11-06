@@ -766,6 +766,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   scored, the warm start.
   The result carries `gradient_trace` (the RMS gradient before each step) and `best_step` (the
   index of the iterate returned, `0` the warm start and `steps` the final plan).
+  With `starts=n` the planner face returns every start's plan as its policy set
+  (`(starts, policy_len, action_dim)`) with the term tree over them and `q_pi` a point mass on the
+  best start; `GradientResult.start_plans` and `pick` carry the same for `gradient_plan`.
   The `"mixed"` planner searches a control space that mixes discrete and
   continuous nodes (`design/mixed-control-planning.md`): for each discrete policy (the full
   enumeration over the discrete nodes' levels, or a set passed as

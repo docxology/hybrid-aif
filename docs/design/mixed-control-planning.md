@@ -121,7 +121,12 @@ each discrete policy from `n` continuous warm starts and keeps the best.
   `best_step` are the chosen start's. The descents stay one `jax.vmap` over all (policy, start)
   pairs. With `starts=1` every output is bitwise that of the single shared start.
 - `gradient_plan(starts=n)` descends the same starts together and returns the one whose final
-  score is lowest, with its trace; `GradientResult.start_scores` `(starts,)` holds every start's
-  final score (`(1,)` for one start). A NaN score never wins; when every start's is NaN the first
-  start's is returned.
+  score is lowest as `plan`, with its trace; `GradientResult.start_plans`
+  `(starts, policy_len, action_dim)` holds every start's plan, `pick` the index of the chosen one
+  and `start_scores` `(starts,)` every start's final score (`(1,)` for one start). `start_G` and
+  `start_tree` are evaluated over `start_plans`; `G` and `tree` stay the picked plan's own.
+  The registered `"gradient"` planner returns those
+  plans as its policy set (`(starts, policy_len, action_dim)`, one member for one start), with
+  `q_pi` a point mass on the picked start; the chosen plan and `q_pi` on it are unchanged. A NaN
+  score never wins; when every start's is NaN the first start's is returned.
 - `make_mixed_planner(starts=...)` and `make_gradient_planner(starts=...)` pass it through.

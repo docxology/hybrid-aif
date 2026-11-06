@@ -1193,7 +1193,11 @@ def act(
         "act",
     )
     if isinstance(policies, PlanPosterior):
-        action = policies.mode[0, 0] if selection == "deterministic" else policies.first_step(key)
+        action = (
+            policies.mode[jnp.argmax(q_pi.logits), 0]
+            if selection == "deterministic"
+            else policies.first_step(key)
+        )
         return keyed.actions_out(names, action), q_pi, tree
     mixed_set = isinstance(policies, ControlStep)
     if mode is None:
