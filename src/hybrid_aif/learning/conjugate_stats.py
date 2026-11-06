@@ -64,7 +64,9 @@ def _lower_learnable(params: SystemParams, param_key: Array | None) -> SystemPar
     A neural declaration passes through untouched in both modes: it is
     already a point-valued *function*, with no posterior over its weights to
     average or to draw from (A1). ``param_key`` therefore randomizes nothing
-    on a neural slot — the env is the net itself, run forward."""
+    on a neural slot — the env is the net itself, run forward. The readers of one named
+    parameter variable share its one draw."""
+    reads = {(slot, i): ("parameter", home) for slot, i, home in params.references}
     learnable = [
         (slot, i)
         for slot in ("likelihood", "transition", "initial_state_prior")
@@ -73,10 +75,16 @@ def _lower_learnable(params: SystemParams, param_key: Array | None) -> SystemPar
     ]
     if not learnable:
         return params
-    keys = dict(
-        zip(learnable, jax.random.split(param_key, len(learnable)), strict=True)
+    units = list(dict.fromkeys(reads.get(address, address) for address in learnable))
+    unit_keys = (
+        dict(zip(units, jax.random.split(param_key, len(units)), strict=True))
         if param_key is not None
-        else ()
+        else {}
+    )
+    keys = (
+        {address: unit_keys[reads.get(address, address)] for address in learnable}
+        if unit_keys
+        else {}
     )
 
     def lower(slot: str, i: int, decl):

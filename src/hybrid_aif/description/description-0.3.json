@@ -23,6 +23,9 @@
     "variables": {
       "$ref": "#/$defs/body/properties/variables"
     },
+    "parameters": {
+      "$ref": "#/$defs/body/properties/parameters"
+    },
     "factors": {
       "$ref": "#/$defs/body/properties/factors"
     },
@@ -349,8 +352,17 @@
       "properties": {
         "initial": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -393,15 +405,46 @@
             "options": {
               "type": "object"
             },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
             "steps": {
               "const": "0"
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "transition": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -444,15 +487,46 @@
             "options": {
               "type": "object"
             },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
             "steps": {
               "const": "1+"
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "likelihood": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -495,15 +569,46 @@
             "options": {
               "type": "object"
             },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
             "steps": {
               "const": "all"
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "actuator": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -546,15 +651,46 @@
             "options": {
               "type": "object"
             },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
             "steps": {
               "const": "all"
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "recognition": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -597,15 +733,46 @@
             "options": {
               "type": "object"
             },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
             "steps": {
               "const": "all"
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "target": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -647,13 +814,44 @@
             },
             "options": {
               "type": "object"
+            },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "terminal": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -695,13 +893,44 @@
             },
             "options": {
               "type": "object"
+            },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "policy_prior": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -743,13 +972,44 @@
             },
             "options": {
               "type": "object"
+            },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         },
         "prior": {
           "type": "object",
-          "required": [
-            "family"
+          "anyOf": [
+            {
+              "required": [
+                "family"
+              ]
+            },
+            {
+              "required": [
+                "parameter"
+              ]
+            }
           ],
           "additionalProperties": false,
           "properties": {
@@ -791,14 +1051,45 @@
             },
             "options": {
               "type": "object"
+            },
+            "parameter": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "dependentSchemas": {
+            "parameter": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "family"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "parameters"
+                    ]
+                  }
+                ]
+              }
             }
           }
         }
       },
       "additionalProperties": {
         "type": "object",
-        "required": [
-          "family"
+        "anyOf": [
+          {
+            "required": [
+              "family"
+            ]
+          },
+          {
+            "required": [
+              "parameter"
+            ]
+          }
         ],
         "additionalProperties": false,
         "properties": {
@@ -841,12 +1132,34 @@
           "options": {
             "type": "object"
           },
+          "parameter": {
+            "type": "string",
+            "minLength": 1
+          },
           "steps": {
             "enum": [
               "0",
               "1+",
               "all"
             ]
+          }
+        },
+        "dependentSchemas": {
+          "parameter": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "family"
+                  ]
+                },
+                {
+                  "required": [
+                    "parameters"
+                  ]
+                }
+              ]
+            }
           }
         }
       }
@@ -911,6 +1224,52 @@
           },
           "additionalProperties": {
             "$ref": "#/$defs/variable"
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Named parameter variables, each held once and read by every factor record that names it in its 'parameter' key.",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "family"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "family": {
+                "enum": [
+                  "Categorical",
+                  "ConditionalCategorical",
+                  "ConditionalGaussian",
+                  "DerivedInitial",
+                  "Deterministic",
+                  "Dirichlet",
+                  "Gaussian",
+                  "InverseGamma",
+                  "InverseWishart",
+                  "JointCategorical",
+                  "LearnedVector",
+                  "LinearGaussianObservation",
+                  "LinearGaussianTransition",
+                  "MLPCategorical",
+                  "MLPConditional",
+                  "MLPPredictor",
+                  "MatrixNormal",
+                  "MixtureGaussian",
+                  "NonlinearGaussianTransition",
+                  "PredictorHead"
+                ]
+              },
+              "parameters": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/names"
+                }
+              },
+              "options": {
+                "type": "object"
+              }
+            }
           }
         },
         "factors": {

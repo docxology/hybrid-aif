@@ -45,6 +45,7 @@ import jax.numpy as jnp
 
 from hybrid_aif import controls
 from hybrid_aif.controls import FLOAT, LEVEL, ControlLayout, ControlStep
+from hybrid_aif.factors import Parameter, TabularHome
 from hybrid_aif.inference.detail import InferenceDetail
 
 Kind = Literal["beliefs", "observations", "actions", "detail", "params"]
@@ -603,38 +604,119 @@ def _keyed_slots(params: Any) -> list[str]:
     return [slot for slot in SLOTS if len(c := getattr(params, slot)) and isinstance(c, Mapping)]
 
 
+#: The containers whose entries may be a :class:`~hybrid_aif.factors.Parameter` reference.
+READER_SLOTS = ("transition", "likelihood")
+
+
+def _home(params: Any, name: str, slot: str, reader: str) -> Any:
+    """The declaration a reference names, or the refusal that says why it names none."""
+    homes = getattr(params, "parameters", {})
+    noun = "modality" if slot == "likelihood" else "factor"
+    if name not in homes:
+        raise ValueError(
+            f"{noun} {reader!r} reads parameter variable {name!r} (params.{slot}[{reader!r}] is "
+            f"Parameter({name!r})), but params.parameters declares {sorted(homes)}; declare the "
+            "variable there"
+        )
+    home = homes[name]
+    if isinstance(home, Parameter):
+        raise ValueError(
+            f"params.parameters[{name!r}] is itself a reference to {home.name!r}; a parameter "
+            "variable holds a declaration, and only a factor's or modality's entry refers to one"
+        )
+    if not isinstance(home, TabularHome):
+        raise NotImplementedError(
+            f"{noun} {reader!r} reads parameter variable {name!r}, a {type(home).__name__}; only "
+            "tabular declarations (a ConditionalCategorical, or a ConditionalDirichlet over a "
+            "table) are supported, and a parameter variable read by gradient (a neural "
+            "conditional) is refused with this error; see docs/design/shared-parameters.md"
+        )
+    return home
+
+
+def _resolve_slot(names: FaceNames, params: Any, slot: str, entries: list, refs: dict) -> list:
+    """The entries of ``slot`` (in node order), each reference replaced by the declaration it names.
+
+    ``refs`` collects ``(slot, index) -> home name``, from the tokens in ``entries`` and from the
+    references the params already carry (a positional view re-reads its variables, so a replaced
+    ``parameters`` entry reaches every reader)."""
+    slot_names = _slot_names(names, slot)
+    out = list(entries)
+    for i, entry in enumerate(out):
+        if isinstance(entry, Parameter):
+            refs[(slot, i)] = entry.name
+    for (s, i), home in list(refs.items()):
+        if s == slot and i < len(out):
+            out[i] = _home(params, home, slot, slot_names[i])
+    return out
+
+
 def params_positional(names: FaceNames, params: Any, face: str = "params") -> Any:
     """``params`` with its per-variable containers as tuples in node order (the internal form).
 
     Idempotent: positional containers pass through. Keyed ones are read by name, so their
-    insertion order never matters; a missing or unknown key raises.
+    insertion order never matters; a missing or unknown key raises. A ``transition`` or
+    ``likelihood`` entry that is a :class:`~hybrid_aif.factors.Parameter` is replaced by the
+    declaration it names in ``params.parameters``, so every reader's position holds its variable's
+    table; the view records which positions are references (``references``), and
+    :func:`params_keyed` puts the tokens back.
     """
     out = {}
+    refs = {(slot, i): home for slot, i, home in getattr(params, "references", ())}
     for slot in SLOTS:
         container = getattr(params, slot)
-        if not isinstance(container, Mapping):
-            continue
-        kind = "observations" if slot == "likelihood" else "beliefs"
-        nodes = [n for n in names.controls if n in container]
-        if nodes and slot != "likelihood":
-            raise NotImplementedError(
-                f"{face}: params.{slot} has an entry for control node(s) {nodes}, and a prior "
-                "over a control node arrives with the path-dynamics build (docs/design/"
-                "control-states.md C2); leave it out, so each node is uniform over its levels "
-                "at every step"
-            )
-        check_mapping(names, kind, container, face, label=f"params.{slot}")
-        out[slot] = tuple(container[n] for n in _slot_names(names, slot))
+        if isinstance(container, Mapping):
+            kind = "observations" if slot == "likelihood" else "beliefs"
+            nodes = [n for n in names.controls if n in container]
+            if nodes and slot != "likelihood":
+                raise NotImplementedError(
+                    f"{face}: params.{slot} has an entry for control node(s) {nodes}, and a prior "
+                    "over a control node arrives with the path-dynamics build (docs/design/"
+                    "control-states.md C2); leave it out, so each node is uniform over its levels "
+                    "at every step"
+                )
+            check_mapping(names, kind, container, face, label=f"params.{slot}")
+            out[slot] = tuple(container[n] for n in _slot_names(names, slot))
+        elif slot in READER_SLOTS and (
+            any(r[0] == slot for r in refs)
+            or any(isinstance(e, Parameter) for e in tuple(container))
+        ):
+            out[slot] = tuple(container)
+    if hasattr(params, "references"):
+        for slot in READER_SLOTS:
+            if slot in out:
+                out[slot] = tuple(_resolve_slot(names, params, slot, list(out[slot]), refs))
+        out["references"] = tuple(sorted((s, i, h) for (s, i), h in refs.items()))
     return dataclasses.replace(params, **out) if out else params
 
 
+def _same_table(a: Any, b: Any) -> bool:
+    """Whether two declarations hold the same arrays (taken as equal when they cannot be read,
+    under a trace)."""
+    la, ta = jax.tree_util.tree_flatten(a)
+    lb, tb = jax.tree_util.tree_flatten(b)
+    if ta != tb:
+        return False
+    if any(isinstance(x, jax.core.Tracer) for x in (*la, *lb)):
+        return True
+    return all(bool(jnp.array_equal(x, y)) for x, y in zip(la, lb, strict=True))
+
+
 def params_keyed(names: FaceNames, params: Any) -> Any:
-    """``params`` with its per-variable containers keyed by name, in node order. Idempotent."""
+    """``params`` with its per-variable containers keyed by name, in node order. Idempotent.
+
+    A reader that reads a parameter variable holds a :class:`~hybrid_aif.factors.Parameter`
+    reference again, never a copy of the variable's table."""
     out = {}
     for slot in SLOTS:
         container = getattr(params, slot)
         if not isinstance(container, Mapping):
             out[slot] = dict(zip(_slot_names(names, slot), tuple(container), strict=True))
+    references = getattr(params, "references", ())
+    for slot, i, home in references:
+        out[slot][_slot_names(names, slot)[i]] = Parameter(home)
+    if references:
+        out["references"] = ()
     return dataclasses.replace(params, **out) if out else params
 
 
@@ -691,6 +773,16 @@ def from_positional(names: FaceNames, kind: str, positional: Any) -> dict:
                 raise ValueError(
                     f"from_positional('params', ...): params.{slot} has {got} entries for "
                     f"{want} name(s) {list(_slot_names(names, slot))}"
+                )
+        for slot, i, home in getattr(positional, "references", ()):
+            if not _same_table(getattr(positional, slot)[i], positional.parameters[home]):
+                noun = "modality" if slot == "likelihood" else "factor"
+                raise ValueError(
+                    f"from_positional('params', ...): {noun} {_slot_names(names, slot)[i]!r} reads "
+                    f"parameter variable {home!r}, and its position differs from the variable's "
+                    "entry. The positional form holds the variable's table at every reader "
+                    f"position, so it is edited at parameters[{home!r}] in the keyed form and "
+                    "then converted"
                 )
         return params_keyed(names, positional)
     if kind == "detail":

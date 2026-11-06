@@ -36,9 +36,19 @@ GROUPS: dict[str, frozenset[str]] = {
     # 1: the declared model — positional, indexed by graph position, interior to Q
     #    (``control``: each continuous control node's support, the box its family lives on;
     #    ``actuator``: an action node's kernel P(a | u); ``durations``: a round's clock per
-    #    level of one control node)
+    #    level of one control node; ``parameters``: the named tables readers refer to, and
+    #    ``references``: the positional view's record of which readers do)
     "declared_model": frozenset(
-        {"transition", "likelihood", "initial_state_prior", "control", "actuator", "durations"}
+        {
+            "transition",
+            "likelihood",
+            "initial_state_prior",
+            "control",
+            "actuator",
+            "durations",
+            "parameters",
+            "references",
+        }
     ),
     # 2: the closed-loop factors — these two and no others
     "loop_factors": frozenset({"recognition", "policy_prior"}),

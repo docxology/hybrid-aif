@@ -5,7 +5,8 @@ face applies to a composite unchanged. It namespaces every node as ``"<sub>.<nam
 key grammar with it: ``"likelihood:arm.pose"``), concatenates state factors, modalities and control
 nodes in ``subsystems`` order with every dependency index offset, and applies the bindings, each an
 identification of latents across components: :class:`ActionControl`, :class:`ObservationLink`,
-:class:`TargetEmission`, :class:`BoundaryPrior`. Control nodes no binding touches stay the
+:class:`TargetEmission`, :class:`BoundaryPrior`, and of parameter variables,
+:class:`SharedParameter`. Control nodes no binding touches stay the
 composite's own, chosen by its planner. An ``ActionControl`` names a control node of one component,
 and the latent it is identified with decides the timing: another component's control node is read
 at the same step (the two nodes become one), a state of another component at the previous step (a
@@ -110,17 +111,38 @@ class BoundaryPrior(NamedTuple):
     prior: "int | Categorical | Array"
 
 
-Binding = ActionControl | ObservationLink | TargetEmission | BoundaryPrior
+class SharedParameter(NamedTuple):
+    """Binding (d): two components' parameter variables identified as one.
+
+    ``left`` and ``right`` name entries of the composite's ``parameters`` (``"rover.field"``,
+    ``"mission.field"``: a component's own parameter name under its prefix). The composite keeps
+    one variable under ``left``, with ``left``'s declaration (its prior and its counts), and every
+    factor or modality that read ``right`` reads ``left``. The two must be the same family with
+    the same table shape; anything else raises, naming both. ``right``'s counts are discarded:
+    only ``left``'s declaration survives, so bind before ``right``'s member has learned anything
+    worth keeping.
+    """
+
+    left: str
+    right: str
+
+
+Binding = ActionControl | ObservationLink | TargetEmission | BoundaryPrior | SharedParameter
 
 
 # ------------------------------------------------------------------- key helpers
+
+
+#: The first segments whose second segment is a name to qualify: the slots, and ``parameter``.
+_NAMED_KINDS = (*_KEY_KINDS, "parameter")
 
 
 def namespaced_key(prefix: str, key: str) -> str:
     """Qualify one key of the key grammar with a subsystem prefix, on its name segment.
 
     ``"pose" -> "arm.pose"``, ``"pose:b1" -> "arm.pose:b1"``, ``"obs:cue" -> "obs:arm.cue"``,
-    ``"likelihood:pose:noise" -> "likelihood:arm.pose:noise"``. Wildcards must be resolved first
+    ``"likelihood:pose:noise" -> "likelihood:arm.pose:noise"``, ``"parameter:field" ->
+    "parameter:arm.field"`` (a parameter variable's rate key). Wildcards must be resolved first
     (:func:`resolved_epistemic`).
     """
     parts = key.split(":")
@@ -129,7 +151,7 @@ def namespaced_key(prefix: str, key: str) -> str:
             f"cannot namespace the wildcard pattern {key!r}: patterns are resolved against "
             "the subsystem's own variable table first (merge resolves them for you)"
         )
-    at = 1 if len(parts) > 1 and parts[0] in _KEY_KINDS else 0
+    at = 1 if len(parts) > 1 and parts[0] in _NAMED_KINDS else 0
     parts[at] = f"{prefix}{SEPARATOR}{parts[at]}"
     return ":".join(parts)
 
@@ -149,7 +171,7 @@ def namespaced_term(prefix: str, key: str) -> str:
     if registry.get_row(row).target is None or not sep:
         return key
     parts = rest.split(":")
-    at = 1 if len(parts) > 1 and parts[0] in _KEY_KINDS else 0
+    at = 1 if len(parts) > 1 and parts[0] in _NAMED_KINDS else 0
     if "*" in parts[: at + 1]:
         raise ValueError(
             f"cannot namespace the wildcard selector terms={key!r}: a wildcard in the variable "
@@ -588,6 +610,8 @@ def merge(
     cells: list[tuple[str, object]] = []
     C_deps: list[tuple[str, tuple[str, ...]]] = []
     durations: dict[str, object] = {}
+    parameters: dict[str, object] = {}  # the named parameter variables, by composite name
+    reads: dict[tuple[str, int], str] = {}  # (slot, composite index) -> the variable it reads
 
     scored = sorted(
         name for name, system in subsystems.items() if system.scoring or params[name].scoring
@@ -665,6 +689,11 @@ def merge(
         likelihood.extend(p.likelihood)
         transition.extend(p.transition)
         initial_state_prior.extend(p.initial_state_prior)
+        parameters.update({f"{name}{SEPARATOR}{h}": decl for h, decl in p.parameters.items()})
+        for slot, i, home in p.references:
+            reads[(slot, i + (f_off if slot == "transition" else m_off))] = (
+                f"{name}{SEPARATOR}{home}"
+            )
         for src, dst in (
             (p.obs_targets, obs_targets),
             (p.state_targets, state_targets),
@@ -815,9 +844,21 @@ def merge(
             f"{nodes[d].action!r} differ: declare the same kernel on both, or on neither"
         )
 
+    def table_is_owned(g: int, what: str) -> None:
+        """Refuse a rewrite of the table of a factor that reads a parameter variable: the table
+        is the variable's, shared by every reader, and one reader's axes cannot change alone."""
+        if ("transition", g) in reads:
+            raise NotImplementedError(
+                f"{what} rewrites the control axis of factor {factor_names[g]!r}'s transition "
+                f"table, which is the parameter variable {reads[('transition', g)]!r} that other "
+                "readers share; declare the factor's own table (not a Parameter reference) "
+                "where a binding changes its axes"
+            )
+
     def cut(k: int, keep, weights) -> None:
         """Slice or average node ``k`` out of every table that reads it."""
         for g, pos in readers_of(k):
+            table_is_owned(g, f"a binding on control node {nodes[k].name!r}")
             floats = [p for p, i in control_parents(g) if nodes[i].kind == FLOAT]
             transition[g] = _cut_axes(
                 transition[g],
@@ -932,6 +973,7 @@ def merge(
                 )
             kernels_agree(c, None, f"ActionControl({binding.driver!r} -> {binding.control!r})")
             g, pos = readers[0]
+            table_is_owned(g, f"ActionControl({binding.driver!r} -> {binding.control!r})")
             transition[g] = _drop_control_axis(transition[g], factor_names[g], None, None)
             parents[g][pos] = ("state", d)
             nodes[c].live = False
@@ -990,11 +1032,27 @@ def merge(
                     "terminal designation is conditional on something"
                 )
             H_deps[f] = emitters
+        elif isinstance(binding, SharedParameter):
+            for end in (binding.left, binding.right):
+                if end not in parameters:
+                    raise ValueError(
+                        f"SharedParameter names {end!r}, which is not a parameter variable of "
+                        f"the composite; they are {sorted(parameters)} (a component's own name "
+                        "under its prefix)"
+                    )
+            if binding.left == binding.right:
+                raise ValueError(f"SharedParameter names {binding.left!r} on both sides")
+            _check_same_variable(binding, parameters[binding.left], parameters[binding.right])
+            for address, home in reads.items():
+                if home == binding.right:
+                    reads[address] = binding.left
+            del parameters[binding.right]
         else:
             raise TypeError(
                 f"unknown binding {binding!r}; the kinds are ActionControl (control-node "
                 "identification or relay), ObservationLink (a modality's parents), "
-                "TargetEmission (H_deps, N1) and BoundaryPrior (a control node's fixed prior)"
+                "TargetEmission (H_deps, N1), BoundaryPrior (a control node's fixed prior) and "
+                "SharedParameter (two parameter variables identified)"
             )
 
     same_step = {node: resolve(node) for node in same_step}
@@ -1231,7 +1289,11 @@ def merge(
         subsystems=tuple(metadata),
     )
     boxes = {nodes[k].name: nodes[k].box for k in live if nodes[k].box is not None}
+    for (slot, i), home in reads.items():  # every reader's position holds its variable's table
+        (transition if slot == "transition" else likelihood)[i] = parameters[home]
     composite_params = SystemParams(
+        parameters=parameters,
+        references=tuple(sorted((slot, i, home) for (slot, i), home in reads.items())),
         transition=tuple(transition),
         initial_state_prior=tuple(initial_state_prior),
         likelihood=tuple(likelihood),
@@ -1255,6 +1317,97 @@ def merge(
     )
     composite._validate(composite_params)
     return composite, composite._params_out(composite_params)
+
+
+def _table_of(decl):
+    return decl.concentration if isinstance(decl, ConditionalDirichlet) else decl.log_table
+
+
+def _check_same_variable(binding: SharedParameter, left, right) -> None:
+    """Refuse two parameter variables that are not one declaration's worth: a family or table
+    shape that differs."""
+    if type(left) is not type(right):
+        raise ValueError(
+            f"{binding}: {binding.left!r} is a {type(left).__name__} and {binding.right!r} a "
+            f"{type(right).__name__}; two parameter variables are identified only when they are "
+            "the same family"
+        )
+    if _table_of(left).shape != _table_of(right).shape or left.parent_ndims != right.parent_ndims:
+        raise ValueError(
+            f"{binding}: {binding.left!r} has table shape {tuple(_table_of(left).shape)} and "
+            f"{binding.right!r} has {tuple(_table_of(right).shape)}; two parameter variables are "
+            "identified only when their tables have the same shape"
+        )
+
+
+def write_back(
+    composite: System,
+    params: SystemParams,
+    name: str,
+    before: SystemParams,
+    after: SystemParams,
+) -> SystemParams:
+    """``params`` with the parameter variables the view of ``name`` learned set to ``after``'s.
+
+    ``before`` is the view's params as :func:`subsystem` returned them and ``after`` the same
+    view's params after learning. Each variable ``before`` holds must equal the composite's
+    current entry (same type, shape and values, compared concretely) and is then replaced by
+    ``after``'s, so the composite holds exactly what the view learned, decay included. A stale
+    ``before`` raises: take the view again from the composite after any write-back. Evidence
+    that several views gather at once is accumulated by learning on the composite, not by writing
+    views back. An ``after`` missing a variable ``before`` holds, a ``before`` of another shape
+    or type, and a concentration in ``after`` that is not positive all raise. Nothing else is
+    written: a view's own tables are its own to carry.
+    """
+    params = composite._params_in(params, "write_back")
+    unknown = sorted(set(before.parameters) - set(params.parameters))
+    if unknown:
+        raise ValueError(
+            f"write_back: the view of {name!r} holds parameter variable(s) {unknown}, which the "
+            f"composite does not declare; it declares {sorted(params.parameters)}"
+        )
+    homes = dict(params.parameters)
+    for var, start in before.parameters.items():
+        current = homes[var]
+        if var not in after.parameters:
+            raise ValueError(
+                f"write_back: the view of {name!r} held parameter variable {var!r} before "
+                f"learning and holds none after; pass the same view's params"
+            )
+        end = after.parameters[var]
+        if type(start) is not type(current) or _table_of(start).shape != _table_of(current).shape:
+            raise ValueError(
+                f"write_back: the view of {name!r} was taken with parameter variable {var!r} as a "
+                f"{type(start).__name__} of shape {tuple(_table_of(start).shape)}, and the "
+                f"composite now holds a {type(current).__name__} of shape "
+                f"{tuple(_table_of(current).shape)}; take the view again from the composite"
+            )
+        if not bool(jnp.array_equal(_table_of(start), _table_of(current))):
+            raise ValueError(
+                f"write_back: the view of {name!r} was taken before the composite's parameter "
+                f"variable {var!r} last changed, so writing it back would erase that change. "
+                "Take the view again from the composite after any write-back; evidence from "
+                "several views at once is accumulated by learning on the composite, not by "
+                "writing views back"
+            )
+        if type(end) is not type(start) or _table_of(end).shape != _table_of(start).shape:
+            raise ValueError(
+                f"write_back: the view of {name!r} holds parameter variable {var!r} after "
+                "learning in another form than before"
+            )
+        if isinstance(end, ConditionalDirichlet) and not bool(jnp.all(end.concentration > 0.0)):
+            raise ValueError(
+                f"write_back: parameter variable {var!r} has a concentration that is not "
+                f"positive after the view of {name!r} learned (a decay or rate that overshoots "
+                "the anchor); it is not a Dirichlet and is not written"
+            )
+        homes[var] = end
+    out = dataclasses.replace(params, parameters=homes)
+    for slot, i, home in params.references:  # every reader's position holds its variable's table
+        container = list(getattr(out, slot))
+        container[i] = homes[home]
+        out = dataclasses.replace(out, **{slot: tuple(container)})
+    return composite._params_out(out)
 
 
 def _state_deps(deps: tuple[int, ...], n_states: int) -> tuple[int, ...]:
@@ -1518,6 +1671,7 @@ def subsystem(
 
     transition: list[object] = []
     view_parents: list[list[tuple[str, int]]] = []
+    held = {(slot, i): home for slot, i, home in params.references}
     for f in facs:
         reads = table.control_parents[f]
         cuts = [(pos, k) for k, pos in reads if k not in ours]
@@ -1527,6 +1681,13 @@ def subsystem(
         if not cuts:
             transition.append(params.transition[f])
             continue
+        if ("transition", f) in held:
+            raise NotImplementedError(
+                f"factor {c_facs[f]!r} of the view of {name!r} reads the parameter variable "
+                f"{held[('transition', f)]!r} and a control node another component chooses, so "
+                "the view would average the shared table over that axis; declare the factor's "
+                "own table where a view marginalises a partner's node"
+            )
         boxed = [c_nodes[k] for _, k in cuts if space.kinds[k] == FLOAT]
         if boxed:
             raise NotImplementedError(
@@ -1601,7 +1762,15 @@ def subsystem(
     prefix = f"{name}{SEPARATOR}"
     recognition = tuple(e for e in composite.recognition or () if e.variable.startswith(prefix))
     external = tuple((n, w) for n, w in composite.external_inputs if n.startswith(prefix))
+    view_reads = [
+        (slot, j, held[(slot, i)])
+        for slot, items in (("transition", facs), ("likelihood", mods))
+        for j, i in enumerate(items)
+        if (slot, i) in held
+    ]
     view_params = SystemParams(
+        parameters={home: params.parameters[home] for _, _, home in view_reads},
+        references=tuple(sorted(view_reads)),
         recognition={e.variable: params.recognition[e.variable] for e in recognition},
         transition=tuple(transition),
         initial_state_prior=tuple(params.initial_state_prior[f] for f in facs),

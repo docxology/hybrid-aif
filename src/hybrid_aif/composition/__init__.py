@@ -3,8 +3,9 @@ clock that runs them.
 
 - :mod:`~hybrid_aif.composition.merge` — :func:`merge` makes several Systems one namespaced
   composite, identifying latents across them (bindings: control-node identification or relay,
-  a modality's parents, target emission, boundary prior); :func:`subsystem` derives one mind's
-  System from the composite.
+  a modality's parents, target emission, boundary prior, a shared parameter variable);
+  :func:`subsystem` derives one mind's System from the composite and :func:`write_back` returns
+  a view's learned parameter variables to it.
 - :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins minds and processes through
   their blankets: a :class:`Wire` from an action node to a process input or a mind's modality,
   or from a process observation to a mind's modality, typed and checked into a :class:`Wiring`.
@@ -32,12 +33,14 @@ from hybrid_aif.composition.merge import (
     ActionControl,
     BoundaryPrior,
     ObservationLink,
+    SharedParameter,
     TargetEmission,
     merge,
     namespaced_key,
     resolved_epistemic,
     subsystem,
     subsystem_factors,
+    write_back,
 )
 
 __all__ = [
@@ -48,6 +51,7 @@ __all__ = [
     "MindRecord",
     "ObservationLink",
     "ProcessRecord",
+    "SharedParameter",
     "TargetEmission",
     "Trajectory",
     "Wire",
@@ -62,4 +66,5 @@ __all__ = [
     "run",
     "subsystem",
     "subsystem_factors",
+    "write_back",
 ]

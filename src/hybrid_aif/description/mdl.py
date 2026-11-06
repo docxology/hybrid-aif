@@ -429,7 +429,38 @@ class _Walk:
         self.states = tuple(table.state_names)
         self.controls = tuple(table.control_names)
         self.mods = tuple(system.modality_names)
+        if prior is not None:
+            now = {(slot, i): home for slot, i, home in params.references}
+            then = {(slot, i): home for slot, i, home in prior.references}
+            for slot, i in sorted(now.keys() | then.keys()):
+                if now.get((slot, i)) != then.get((slot, i)):
+                    name = (tuple(system.modality_names) if slot == "likelihood" else system._facs)[
+                        i
+                    ]
+                    raise ValueError(
+                        f"description_length: {slot}:{name} reads "
+                        + (
+                            f"parameter variable {now[(slot, i)]!r}"
+                            if (slot, i) in now
+                            else "its own table"
+                        )
+                        + " in the model and "
+                        + (
+                            f"parameter variable {then[(slot, i)]!r}"
+                            if (slot, i) in then
+                            else "its own table"
+                        )
+                        + " in the prior, and a posterior is priced against a prior of the same "
+                        "form only; declare both alike"
+                    )
         self.out: dict[str, Links] = {}
+        self.readers: dict[str, list[str]] = {}
+        self.referencing: set[str] = set()
+        self.reading: dict[tuple[str, int], str] = {}
+        for slot, i, home in params.references:
+            noun = tuple(system.modality_names) if slot == "likelihood" else tuple(self.states)
+            self.reading[(slot, i)] = home
+            self.readers.setdefault(home, []).append(f"{slot}:{noun[i]}")
         self.live = {
             f: _live_levels(params.initial_state_prior[f], params.transition[f])
             for f in range(len(self.states))
@@ -440,6 +471,15 @@ class _Walk:
                 self.used[f] = self.live[f] | mask
 
     def resolution(self, address: str) -> float | None:
+        """An address's resolution. A parameter variable's is the sum of its readers' (the
+        number it is named under in a mapping, when ``n`` gives one), since each reader's data
+        is evidence about the one table."""
+        if address.startswith("parameter:") and not (
+            isinstance(self.n, Mapping) and address in self.n
+        ):
+            counts = [self.resolution(reader) for reader in self.readers.get(address[10:], ())]
+            counts = [c for c in counts if c is not None]
+            return math.fsum(counts) if counts else None
         if isinstance(self.n, Mapping):
             value = self.n.get(address)
             return None if value is None else float(value)
@@ -504,6 +544,7 @@ class _Walk:
                 self.axis_masks(deps),
                 live,
                 size_code=size_code,
+                home=self.reading.get(("transition", f)),
             )
         for m, o in enumerate(self.mods):
             deps = self.system.A_deps[m]
@@ -518,12 +559,10 @@ class _Walk:
                 self.axis_masks(deps, used=True),
                 None,
                 size_code=_size_code(_description._observation_domain(decl, f"likelihood:{o}")),
-                mode_masks=tuple(
-                    mask
-                    for g, mask in zip(deps, self.axis_masks(deps, used=True), strict=True)
-                    if not (g < f_count and self.live[g] is None)
-                ),
+                mode_masks=self.mode_masks(deps),
+                home=self.reading.get(("likelihood", m)),
             )
+        self.homes()
         ordered = [self.out[key] for key in sorted(self.out)]
         structure = math.fsum(link.structure for link in ordered)
         parameters = math.fsum(link.parameters for link in ordered)
@@ -531,7 +570,9 @@ class _Walk:
             (addr, name)
             for addr, link in self.out.items()
             for name in ("family", "prior", "posterior")
-            if getattr(link, name) is None and not (addr == "graph" or addr.startswith("control:"))
+            if getattr(link, name) is None
+            and not (addr == "graph" or addr.startswith("control:"))
+            and addr not in self.referencing
         )
         return DescriptionLength(
             structure=structure,
@@ -542,16 +583,75 @@ class _Walk:
             unscored=unscored,
         )
 
+    def mode_masks(self, deps: tuple[int, ...]) -> tuple:
+        """The live levels of the discrete parents a likelihood's per-mode family is batched
+        over."""
+        return tuple(
+            mask
+            for g, mask in zip(deps, self.axis_masks(deps, used=True), strict=True)
+            if not (g < len(self.states) and self.live[g] is None)
+        )
+
+    def homes(self) -> None:
+        """One record per named parameter variable, under ``parameter:<name>``: its table priced
+        once, over the levels any of its readers can use (the union of the readers' live levels
+        on each axis; a variable no factor reads is priced whole). Its readers' records hold
+        their structure only."""
+        seen: dict[str, list[tuple]] = {}
+        for (slot, i), home in sorted(self.reading.items()):
+            if slot == "transition":
+                deps = self.system.B_deps[i]
+                seen.setdefault(home, []).append((self.axis_masks(deps), self.live[i], None))
+            else:
+                deps = self.system.A_deps[i]
+                seen.setdefault(home, []).append(
+                    (self.axis_masks(deps, used=True), None, self.mode_masks(deps))
+                )
+        for name, decl in self.params.parameters.items():
+            readers = seen.get(name, [])
+            first = next((r for r in readers if r[2] is not None), None)
+            label = "transition" if first is None else "likelihood"
+            masks = tuple(
+                _union([r[0][axis] if axis < len(r[0]) else None for r in readers])
+                for axis in range(max((len(r[0]) for r in readers), default=0))
+            )
+            live = _union([r[1] for r in readers]) if readers else None
+            modes = None if first is None else first[2]
+            prior_decl = self.prior.parameters.get(name) if self.prior is not None else None
+            self.address(
+                f"parameter:{name}", label, decl, prior_decl, None, masks, live, None, modes
+            )
+
     def address(
-        self, key, label, decl, prior_decl, parents, masks, live, size_code, mode_masks=None
+        self,
+        key,
+        label,
+        decl,
+        prior_decl,
+        parents,
+        masks,
+        live,
+        size_code,
+        mode_masks=None,
+        home=None,
     ) -> None:
-        """One record's links: ``parents`` is ``(how many it reads, how many it could read)``;
+        """One record's links: ``parents`` is ``(how many it reads, how many it could read)``,
+        or ``None`` for a parameter variable's record, which holds no structure of its own;
         ``mode_masks`` are the live levels of the parents a per-mode family is batched over
-        (its discrete parents, a continuous one being the regressor)."""
+        (its discrete parents, a continuous one being the regressor). A reader of the parameter
+        variable ``home`` (its name) holds its structure only: its parents and sizes, no table."""
         n = self.resolution(key)
-        graph = family_code(label) + parent_set_code(*parents)
-        if size_code is not None:
-            graph += size_code
+        graph = 0.0
+        if parents is not None:
+            graph = family_code(label) + parent_set_code(*parents)
+            if size_code is not None:
+                graph += size_code
+        if home is not None:
+            self.referencing.add(key)
+            self.out[key] = Links(
+                graph, None, None, None, True, None, f"reads parameter variable {home!r}"
+            )
+            return
         family = prior = posterior = None
         exact = True
         note = type(decl).__name__
@@ -713,6 +813,13 @@ class _Walk:
         if extent_scored:
             return f" ({base}; the room the reference admits in closed form)"
         return f" ({base}; a regression family, so the room the reference admits is unscored)"
+
+
+def _union(masks: list) -> np.ndarray | None:
+    """The levels any of ``masks`` keeps; ``None`` (every level) when any of them keeps all."""
+    if not masks or any(m is None for m in masks):
+        return None
+    return np.logical_or.reduce([np.asarray(m, bool) for m in masks])
 
 
 def _live_table(table: np.ndarray, live, masks) -> np.ndarray:
@@ -881,13 +988,23 @@ def description_length(
             before = system._params_in(params, "description_length")
             after = system._params_in(replay.params, "description_length")
             states = tuple(system._table.state_names)
-            slots = [
-                (f"likelihood:{o}", before.likelihood[m], after.likelihood[m])
-                for m, o in enumerate(system.modality_names)
-            ] + [
-                (f"transition:{s}", before.transition[f], after.transition[f])
-                for f, s in enumerate(states)
-            ]
+            reading = {(slot, i) for slot, i, _ in before.references}
+            slots = (
+                [
+                    (f"likelihood:{o}", before.likelihood[m], after.likelihood[m])
+                    for m, o in enumerate(system.modality_names)
+                    if ("likelihood", m) not in reading
+                ]
+                + [
+                    (f"transition:{s}", before.transition[f], after.transition[f])
+                    for f, s in enumerate(states)
+                    if ("transition", f) not in reading
+                ]
+                + [
+                    (f"parameter:{name}", decl, after.parameters[name])
+                    for name, decl in before.parameters.items()
+                ]
+            )
             moved = {key: (a, b) for key, a, b in slots if _changed(a, b)}
             if moved and energy.ndim > 1:
                 raise ValueError(

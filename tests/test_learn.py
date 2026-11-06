@@ -269,7 +269,9 @@ def test_no_parameter_duplicating_field_on_system_params():
     each continuous control node's box, its support, which no declaration holds either, and
     ``actuator`` each action node's kernel, which the environment draws from, and
     ``durations`` a round's length per level of the one control node that sets the clock,
-    and ``precision`` the policy precision, a scalar no declaration holds. Which
+    and ``precision`` the policy precision, a scalar no declaration holds, and ``parameters`` the
+    named tables that readers refer to (``references`` is the positional view's record of which
+    readers do). Which
     *group* each field belongs to is ``test_scoring_slot.py``'s membership test."""
     fields = {f.name for f in dataclasses.fields(SystemParams)}
     assert fields == {
@@ -286,6 +288,8 @@ def test_no_parameter_duplicating_field_on_system_params():
         "actuator",
         "durations",
         "precision",
+        "parameters",
+        "references",
     }
 
 

@@ -69,7 +69,9 @@ from hybrid_aif.factors import (
     LinearGaussianObservation,
     LinearGaussianTransition,
     NonlinearGaussianTransition,
+    Parameter,
     Recognition,
+    TabularHome,
     TabularObservation,
     TabularPrior,
     TabularTransition,
@@ -79,6 +81,7 @@ from hybrid_aif.inference.detail import InferenceDetail
 from hybrid_aif.inference.discrete import SUPPORT_FLOOR
 from hybrid_aif.learning import conjugate_stats
 from hybrid_aif.learning import evidence as _evidence
+from hybrid_aif.learning.slots import slot_learnable as _slot_learnable
 from hybrid_aif.objectives import TermTree
 from hybrid_aif.objectives import amortized as _amortized_terms
 from hybrid_aif.objectives import closed_loop as _closed_loop
@@ -157,6 +160,34 @@ def _strong(tree):
     )
 
 
+def _refuse_aliases(values: Mapping[str, object]) -> None:
+    """Refuse one learnable declaration object held under two names of ``transition``,
+    ``likelihood`` and ``parameters`` taken together.
+
+    A pytree map rebuilds each occurrence, so two names holding one object would fork at the first
+    update, each learning from its own evidence only. Two readers of one table name it, with
+    ``Parameter(name)`` and an entry in ``SystemParams.parameters``."""
+    seen: dict[int, str] = {}
+    for container in ("transition", "likelihood", "parameters"):
+        tree = values.get(container)
+        if not isinstance(tree, Mapping):
+            continue  # a positional view holds a variable's table at every reader, by design
+        for key, decl in tree.items():
+            if isinstance(decl, Parameter) or not (
+                isinstance(decl, Learnable) or _slot_learnable(decl)
+            ):
+                continue
+            label = f"{container}[{key!r}]"
+            if id(decl) in seen:
+                raise ValueError(
+                    f"{seen[id(decl)]} and {label} hold one declaration object; sharing by "
+                    "object aliasing would fork the parameter at the first update. Declare a "
+                    "named parameter variable (SystemParams.parameters) and give each reader "
+                    "Parameter(name)"
+                )
+            seen[id(decl)] = label
+
+
 def _precision_in(value):
     """A policy precision as a strong-typed floating array, or ``None``."""
     if value is None:
@@ -199,6 +230,13 @@ class SystemParams(eqx.Module):
     action's duration for an outer loop's clock (1 when none is declared).
     Design: docs/design/step-durations.md T1, T4, T8.
 
+    ``parameters`` holds named parameter variables, keyed by name: a tabular declaration (a table,
+    or a Dirichlet over one) that several factors or modalities may read. A ``transition`` entry
+    or a ``likelihood`` entry that is ``Parameter(name)`` reads the table held under ``name``;
+    an entry that is itself a table is the factor's own variable. :meth:`System.learn` sums the
+    readers' count statistics and updates the named table once, under the rate key
+    ``parameter:<name>``. The faces return the references, never copies of the table.
+
     ``likelihood`` is keyed by modality name, ``transition`` and ``initial_state_prior`` by factor
     name (``params.likelihood["position"]``); every face takes and returns them so, and a
     positional (tuple) container raises, naming ``System.from_positional("params", params)``.
@@ -224,7 +262,8 @@ class SystemParams(eqx.Module):
         | NonlinearGaussianTransition
         | MLPConditional
         | Deterministic
-        | MLPCategorical,
+        | MLPCategorical
+        | Parameter,
     ] = eqx.field(converter=_strong)
     #   AIF B, by factor name; trailing parent axis = control (tables) / conditioned
     #   innovations (LG) / a one-hot-or-continuous action parent (neural, deterministic). A
@@ -237,7 +276,8 @@ class SystemParams(eqx.Module):
     #   AIF D, by factor name; a LearnedVector is a carry node's episode-start *value*, a
     #   DerivedInitial says "read it off my own transition at t=0"
     likelihood: Mapping[
-        str, TabularObservation | LinearGaussianObservation | MLPConditional | PredictorHead
+        str,
+        TabularObservation | LinearGaussianObservation | MLPConditional | PredictorHead | Parameter,
     ] = eqx.field(default_factory=dict, converter=_strong)
     #   AIF A, by modality name; child-first (num_obs, *dep_sizes) tables (point or
     #   Dirichlet-over-table), LG (H, c, R_chol) heads, a neural conditional, or a
@@ -290,6 +330,36 @@ class SystemParams(eqx.Module):
     #   the policy precision gamma as a scalar array, traced through every face: q_pi ~
     #   softmax(-precision * G + log E). ``None`` reads ``System.gamma``. Design:
     #   docs/design/recompilation.md R5
+    parameters: dict[str, TabularHome] = eqx.field(default_factory=dict, converter=_strong)
+    #   named parameter variables, by name: a tabular declaration (a table, or a Dirichlet over
+    #   one) that a ``transition`` or ``likelihood`` entry reads through ``Parameter(name)``.
+    #   Every reader of one name reads one table; ``learn`` updates it once from the sum of its
+    #   readers' statistics. Design: docs/design/shared-parameters.md
+    references: tuple[tuple[str, int, str], ...] = eqx.field(default=(), static=True)
+    #   the positional view's record of which reader positions hold a resolved reference,
+    #   ``(slot, index, parameter name)``; empty in the keyed form every face takes and returns,
+    #   where the entries are the ``Parameter`` tokens themselves
+
+    def __init__(self, *args, **kwargs):
+        fields = [f for f in dataclasses.fields(self) if f.init]
+        if len(args) > len(fields):
+            raise TypeError(f"SystemParams takes at most {len(fields)} positional arguments")
+        values = dict(zip((f.name for f in fields), args, strict=False))
+        for key, value in kwargs.items():
+            if key in values or key not in {f.name for f in fields}:
+                raise TypeError(f"SystemParams got an unexpected or repeated argument {key!r}")
+            values[key] = value
+        _refuse_aliases(values)
+        for f in fields:  # the field converters run after this, as they do for a generated init
+            if f.name in values:
+                value = values[f.name]
+            elif f.default is not dataclasses.MISSING:
+                value = f.default
+            elif f.default_factory is not dataclasses.MISSING:
+                value = f.default_factory()
+            else:
+                raise TypeError(f"SystemParams is missing the argument {f.name!r}")
+            setattr(self, f.name, value)
 
     def __check_init__(self) -> None:
         if self.precision is not None and jnp.ndim(self.precision) != 0:
@@ -1544,7 +1614,12 @@ class System(eqx.Module):
         (an :class:`~hybrid_aif.inference.InferenceDetail` with tuple fields) → the same record
         with dict fields; ``"params"`` (a :class:`SystemParams` or environment params with tuple
         containers) → the same object with dict containers. ``params`` (keyed) is needed to
-        convert a continuous node's value, whose box lives in ``params.control``.
+        convert a continuous node's value, whose box lives in ``params.control``. For params
+        with parameter variables, the positional form holds a variable's table at every reader's
+        position; a reader position that differs from the variable's entry raises, and the edit
+        is made at ``parameters[<name>]`` in the keyed form. That check compares concrete arrays
+        only: under ``jit`` the arrays are traced and it cannot run, so an edit made at a reader
+        position is not detected there.
         """
         return keyed.from_positional(self._face_names(params), kind, positional)
 
@@ -1960,6 +2035,21 @@ class System(eqx.Module):
         recognition entry covers contributes its expected negative log-likelihood under the final
         belief, as ``infer_states`` records it.
 
+        A parameter variable several factors read (``SystemParams.parameters``) absorbs the sum
+        of its readers' statistics once, at the rate ``lr_by_slot["parameter:<name>"]`` (default
+        ``lr``). A reader's own key (``"transition:<factor>"``, ``"likelihood:<modality>"``) takes
+        only a static ``0.0``, which keeps that reader's statistic out of the variable; any other
+        value raises, naming the variable's key. A reader with no observed child counts its
+        predictive belief like any factor does, which is why this exclusion exists: a scheduler
+        that reads a table it never observes would otherwise add its own predictions to the
+        counts. A literal key outranks a pattern, for readers as for rates: a pattern
+        (``"transition:*"``, ``"*:*"``) at ``0.0`` excludes the referencing readers it matches
+        only while the variable's own rate is not named literally, so ``{"*:*": 0.0,
+        "parameter:T": 1.0}`` learns ``T`` from all its readers and ``{"*:*": 0.0}`` freezes
+        everything; a literal ``0.0`` on a reader excludes it either way. A nonzero value from a
+        pattern with a literal slot raises on a referencing reader, and a fully wildcarded
+        nonzero pattern reaches the variable through ``parameter:*`` instead.
+
         ``observations`` is keyed by modality name, ``beliefs`` and ``prev_beliefs`` by factor
         name, ``action`` by action-node name (as :meth:`act` returns it). ``action`` is
         **a_{t-1}**, the action that produced this tick's observations; each control node is
@@ -2095,15 +2185,16 @@ class System(eqx.Module):
         noise, a trainable neural conditional), carried whole, its anchors and growth
         propensity included. Every block is carried when ``slots`` is ``None``, else the ones
         the keys name: ``"likelihood:<modality>"``, ``"transition:<factor>"``,
-        ``"initial_state_prior:<factor>"`` or ``"likelihood:<modality>:noise"``, without
-        wildcards (under ``jit``, pass ``slots`` as a static argument). Everything else comes
-        from ``fresh``: point values, and a separate ``MatrixNormal`` head, which ``learn`` does
-        not update. A block whose family, shape or dtype differs between the two raises, as do
-        a selected slot that holds a posterior on one side only, a key that names no posterior,
-        and a selection that would split a growable factor's blocks, which growth and reduction
-        keep in step. Trainable slots that ``learn`` does not train (a recognition model, a
-        scoring row, a policy module) are not carried; a gradient slot's optimizer state is the
-        ``LearnState`` the agent already carries.
+        ``"initial_state_prior:<factor>"``, ``"parameter:<name>"`` (a named parameter variable,
+        the one block of every factor and modality that reads it) or
+        ``"likelihood:<modality>:noise"``, without wildcards (under ``jit``, pass ``slots`` as a
+        static argument). Everything else comes from ``fresh``: point values, and a separate
+        ``MatrixNormal`` head, which ``learn`` does not update. A block whose family, shape or dtype
+        differs between the two raises, as do a selected slot that holds a posterior on one side
+        only, a key that names no posterior, and a selection that would split a growable factor's
+        blocks, which growth and reduction keep in step. Trainable slots that ``learn`` does not
+        train (a recognition model, a scoring row, a policy module) are not carried; a gradient
+        slot's optimizer state is the ``LearnState`` the agent already carries.
 
         The carry is exact when what was learned means the same thing in the rebuilt params, as
         counts over the same levels do. A posterior over a parameter the rebuild re-expresses
@@ -2352,7 +2443,13 @@ class System(eqx.Module):
         self, params: SystemParams, face: str = "this face", declared: bool = False
     ) -> None:
         params = self._p(params)
-        validation._validate(self, params, face, declared)
+        try:
+            validation._validate(self, params, face, declared)
+        except ValueError as exc:
+            note = validation.reference_note(self, params, str(exc))
+            if note:
+                raise ValueError(f"{exc}{note}") from exc
+            raise
 
     def _validate_H_deps(self, params: SystemParams, facs: tuple[str, ...]) -> None:
         params = self._p(params)

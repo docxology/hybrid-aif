@@ -125,6 +125,9 @@ def _learn(
         )
     system._validate(params, face)
     mods, facs = (system.modality_names, system._facs)
+    reads = {(slot, i): home for slot, i, home in params.references}
+    homes = dict(params.parameters)  # the named tables, updated once from their readers' evidence
+    home_stats: dict[str, Array] = {}  # a parameter variable's summed readers' statistic
     lr_rates = system._resolve_rates(lr_by_slot, "lr_by_slot", params)
     _refuse_recognition_rates(params, lr, lr_rates)
     decay_rates = system._resolve_rates(decay_by_slot, "decay_by_slot", params)
@@ -150,6 +153,19 @@ def _learn(
         """The rate under the tick's availability: a traced flag scales it to zero."""
         flag = True if present is None else present[m]
         return r if flag is True else r * jnp.asarray(flag, jnp.float32)
+
+    def contribute(home: str, stats: Array, weight: Array | None = None) -> None:
+        """Add one reader's statistic (scaled by its availability, when traced) to its variable's
+        sum."""
+        scaled = stats if weight is None else stats * weight
+        home_stats[home] = scaled if home not in home_stats else home_stats[home] + scaled
+
+    def home_rate_of(home: str) -> float | Array:
+        return rate(f"parameter:{home}", lr, lr_rates)
+
+    def excluded(slot: str, name: str) -> bool:
+        """A referencing reader whose own rate key is a static 0.0: it adds no statistic."""
+        return lr_rates is not None and skipped(lr_rates.get(f"{slot}:{name}", 1.0))
 
     if system.lagged:
         observations, present = system._fill_lagged(observations, present, prev_beliefs, action)
@@ -213,11 +229,16 @@ def _learn(
             continue
         if not isinstance(a, Learnable):
             continue
-        r = rate(key, lr, lr_rates)
-        if skipped(r):
+        home = reads.get(("likelihood", m))
+        r = rate(key, lr, lr_rates) if home is None else home_rate_of(home)
+        if skipped(r) or (home is not None and excluded("likelihood", mods[m])):
             continue
         parents = tuple(beliefs[f] for f in system.A_deps[m])
         stats = a.stats(observations[m], parents)
+        if home is not None:
+            flag = True if present is None else present[m]
+            contribute(home, stats, None if flag is True else jnp.asarray(flag, jnp.float32))
+            continue
         new_A[m] = _absorbing(key, a, stats, lr=observed(m, r), decay=rate(key, decay, decay_rates))
 
     new_B = list(params.transition)
@@ -225,7 +246,14 @@ def _learn(
         (f, r)
         for f, b in enumerate(params.transition)
         if isinstance(b, Learnable)
-        and not skipped(r := rate(f"transition:{facs[f]}", lr, lr_rates))
+        and not skipped(
+            r := (
+                home_rate_of(reads[("transition", f)])
+                if ("transition", f) in reads
+                else rate(f"transition:{facs[f]}", lr, lr_rates)
+            )
+        )
+        and not (("transition", f) in reads and excluded("transition", facs[f]))
     ]
     if active:
         if prev_beliefs is None:
@@ -269,6 +297,9 @@ def _learn(
             )
         key = f"transition:{facs[f]}"
         stats = b.stats(beliefs[f].probs, tuple(parents))
+        if ("transition", f) in reads:
+            contribute(reads[("transition", f)], stats)
+            continue
         new_B[f] = _absorbing(key, b, stats, lr=r, decay=rate(key, decay, decay_rates))
 
     new_D = list(params.initial_state_prior)
@@ -347,11 +378,19 @@ def _learn(
         )
         (new_A if slot == "likelihood" else new_B)[i] = updated
 
+    for home, stats in home_stats.items():
+        key = f"parameter:{home}"
+        homes[home] = _absorbing(
+            key, homes[home], stats, lr=home_rate_of(home), decay=rate(key, decay, decay_rates)
+        )
+    for (slot, i), home in reads.items():  # every reader's position holds the updated variable
+        (new_A if slot == "likelihood" else new_B)[i] = homes[home]
     new_params = dataclasses.replace(
         params,
         likelihood=tuple(new_A),
         transition=tuple(new_B),
         initial_state_prior=tuple(new_D),
+        parameters=homes,
     )
     moments = {} if learn_state is None else dict(learn_state.moments)
     if growable and system.reduction_period is not None:

@@ -66,6 +66,12 @@ def growable_factors(system: System, params: SystemParams) -> tuple[int, ...]:
         if not (isinstance(b, ConditionalDirichlet) and b.growth is not None):
             continue
         name = facs[f]
+        if any(slot == "transition" and i == f for slot, i, _ in params.references):
+            raise NotImplementedError(
+                f"factor {name!r}: its transition table is a named parameter variable, and "
+                "growth and reduction rewrite a factor's own weights; declare the growable "
+                "factor's table in its own entry"
+            )
         if system.B_deps[f] or system._table.control_parents[f] or b.concentration.ndim != 2:
             raise ValueError(
                 f"factor {name!r}: its transition carries a growth propensity, and a growable "

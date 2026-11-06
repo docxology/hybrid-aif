@@ -10,7 +10,8 @@ split a growable factor's blocks, which growth and reduction keep in step.
 
 A *block* is one posterior that :meth:`~hybrid_aif.system.System.learn` updates, addressed as
 its rates are (``"likelihood:<modality>"``, ``"transition:<factor>"``,
-``"initial_state_prior:<factor>"``, and ``"likelihood:<modality>:noise"`` for a
+``"initial_state_prior:<factor>"``, ``"parameter:<name>"`` for a named parameter variable (the one
+block of every factor and modality that reads it), and ``"likelihood:<modality>:noise"`` for a
 linear-Gaussian observation's noise): a Dirichlet or conditional Dirichlet, a matrix-normal
 inverse-Wishart emission (one joint block, head and noise), a linear-Gaussian observation's
 learnable noise, a trainable neural conditional. A block is carried whole, its anchors and
@@ -100,9 +101,43 @@ def carry_learned(system, fresh, learned, slots: Iterable[str] | None = None, gr
         "initial_state_prior": tuple(system._facs),
     }
     held: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
-    blocks: dict[str, tuple[str, int, str]] = {}
+    blocks: dict[str, tuple[str, int | str, str]] = {}
+    now = {(slot, i): home for slot, i, home in fresh.references}
+    then = {(slot, i): home for slot, i, home in learned.references}
+    for slot, i in sorted(now.keys() | then.keys()):
+        key = f"{slot}:{names[slot][i]}"
+        if now.get((slot, i)) != then.get((slot, i)) and (
+            slots is None or any(k == key or key.startswith(f"{k}:") for k in slots)
+        ):
+            raise ValueError(
+                f"carry: {key} reads "
+                + (
+                    f"parameter variable {now[(slot, i)]!r}"
+                    if (slot, i) in now
+                    else "its own table"
+                )
+                + " in the fresh params and "
+                + (
+                    f"parameter variable {then[(slot, i)]!r}"
+                    if (slot, i) in then
+                    else "its own table"
+                )
+                + " in the learned ones; a posterior carries only between declarations of the "
+                "same form, so declare both alike or leave the slot out of slots="
+            )
+    reading = set(now) | set(then)
+    for name in fresh.parameters:  # a named parameter variable is one block, whoever reads it
+        if name not in learned.parameters:
+            continue
+        on_fresh = learnable_blocks(fresh.parameters[name])
+        on_learned = learnable_blocks(learned.parameters[name])
+        held[f"parameter:{name}"] = (on_fresh, on_learned)
+        if on_fresh or on_learned:
+            blocks[f"parameter:{name}"] = ("parameter", name, "")
     for slot in _SLOTS:
         for i, name in enumerate(names[slot]):
+            if (slot, i) in reading:
+                continue  # a reader of a parameter variable holds no posterior of its own
             new, old = getattr(fresh, slot)[i], getattr(learned, slot)[i]
             on_fresh, on_learned = learnable_blocks(new), learnable_blocks(old)
             held[f"{slot}:{name}"] = (on_fresh, on_learned)
@@ -141,8 +176,20 @@ def carry_learned(system, fresh, learned, slots: Iterable[str] | None = None, gr
                     f"in step; carry all of {members} or none, not {picked}"
                 )
     containers = {slot: list(getattr(fresh, slot)) for slot in _SLOTS}
+    parameters = dict(fresh.parameters)
     for key in chosen:
         slot, i, block = blocks[key]
+        if slot == "parameter":
+            on_fresh, on_learned = held[key]
+            if on_fresh != on_learned:
+                raise ValueError(
+                    f"carry: {key} holds posteriors {on_learned or 'none'} in the learned params "
+                    f"and {on_fresh or 'none'} in the fresh ones; a rebuild that changes what is "
+                    "learned would drop or invent a posterior"
+                )
+            _same_form(key, parameters[i], learned.parameters[i])
+            parameters[i] = learned.parameters[i]
+            continue
         on_fresh, on_learned = held[f"{slot}:{names[slot][i]}"]
         if on_fresh != on_learned:
             raise ValueError(
@@ -158,4 +205,8 @@ def carry_learned(system, fresh, learned, slots: Iterable[str] | None = None, gr
             containers[slot][i] = eqx.tree_at(
                 lambda d, b=block: getattr(d, b), new, _part(old, block)
             )
-    return dataclasses.replace(fresh, **{slot: tuple(containers[slot]) for slot in _SLOTS})
+    for slot, i, home in fresh.references:  # each reader's position holds its variable's table
+        containers[slot][i] = parameters[home]
+    return dataclasses.replace(
+        fresh, parameters=parameters, **{slot: tuple(containers[slot]) for slot in _SLOTS}
+    )

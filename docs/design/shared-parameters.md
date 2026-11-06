@@ -102,3 +102,83 @@ takes `is_first`, with one test.
 - **S4 — R-AIF.** Should the reference tier adopt sharing to match their CRSPP exactly
   (ledger rows 4.1 and 4.14), once the capability exists? Recommendation: run it as an
   experiment, not as a fidelity fix. §28–§29 show it is not needed for parity.
+
+## Amendment 2026-11-05: the home is a named parameter variable
+
+*Status: ADOPTED (Alex, 2026-11-05); build starts now, before the showcase's slow tier, which
+is its first customer. The first build covers tabular homes (point tables and Dirichlet-over-table);
+gradient homes follow on the same declaration.*
+
+### The delta
+
+Proposal 1 above puts a shared parameter's home at one reader's address (`rover.terrain` owns the
+table, `mission.map` borrows it). That makes one reader special and leaves the document saying
+the table is a property of that factor. The amendment moves the home out of the readers: a
+parameter is a **named variable** with its own entry, and every factor that reads it, the first
+one included, holds a reference. The factor graph then says what is true: one variable node, two
+or more factor nodes attached, and in the description document one record for the variable with
+each reader pointing at it. Proposals 2 to 5 stand unchanged with "home" read as the named entry;
+the S2 ruling (accumulate every reader's evidence, update once) stands.
+
+### The end state this is a step toward
+
+Parameter variables on a par with state, observation and control variables: declared as nodes
+with a family (a Dirichlet over a table, a Gaussian over a matrix), a prior and a belief held like
+any node's, edges to the factors that read them, listed as nodes in the description document. In
+that engine "factor f reads variable V as its table" is one mechanism whatever V's transition is:
+identity with a conjugate update (a parameter as we use the word), or a transition with an action
+parent (a controlled table, today's queued cross-factor conditioning item). This step builds the
+name, the home and the edge, for homes whose belief is static within an episode and updated by
+`learn`. The name and the edge are the invariant; later steps generalise the home.
+
+### What this step builds
+
+- **Declaration.** `SystemParams.parameters`, a mapping from the variable's name to its
+  declaration (the same classes the `transition` and `likelihood` groups take). A factor's
+  `transition` entry, or a modality's `likelihood` entry, may be `Parameter("<name>")`, a reference
+  token, in place of a table. A factor that holds a table rather than a reference owns an implicit
+  parameter variable named after itself, so nothing existing changes its spelling; the explicit
+  form costs syntax only where a parameter is shared or wants its own name.
+- **Resolution.** Pure and at the top of every face, in the step that builds the positional
+  view of `SystemParams`: each reference is replaced by the home's declaration, so the internals
+  index tables as they do now and the pytree the optimiser and the count update see holds the home
+  once. Object aliasing (one Python object under two keys) keeps raising as A11 says; a reference
+  is the declared form.
+- **Validation.** The home exists and is a table-shaped declaration of the reader's kind
+  (child-first, one parent axis per declared parent); every reader's arity and parent sizes are
+  checked against the home exactly as they would be against its own table. A rate keyed by a
+  referencing reader's slot (`transition:<f>`) raises and names the home's key
+  (`parameter:<name>`), which is the one slot the home has.
+- **Learning.** Conjugate: the count statistics of every reader with a nonzero rate are summed
+  and the home absorbs them in one update; a reader's novelty term (`transition:<f>` in
+  `epistemic`) is that reader's expected information about the home from its own predicted
+  counts, and selecting it on two readers adds the two expectations. Gradient homes (second
+  build): one optimiser state per home, the gradients of every reading loss summed (S2).
+- **Pricing.** The description length prices a home once, under `parameter:<name>`; a referencing
+  reader contributes its structure (parents, arity) and no table.
+- **Description document.** A top-level `parameters` entry records each explicit home (family,
+  shape, prior) once; a referencing reader's `transition` or `likelihood` record says
+  `"parameter": "<name>"` with its own parents in place of a family. Implicit homes keep today's
+  record inside the reader. The page's graph draws a reference as an edge from the variable to the
+  reader.
+- **Composition.** `merge` namespaces parameter names as it does node names. A binding
+  `SharedParameter("<a>.<name>", "<b>.<name>")` identifies two members' parameter variables as one,
+  the existing node-identification operation on a fourth node kind: the composite keeps one home
+  under the first name and the second member's readers reference it; shapes and families must
+  match. `subsystem` views carry the homes their readers reference, and a view's learned
+  parameters write back into the composite's `parameters` by name, so two views of one composite
+  learn one table.
+
+### What stays deferred, and why it is not foreclosed
+
+Per-tick inference about a parameter (a home whose belief steps, which is what a controlled table
+needs); readers other than table slots (a parameter as a parent of an arbitrary likelihood, with
+its own expectation rule); parameter ports in `couple`, so a separate mind can take another's
+Dirichlet as a soft observation; promoting the document's `parameters` entry from a group to the
+node list. Each generalises the home or the reader and keeps the name and the reference.
+
+### First customer
+
+The showcase's two tiers: the rover's terrain factor and the scheduler's map factor read one
+field (`docs/design/terrain-field.md`, "The slow tier"). Only the rover counts into it; the
+scheduler's novelty is honoured by the rover's counting on the fast clock.

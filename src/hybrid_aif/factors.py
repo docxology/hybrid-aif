@@ -74,6 +74,28 @@ TabularTransition = ConditionalCategorical | ConditionalDirichlet
 TabularPrior = Categorical | ConditionalCategorical | Dirichlet | ConditionalDirichlet
 
 
+class Parameter(eqx.Module):
+    """A reference to a named parameter variable, in place of a table.
+
+    A factor's ``transition`` entry or a modality's ``likelihood`` entry may be ``Parameter(name)``,
+    which says the factor or modality reads the declaration held under ``name`` in
+    ``SystemParams.parameters``. Every reader of one name reads one table, and ``learn`` updates it
+    once from the sum of the readers' count statistics. The token carries no array: the name is
+    static, so a reference is a pytree node with no leaves.
+    """
+
+    name: str = eqx.field(static=True)
+
+    def __check_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"Parameter takes a non-empty name, got {self.name!r}")
+
+
+#: The declarations a parameter variable may hold in this build: a tabular conditional (a point
+#: table or a Dirichlet over one), child-first as a transition or likelihood table is.
+TabularHome = ConditionalCategorical | ConditionalDirichlet
+
+
 class LinearGaussianTransition(eqx.Module):
     """``x' = F_j x + G_j u + b_j + eps_j``: linear map(s) with conditioned innovations.
 

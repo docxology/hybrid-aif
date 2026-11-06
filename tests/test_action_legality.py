@@ -187,7 +187,9 @@ def test_wrong_shapes_are_sentences(tmaze):
         match=r"legal\['u_location'\] has shape \(4,\); control node 'u_location' takes \(5,\)",
     ):
         system.infer_policies(params, beliefs, legal={"u_location": jnp.ones(4, bool)})
-    with pytest.raises(ValueError, match=r"one bool per policy of the planner's set, shape \(25,\)"):
+    with pytest.raises(
+        ValueError, match=r"one bool per policy of the planner's set, shape \(25,\)"
+    ):
         system.infer_policies(params, beliefs, legal=jnp.ones(7, bool))
 
 

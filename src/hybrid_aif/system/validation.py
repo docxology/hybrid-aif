@@ -279,6 +279,7 @@ def _validate(
     _validate_control_deps(system, params, facs, face)
     _validate_cells(system, params, facs)
     _validate_table_arity(system, params, facs)
+    _validate_likelihood_parents(system, params, facs)
     system._row_mounts(params)  # raises on a non-amortized System that declares rows
     space = system._space(params)  # node kinds and sizes; readers that disagree raise
     if system._is_amortized(params):
@@ -364,6 +365,21 @@ def _validate_control_deps(
             )
 
 
+def reference_note(system: System, params: SystemParams, message: str) -> str:
+    """A sentence naming the parameter variable behind a refusal that names a reader of one.
+
+    Empty when no reader the ``message`` quotes reads a named parameter variable. A reader's
+    table is its variable's, so the refusal the variable's shape draws is the variable's too."""
+    names_of = {"transition": system._facs, "likelihood": system.modality_names}
+    hits = [
+        f"{'factor' if slot == 'transition' else 'modality'} {names_of[slot][i]!r} reads "
+        f"parameter variable {home!r}"
+        for slot, i, home in getattr(params, "references", ())
+        if repr(names_of[slot][i]) in message
+    ]
+    return f" ({'; '.join(hits)})" if hits else ""
+
+
 def _validate_cells(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
     """A grid is declared only for a continuous state factor, over coordinates its state has."""
     if not system.cells:
@@ -414,12 +430,45 @@ def _validate_table_arity(system: System, params: SystemParams, facs: tuple[str,
             )
         for pos, (what, g) in enumerate(declared_parents(table, f)):
             grid = grids.get(g) if what == "state" else None
+            levels = _factor_levels(params, g) if what == "state" and grid is None else None
+            if levels is not None and b.parent_shape[pos] != levels:
+                raise ValueError(
+                    f"factor {facs[f]!r}: its transition table's parent axis {pos} has "
+                    f"{b.parent_shape[pos]} entries, but its parent {facs[g]!r} has {levels} "
+                    "levels; give the table one entry per level of each parent"
+                )
             if grid is not None and b.parent_shape[pos] != grid.n_cells:
                 raise ValueError(
                     f"factor {facs[f]!r}: its transition table's parent axis {pos} has "
                     f"{b.parent_shape[pos]} entries, but the grid declared for {facs[g]!r} has "
                     f"{grid.n_cells} cells (shape {grid.shape}); give the table one entry per "
                     "cell, flattened row-major"
+                )
+
+
+def _validate_likelihood_parents(
+    system: System, params: SystemParams, facs: tuple[str, ...]
+) -> None:
+    """A tabular likelihood's parent axis has as many entries as its state parent has levels (a
+    grid parent: one per cell), and one axis per declared parent."""
+    n_states = len(facs)
+    grids = system._cell_grids
+    for m, a in enumerate(params.likelihood):
+        if not isinstance(a, ConditionalCategorical | ConditionalDirichlet):
+            continue
+        deps = system.A_deps[m]
+        name = system.modality_names[m]
+        if a.parent_ndims != len(deps):
+            continue  # the table's own arity is the declaration family's check
+        for pos, g in enumerate(deps):
+            if g >= n_states:
+                continue  # a sensed action node
+            size = grids[g].n_cells if g in grids else _factor_levels(params, g)
+            if size is not None and a.parent_shape[pos] != size:
+                raise ValueError(
+                    f"modality {name!r}: its likelihood table's parent axis {pos} has "
+                    f"{a.parent_shape[pos]} entries, but its parent {facs[g]!r} has {size} "
+                    "levels; give the table one entry per level of each parent"
                 )
 
 

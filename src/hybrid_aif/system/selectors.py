@@ -322,6 +322,11 @@ def _eligible_state_blocks(
 # ------------------------------------------------------------------------ resolution
 
 
+def _static_zero(value) -> bool:
+    """Whether a rate is a static Python zero (a traced zero is not)."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and float(value) == 0.0
+
+
 def _resolve_rates(
     system: System, mapping: Mapping[str, float | Array] | None, what: str, params: SystemParams
 ) -> dict[str, float | Array] | None:
@@ -338,9 +343,36 @@ def _resolve_rates(
     if mapping is None:
         return None
     table = system._slot_declarations(params)
+    names_of = {"transition": system._facs, "likelihood": system.modality_names}
+    readers = {
+        f"{slot}:{names_of[slot][i]}": home for slot, i, home in getattr(params, "references", ())
+    }
+    homes = {
+        f"parameter:{name}": ("parameter", name, decl) for name, decl in params.parameters.items()
+    }
+    table = {k: v for k, v in table.items() if k not in readers} | homes
     patterns: list[tuple[str, int]] = []
     for key in mapping:
-        if _is_pattern(key):
+        if key in readers and not (what == "lr_by_slot" and _static_zero(mapping[key])):
+            raise ValueError(
+                f"{what}: {key} reads the parameter variable {readers[key]!r}, which has one "
+                f"rate for all its readers; key it {f'parameter:{readers[key]}'!r} (a static "
+                "0.0 on a reader keeps its statistic out of the variable)"
+            )
+        if key in readers:
+            patterns.append((key, _specificity(key)))
+            continue
+        if key.split(":")[0] == "parameter":
+            parts = key.split(":")
+            if len(parts) > 2 or (not _is_pattern(key) and key not in homes):
+                known = sorted(homes)
+                raise ValueError(
+                    f"{what}: unknown parameter key {key!r}; a parameter variable's rate key is "
+                    f"'parameter:<name>', and the declared variables are {known}"
+                )
+            if not _is_pattern(key):
+                system._check_slot_key(key, what, table)
+        elif _is_pattern(key):
             system._check_pattern(key, what, params, epistemic=False)
         else:
             system._check_slot_key(key, what, table)
@@ -396,6 +428,39 @@ def _resolve_rates(
                     "more specific (or name the variable literally)"
                 )
             resolved[address] = mapping[winners[0]]
+    for key, home in readers.items():
+        # a referencing reader's own key only excludes it: a static 0.0 keeps its statistic out of
+        # its variable; the variable's one rate is ``parameter:<name>``
+        if what != "lr_by_slot":
+            continue
+        best, winners = -1, []
+        for pattern, spec in patterns:
+            if _pattern_matches(pattern, key):
+                if spec > best:
+                    best, winners = spec, [pattern]
+                elif spec == best:
+                    winners.append(pattern)
+        if best < 0:
+            continue
+        if len(winners) > 1:
+            raise ValueError(
+                f"{what}: {sorted(winners)} both match {key!r} with the same specificity "
+                f"({best} literal segment(s)), so which rate governs it is ambiguous; make one "
+                "of them more specific"
+            )
+        value = mapping[winners[0]]
+        if _static_zero(value):
+            # a literal key outranks a pattern: a pattern excludes a reader only while the
+            # variable's own rate is not named literally
+            if not _is_pattern(winners[0]) or f"parameter:{home}" not in mapping:
+                resolved[key] = 0.0
+        elif winners[0].split(":")[0] != "*":
+            raise ValueError(
+                f"{what}: {winners[0]!r} gives {key} a nonzero rate, and {key} reads the "
+                f"parameter variable {home!r}, which has one rate for all its readers; key it "
+                f"{f'parameter:{home}'!r} (a static 0.0 on a reader keeps its statistic out of "
+                "the variable)"
+            )
     return resolved
 
 

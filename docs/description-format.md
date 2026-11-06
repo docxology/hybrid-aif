@@ -30,6 +30,7 @@ written; reading one of them first is a good way in.
 | `hybrid_aif_description` | yes | the format version, `"0.3"` |
 | `library_version` | no | the library version that wrote the document (informational) |
 | `variables` | yes | every variable, with its domain and size (section 2) |
+| `parameters` | no | named parameter variables that several factor records read (section 3.7) |
 | `factors` | no | the factor records, keyed by child variable and label (section 3) |
 | `relations` | no | `controls`, `observed`, `external` (section 5) |
 | `clamps` | no | the values of the fixed parameter variables (section 6) |
@@ -179,6 +180,9 @@ Layout is never written: the number of parent axes, the parents' widths and the 
 derived from `parents` and the variables' domains, and every array's shape is checked against
 them.
 
+A `transition` or `likelihood` record may instead read a named parameter variable, with
+`"parameter": "<name>"` in place of `family` and `parameters` (section 3.7).
+
 ### 3.2 Labels
 
 A label is either a *role label* or a *generic label*. A role label implies the record's time
@@ -275,6 +279,31 @@ read at the child's step.
 - A recognition record under the first control node is the *policy module*: a network from the
   beliefs to an action distribution, which the `habit` planner acts from. Its parents are every
   latent, in variable order (it reads them concatenated).
+
+### 3.7 Named parameter variables
+
+A table that several factors read is written once, under a top-level `parameters` entry keyed by
+the variable's name, with the same encoding as a record's family part (`family`, `parameters`,
+`options`; no `parents`, which belong to the readers):
+
+```json
+"parameters": {
+  "field": {"family": "ConditionalCategorical", "parameters": {"log_table": "P_field"}}
+},
+"factors": {
+  "terrain": {"transition": {"parameter": "field", "parents": ["x"]}},
+  "map":     {"transition": {"parameter": "field", "parents": ["visit"]}},
+  "P_field": {"prior": {"family": "Dirichlet", "parameters": {"concentration": "P_field_concentration"}}}
+}
+```
+
+A reader's record carries its own `parents` (and `options`, such as a lagged `datum`) and
+`"parameter"` in place of `family` and `parameters`; a record that writes both is refused. Each
+reader's table shape is checked against the variable's, as against its own table. A transition
+or likelihood record that holds its own table keeps the form above, with no `parameters` entry,
+so a document without shared tables is unchanged. Only tabular families are accepted as
+variables. The variable's own parameters are named `P_<name>` by default (section 10), and its
+learned prior is written once, under that name.
 
 ## 4. Families
 
@@ -472,7 +501,9 @@ The bindings of the merge are already structure, and nothing records them:
   that state as a transition parent at the step before;
 - a **target emission** is a terminal target's parent under another prefix;
 - a **terminated** control node (fixed by a boundary prior) is simply absent, its readers' tables
-  averaged or sliced over its axis.
+  averaged or sliced over its axis;
+- a **shared parameter** (`SharedParameter`) is one `parameters` entry under the first name, with
+  the second component's readers pointing at it.
 
 `build` reconstructs each component's record from the prefixes, in the document's variable
 order: its latents and observations, the control nodes under its prefix still present with their
@@ -604,7 +635,7 @@ nothing parses them.
 
 - a tabular record under a role label uses the active-inference letters: `A_<child>` (likelihood),
   `B_<child>` (transition), `C_<child>` (target), `D_<child>` (initial), `H_<child>` (terminal),
-  `K_<child>` (actuator), and `E` for the policy prior;
+  `K_<child>` (actuator), `P_<name>` (a named parameter variable) and `E` for the policy prior;
 - the policy precision is `precision`;
 - a prior's hyperparameter is `<parameter>_<field>` (`A_cue_concentration`);
 - everything else is `<child>_<label>_<field>`, nested fields joined the same way

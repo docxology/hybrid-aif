@@ -64,6 +64,7 @@ TOP_LEVEL_KEYS = frozenset(
         KEY,
         "library_version",
         "variables",
+        "parameters",
         "factors",
         "relations",
         "clamps",
@@ -1110,8 +1111,9 @@ def _base(child: str, label: str) -> str:
 def _with_parents(record: dict[str, Any], parents: list[str]) -> dict[str, Any]:
     if not parents:
         return record
-    out = {"family": record["family"], "parents": parents}
-    out.update({k: v for k, v in record.items() if k != "family"})
+    head = "parameter" if "parameter" in record else "family"
+    out = {head: record[head], "parents": parents}
+    out.update({k: v for k, v in record.items() if k != head})
     return out
 
 
@@ -1256,6 +1258,23 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     def parent_name(g: int) -> str:
         return states[g] if g < len(states) else actions[g - n_nodes]
 
+    reading = {(slot, i): home for slot, i, home in params.references}
+    homes: dict[str, dict[str, Any]] = {}
+    for name, home in params.parameters.items():
+        homes[name] = _encode(
+            w,
+            home,
+            _base(name, "parameter"),
+            _letter("P", name),
+            f"{where}parameters:{name}",
+            ("parameter", name),
+        )
+
+    def reference(slot: str, i: int, child: str) -> dict[str, Any]:
+        """The record of a reader of a parameter variable: its name in place of a family."""
+        w.slots[(slot, child)] = w.slots[("parameter", reading[(slot, i)])]
+        return {"parameter": reading[(slot, i)]}
+
     for f, s in enumerate(states):
         d = params.initial_state_prior[f]
         record = _encode(
@@ -1269,15 +1288,19 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         d_parents = [states[g] for g in table.D_deps[f]] if table.D_deps else []
         w.record(s, "initial", _with_parents(record, d_parents))
         b = params.transition[f]
-        record = _encode(
-            w,
-            b,
-            _base(s, "transition"),
-            _letter("B", s) if _is_tabular(b) else None,
-            f"{where}transition:{s}",
-            ("transition", s),
-        )
-        spec = FAMILIES[record["family"]]
+        if ("transition", f) in reading:
+            record = reference("transition", f, s)
+            spec = FAMILIES[homes[reading[("transition", f)]]["family"]]
+        else:
+            record = _encode(
+                w,
+                b,
+                _base(s, "transition"),
+                _letter("B", s) if _is_tabular(b) else None,
+                f"{where}transition:{s}",
+                ("transition", s),
+            )
+            spec = FAMILIES[record["family"]]
         same_step = spec.reads_same_step
         b_parents = [s] if spec.reads_self else []
         for what, i in declared_parents(table, f):
@@ -1289,14 +1312,17 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
 
     for m, o in enumerate(mods):
         a = params.likelihood[m]
-        record = _encode(
-            w,
-            a,
-            _base(o, "likelihood"),
-            _letter("A", o) if _is_tabular(a) else None,
-            f"{where}likelihood:{o}",
-            ("likelihood", o),
-        )
+        if ("likelihood", m) in reading:
+            record = reference("likelihood", m, o)
+        else:
+            record = _encode(
+                w,
+                a,
+                _base(o, "likelihood"),
+                _letter("A", o) if _is_tabular(a) else None,
+                f"{where}likelihood:{o}",
+                ("likelihood", o),
+            )
         lagged = dict(system.lagged).get(o)
         if lagged is not None:  # the datum read from the carry (structure-learning.md S8)
             record = {**record, "options": {**record.get("options", {}), "datum": f"{lagged}[t-1]"}}
@@ -1374,6 +1400,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         relations["external"] = externals
     return {
         "variables": w.variables,
+        **({"parameters": homes} if homes else {}),
         "factors": {child: block for child, block in w.factors.items() if block},
         "relations": relations,
         "clamps": w.clamps,
@@ -1731,6 +1758,7 @@ def describe_parameters(
         raise DescriptionError(f"not a hybrid-aif description: the {KEY!r} key is missing")
     model = _Model(_Reader(arrays, None), document, "")
     model._variables()
+    model._parameters()
     model._factors()
     model._relations()
     model._configuration()
@@ -1923,7 +1951,7 @@ class _Learned(NamedTuple):
     address: str
 
 
-_RECORD_KEYS = ("family", "parents", "parameters", "options", "steps")
+_RECORD_KEYS = ("family", "parameter", "parents", "parameters", "options", "steps")
 _LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
 _TERM_KEYS = ("term", "on", "parameters", "options", "model")
 _RELATIONS = ("controls", "observed", "external")
@@ -1932,7 +1960,15 @@ _CONFIGURATION = {
     "inference": ("iterations", "mixture_k", "mixture_schedule"),
     "learning": ("frozen", "reduction_period", "reduction_pairs"),
 }
-_BODY_KEYS = ("variables", "factors", "relations", "clamps", "objective", "configuration")
+_BODY_KEYS = (
+    "variables",
+    "parameters",
+    "factors",
+    "relations",
+    "clamps",
+    "objective",
+    "configuration",
+)
 
 
 def _parse_parent(entry: object, address: str) -> tuple[str, int | None]:
@@ -2201,6 +2237,7 @@ class _Model:
                     f"a term's model has key(s) {unknown}; its keys are {list(_BODY_KEYS)}"
                 )
         self._variables()
+        self._parameters()
         self._factors()
         self._relations()
         self._configuration()
@@ -2355,9 +2392,43 @@ class _Model:
         except ValueError as exc:
             raise self.fail(str(exc)) from None
 
+    def _parameters(self) -> None:
+        """The named parameter variables: each a tabular record (family, parameters, options)
+        that factor records name in their ``parameter`` key."""
+        section = self._section("parameters", {})
+        self.homes: dict[str, Mapping[str, Any]] = {}
+        for name, record in section.items():
+            address = f"parameters[{name!r}]"
+            with self.noting():
+                if not name:
+                    raise self.fail("a parameter variable's name is non-empty")
+                if not isinstance(record, Mapping):
+                    raise self.fail(f"{address} must be a record (an object)")
+                unknown = sorted(set(record) - {"family", "parameters", "options"})
+                if unknown:
+                    raise self.fail(
+                        f"{address} has key(s) {unknown}; a parameter variable's record has "
+                        "family, parameters and options (its readers hold the parents)"
+                    )
+                family = record.get("family")
+                if family not in FAMILIES:
+                    raise self.fail(
+                        f"{address}: unknown family {family!r}; the menu is {sorted(FAMILIES)}"
+                    )
+                if family != "ConditionalCategorical":
+                    raise self.fail(
+                        f"{address}: a parameter variable holds a tabular family "
+                        f"(ConditionalCategorical, with or without a Dirichlet prior on its "
+                        f"table), "
+                        f"and a {family} parameter variable is refused"
+                    )
+                self.homes[name] = record
+        self.flush()
+
     def _factors(self) -> None:
         factors = self._section("factors", {})
         self.factors: list[_Factor] = []
+        self.reads: dict[tuple[str, str], str] = {}
         for child, block in factors.items():
             with self.noting():
                 if child not in self.variables:
@@ -2384,6 +2455,29 @@ class _Model:
             raise self.fail(
                 f"{address} has key(s) {unknown}; a factor record has {list(_RECORD_KEYS)}"
             )
+        named = record.get("parameter")
+        if named is not None:
+            if label not in ("transition", "likelihood"):
+                raise self.fail(
+                    f"{address}: only a transition or likelihood record reads a parameter "
+                    f"variable, and this one is under {label!r}"
+                )
+            if named not in self.homes:
+                raise self.fail(
+                    f"{address}.parameter names {named!r}, which the document's parameters do "
+                    f"not declare; they declare {sorted(self.homes)}"
+                )
+            clash = sorted({"family", "parameters"} & set(record))
+            if clash:
+                raise self.fail(
+                    f"{address} reads the parameter variable {named!r} and also writes "
+                    f"{clash}; the variable's own record holds the family and its parameters"
+                )
+            self.reads[(child, label)] = named
+            record = {
+                **self.homes[named],
+                **{k: v for k, v in record.items() if k != "parameter"},
+            }
         family = record.get("family")
         if family not in FAMILIES:
             raise self.fail(f"{address}: unknown family {family!r}; the menu is {sorted(FAMILIES)}")
@@ -2725,6 +2819,9 @@ class _Model:
                 per_step.setdefault(parent, fac.address)
             for name in _parameter_names(fac.parameters):
                 static.setdefault(name, f"{fac.address}.parameters")
+        for home, record in self.homes.items():
+            for name in _parameter_names(record.get("parameters", {})):
+                static.setdefault(name, f"parameters[{home!r}]")
         for i, record in enumerate(self.terms):
             for name in _parameter_names(record.get("parameters", {})):
                 static.setdefault(name, f"objective.terms[{i}].parameters")
@@ -2804,6 +2901,8 @@ class _Model:
         for fac in self.factors:
             if fac.label == "prior" or _SEP not in fac.child:
                 continue
+            if (fac.child, fac.label) in self.reads:
+                continue  # a named variable belongs to no one reader: its own entry names it
             home = fac.child.rpartition(_SEP)[0]
             for name in _parameter_names(fac.parameters):
                 if _SEP in name and name.rpartition(_SEP)[0] != home:
@@ -3293,9 +3392,18 @@ class _Model:
                     )
         self.flush()
         self.owner: dict[str, str] = {}
-        sources = [(fac.address, fac.parameters) for fac in self.factors] + [
+        sources = []
+        for fac in self.factors:
+            home = self.reads.get((fac.child, fac.label))
+            address = fac.address if home is None else f"parameters[{home!r}]"
+            if (address, fac.parameters) not in sources:  # a variable's readers share its record
+                sources.append((address, fac.parameters))
+        sources += [
             (f"objective.terms[{i}]", rec.get("parameters", {})) for i, rec in enumerate(self.terms)
         ]
+        for home, record in self.homes.items():
+            if (f"parameters[{home!r}]", record.get("parameters", {})) not in sources:
+                sources.append((f"parameters[{home!r}]", record.get("parameters", {})))
         for address, parameters in sources:
             refs = {v for k, v in parameters.items() if k == "row_cov" and isinstance(v, str)}
             for name in _parameter_names(parameters):
@@ -3519,6 +3627,9 @@ class _Model:
         module = getattr(self, f"_decode_{fac.family}")(fac, options, role)
         if slot is not None:
             for var in _parameter_names(fac.parameters):
+                self.param_readers.setdefault(var, []).append(slot)
+                if (fac.child, fac.label) in self.reads and var in self.param_slot:
+                    continue  # a variable's address is its first reader's
                 self.param_slot[var] = slot
         return module
 
@@ -3623,6 +3734,31 @@ class _Model:
         value = self._padded(fac, value, pad)
         return _assemble(
             _dist.ConditionalCategorical, fac.address, log_table=value, parent_ndims=value.ndim - 1
+        )
+
+    def _decode_home(self, name: str):
+        """A parameter variable as its declaration, from its own record: the table is checked for
+        form only. Each reader's decode checks the table against that reader's wiring."""
+        record = self.homes[name]
+        address = f"parameters[{name!r}]"
+        var = record.get("parameters", {}).get("log_table")
+        if not isinstance(var, str):
+            raise self.fail(f"{address}.parameters.log_table must name a variable")
+        value = self.value(var, "ConditionalCategorical", "log_table", f"{address}.log_table", 0)
+        if isinstance(value, _Learned):
+            self._check_prior(value, ("Dirichlet",), "a table")
+            conc = self.hyper(value, "concentration")
+            self._shape(value, "concentration", conc)
+            return _assemble(
+                _dist.ConditionalDirichlet,
+                address,
+                concentration=conc,
+                parent_ndims=conc.ndim - 1,
+                alpha0=self.hyper(value, "alpha0", required=False),
+                growth=self.hyper(value, "growth", required=False),
+            )
+        return _assemble(
+            _dist.ConditionalCategorical, address, log_table=value, parent_ndims=value.ndim - 1
         )
 
     def _padded(self, fac: _Factor, table, pad: bool):
@@ -4385,7 +4521,11 @@ class _Model:
         if on in self.observed:
             return f"obs:{on}"
         if on in self.param_slot:
-            slot, name = self.param_slot[on]
+            #  a variable several factors read is named once per reader's term, in reader order
+            readers = self.param_readers[on]
+            taken = self.param_taken.get(on, 0)
+            self.param_taken[on] = taken + 1
+            slot, name = readers[min(taken, len(readers) - 1)]
             return f"{slot}:{name}"
         raise self.fail(
             f"{address}: infogain on {on!r}, which is not a latent, an observation or a "
@@ -4603,6 +4743,8 @@ class _Model:
 
     def _construct(self) -> tuple[System, SystemParams]:
         self.param_slot: dict[str, tuple[str, str]] = {}
+        self.param_readers: dict[str, list[tuple[str, str]]] = {}
+        self.param_taken: dict[str, int] = {}
         self.gradient_vars: set[str] = set()
         states, nodes, actions, mods = self.states, self.nodes, self.actions, self.mods
         n_states = len(states)
@@ -4638,6 +4780,13 @@ class _Model:
             (obs_targets if v in self.observed else state_targets)[v] = decode(fac, "target")
         for v, fac in self.terminals.items():
             terminal_targets[v] = decode(fac, "terminal")
+        self.flush()
+        parameters: dict[str, Any] = {}
+        for name in self.homes:  # a variable is built from its own record, never a reader's table
+            with self.noting():
+                parameters[name] = self._decode_home(name)
+        for (child, label), name in self.reads.items():
+            (transition if label == "transition" else likelihood)[child] = _factors.Parameter(name)
         self.flush()
         self._objective()
         self._check_frozen()
@@ -4738,6 +4887,7 @@ class _Model:
             control=dict(self.boxes),
             actuator=actuator,
             durations=dict(self.durations),
+            parameters={name: parameters[name] for name in self.homes},
         )
         return system, params
 
@@ -4863,6 +5013,7 @@ def schema() -> dict[str, Any]:
         "parents": {"type": "array", "items": {"$ref": "#/$defs/parent"}},
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/names"}},
         "options": {"type": "object"},
+        "parameter": {"type": "string", "minLength": 1},
     }
 
     def record(steps: object) -> dict[str, Any]:
@@ -4871,9 +5022,14 @@ def schema() -> dict[str, Any]:
             properties["steps"] = steps
         return {
             "type": "object",
-            "required": ["family"],
+            "anyOf": [{"required": ["family"]}, {"required": ["parameter"]}],
             "additionalProperties": False,
             "properties": properties,
+            "dependentSchemas": {
+                "parameter": {
+                    "not": {"anyOf": [{"required": ["family"]}, {"required": ["parameters"]}]}
+                }
+            },
         }
 
     labelled = {label: record({"const": _IMPLIED[label][1]}) for label in _IMPLIED}
@@ -5049,6 +5205,23 @@ def schema() -> dict[str, Any]:
                         "type": "object",
                         "propertyNames": {"pattern": r"^[^\[\]]+$"},
                         "additionalProperties": {"$ref": "#/$defs/variable"},
+                    },
+                    "parameters": {
+                        "type": "object",
+                        "description": (
+                            "Named parameter variables, each held once and read by every factor "
+                            "record that names it in its 'parameter' key."
+                        ),
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["family"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "family": {"enum": sorted(FAMILIES)},
+                                "parameters": record_properties["parameters"],
+                                "options": {"type": "object"},
+                            },
+                        },
                     },
                     "factors": {
                         "type": "object",

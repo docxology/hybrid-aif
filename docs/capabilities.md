@@ -70,6 +70,16 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   Not built: the upward message from the field to the position, a spatial prior, and a smooth
   basis (MNLR).
 
+- **Parameters as named variables** (`design/shared-parameters.md`): a tabular parameter (a
+  conditional table, or a Dirichlet over one) may be declared once under a name in
+  `SystemParams.parameters` and read by several factors or modalities, each holding
+  `Parameter("<name>")` in its `transition` or `likelihood` entry. `learn` sums the readers'
+  count statistics and updates the table once, under the rate key `parameter:<name>`
+  (a rate keyed by a reader raises and names it); novelty on each reader is unchanged; the
+  description length prices the variable once; the description document records it under a
+  top-level `parameters` entry with each reader pointing at it; `merge` identifies two
+  components' variables with `SharedParameter`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build.
+
 ## Infer
 
 - Discrete: mean-field FPI at pymdp parity (function, term, policy

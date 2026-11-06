@@ -359,7 +359,12 @@ lr_by_slot={"likelihood:pose": 0.0, "likelihood:pose:noise": 1.0}  # head frozen
 
 The second line freezes the head and learns the noise: the three-segment key
 is more specific than the two-segment one, so it overrides it for the noise
-block. State keys and `obs:` keys are not rate-addressable and raise.
+block. State keys and `obs:` keys are not rate-addressable and raise. A parameter variable
+read by several factors has one rate, `"parameter:<name>"`; the key of a reader
+(`"transition:<factor>"`) raises and names it, except that a static `0.0` on a reader keeps its
+statistic out of the variable. A literal key outranks a pattern: `{"*:*": 0.0, "parameter:T": 1.0}`
+learns `T` from all its readers, `{"*:*": 0.0}` freezes everything, and
+`{"parameter:T": 1.0, "transition:a": 0.0}` learns `T` from every reader but `a`.
 
 **A static `0.0` and a traced zero are different.** A static Python `0.0`
 skips the slot at trace time, decay included, so its einsum is never emitted.
@@ -542,6 +547,25 @@ factor that reads the node (a delta), and a `Categorical` or probability vector
 averages each reader's table over it (uniform: no one is steering). A reader of
 several nodes keeps its other control axes. Native control nodes merge like the
 sugar's, and a composite with native nodes is described like any other.
+
+**`SharedParameter(left, right)`** identifies two components' parameter variables (named
+tables declared in `SystemParams.parameters`, read through `Parameter("<name>")`) as one:
+the composite keeps `left`'s declaration under its namespaced name, every factor or modality
+that read `right` reads it, and the two must be the same family with the same table shape
+(anything else raises naming both). `subsystem` views carry the variables their readers read
+under the composite's names (so a rate key is `"parameter:<component>.<name>"`, which `merge`
+namespaces as it does any key), and `write_back(composite, params, name, before, after)` sets the composite's
+variables to what a view learned: `before` is the view's params as `subsystem` returned them and
+`after` the same view's params after learning. Each variable `before` holds must equal the
+composite's current entry, and is then replaced by `after`'s, decay included. A stale `before`
+raises (take the view again from the composite after any write-back), because evidence from several
+views at once is accumulated by learning on the composite, not by writing views back. The counts the second
+name's component had learned are discarded: only `left`'s declaration survives the binding. A shared
+variable's reader can be kept out of its updates with a static `0.0` on the reader's own rate key
+(`lr_by_slot={"transition:mission.map": 0.0}`), which is how a scheduler that never observes the
+table avoids adding its predictions to the counts.
+table. A binding that rewrites a reader's control axis (a `BoundaryPrior`, a relay) refuses a
+reader of a shared variable, since the table is not the reader's alone.
 
 **Names a binding removed.** A node a binding removed is gone from the
 composite, and a mapping keyed by it or by its action node (an action, a node
