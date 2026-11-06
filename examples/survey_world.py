@@ -1,7 +1,9 @@
 """The true world of the survey rover showcase, a process separate from the rover's mind.
 
-A single rover drives over a field of smooth hills. It holds the rover's position and velocity,
-the terrain class under it (firm, rough or ice, a function of position), its energy, and the
+A single rover drives over a walled field of smooth hills (the position is clipped to the field and
+the velocity into a wall is lost). It holds the rover's position and velocity,
+the terrain class under it (firm, rough or ice, a function of position), its energy (a rover
+with an empty band cannot drive, though it still charges in the light), and the
 readings the rover receives: a satellite position fix whose noise grows where the terrain closes
 the sky, a forward camera image, and a noisy gauge of the energy band. The field's height map,
 sky openness, sunlight, slope and fix noise are tabulated at import. The world is a hand-written
@@ -311,7 +313,13 @@ class SurveyWorld(GenerativeEnv):
         F = jnp.asarray([c[0] for c in table], jnp.float32)[terrain]
         G = jnp.asarray([c[1] for c in table], jnp.float32)[terrain]
         sd = jnp.asarray(TERRAIN_SD, jnp.float32)[terrain]
+        stalled = band_of(state["energy"]) == 0  # an empty rover cannot drive
+        G = jnp.where(stalled, 0.0, G)
         x = F @ state["x"] + G @ a + sd * jax.random.normal(k_move, (4,))
+        lo = jnp.asarray([FIELD[0][0], FIELD[1][0]], jnp.float32)
+        hi = jnp.asarray([FIELD[0][1], FIELD[1][1]], jnp.float32)
+        hit = (x[:2] < lo) | (x[:2] > hi)  # the field has walls: clip, and stop that velocity
+        x = jnp.concatenate([jnp.clip(x[:2], lo, hi), jnp.where(hit, 0.0, x[2:])])
         speed = jnp.linalg.norm(state["x"][2:])
         drain, charge = energy_rates(state["x"][:2], terrain, speed)
         energy = jnp.clip(state["energy"] - drain + charge, 0.0, ENERGY_MAX)
