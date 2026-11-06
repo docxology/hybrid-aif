@@ -1,14 +1,15 @@
 """The true world of the survey rover showcase, a process separate from the rover's mind.
 
-A single rover drives over a walled field of smooth hills (the position is clipped to the field and
-the velocity into a wall is lost). It holds the rover's position and velocity,
-the terrain class under it (firm, rough or ice, a function of position), its energy (a rover
-with an empty band cannot drive, though it still charges in the light), and the
-readings the rover receives: a satellite position fix whose noise grows where the terrain closes
-the sky, a forward camera image, and a noisy gauge of the energy band. The field's height map,
-sky openness, sunlight, slope and fix noise are tabulated at import. The world is a hand-written
-``GenerativeEnv`` wired to a mind with ``couple``; the physical constants, the true dynamics, the
-energy rates and the image renderer live here, and the rover's model reads them as its own.
+A single rover drives over a walled field of smooth hills (the position is clipped to the field
+and the velocity into a wall is lost). It holds the rover's position and velocity, the terrain
+class under it (firm, rough or ice, a function of position), its energy (a rover with an empty
+band cannot drive, though it still charges in the light), and the readings the rover receives: a
+satellite position fix whose noise grows where the terrain closes the sky, a forward camera image
+and a noisy gauge of the energy band (the option of a slow tier never reaches the world). The
+field's height map, sky openness, sunlight, slope and fix noise are tabulated at import. The
+world is a hand-written ``GenerativeEnv`` wired to a mind with ``couple``; the physical
+constants, the true dynamics, the energy rates and the image renderer live here, and the rover's
+model reads them as its own.
 
     python examples/survey_world.py
 """
@@ -50,6 +51,8 @@ SLOPE_DRAIN = 0.2  # extra energy per tick per unit of slope and of speed
 ROUGH_DRAIN = 0.16  # extra energy per tick per unit of speed on rough ground
 CHARGE_RATE = 0.23  # energy per tick per unit of light
 GAUGE_ACC = 0.88
+ZONE_SPLIT = (2.0, 1.0)  # the field's quadrants split at these x and y
+ZONES = 4
 
 IMG_SIDE = 48
 IMG_PIXELS = IMG_SIDE * IMG_SIDE
@@ -189,6 +192,12 @@ def dynamics(terrain):
     G = np.zeros((4, 2))
     G[2, 0] = G[3, 1] = GAIN[terrain]
     return F, G, np.zeros(4), TERRAIN_SD[terrain] * np.eye(4)
+
+
+def zone_of(xy):
+    """The quadrant (survey sector) of a position: 0 low x and low y, 1 high x and low y, 2 low x
+    and high y, 3 high x and high y, split at ``ZONE_SPLIT``."""
+    return ((xy[0] >= ZONE_SPLIT[0]) + 2 * (xy[1] >= ZONE_SPLIT[1])).astype(jnp.int32)
 
 
 def band_of(energy):

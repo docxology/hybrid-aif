@@ -3,11 +3,11 @@
     python examples/survey_trim.py IN.json OUT_DIR
 
 Writes OUT_DIR/bundle.js (``window.HYBRID_AIF_BUNDLE = ...``), the one data file the page loads.
-Every float is rounded to four significant digits, each tick keeps at most ``MAX_POLICIES``
-policies (the best by the midpoint of G, always including the chosen one, in their original order
-with ``chosen`` re-indexed), and each image (``img``, ``recon``) and the field's table (``map``)
-becomes one base64 string of its bytes, in the layouts ``meta.image.layout`` and
-``meta.map_layout`` describe.
+Every float is rounded to four significant digits, each tick (and each slow step of a two-tier
+run, under ``slow``) keeps at most ``MAX_POLICIES`` policies (the best by the midpoint of G,
+always including the chosen one, in their original order with ``chosen`` re-indexed), and each
+image (``img``, ``recon``) and the field's table (``map``) becomes one base64 string of its bytes,
+in the layouts ``meta.image.layout`` and ``meta.map_layout`` describe.
 """
 
 import base64
@@ -30,6 +30,8 @@ def rounded(obj):
 
 
 def trim_policies(tick, limit=MAX_POLICIES):
+    """Keep the ``limit`` best policies of ``tick`` (a rover tick or a slow step), the chosen one
+    among them, in their original order with ``chosen`` re-indexed."""
     policies = tick.get("policies")
     if not policies or len(policies) <= limit:
         return
@@ -57,6 +59,8 @@ def main(src, out):
     for run in bundle["runs"].values():
         for tick in run["ticks"]:
             trim_policies(tick)
+            if tick.get("slow", {}).get("decision"):
+                trim_policies(tick["slow"])
             pack(tick)
     meta = bundle.setdefault("meta", {})
     meta.setdefault("image", {})["encoding"] = "base64 of the pixel bytes"

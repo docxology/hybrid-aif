@@ -126,7 +126,72 @@ over a state parent's levels drops them. The asymmetry is intended.
 - Objective terms: novelty on the field, the uncertainty term on `x`, the energy target, the
   conditional image utility. No exposure node.
 
-Level 2 (a slow tier, mandatory) is designed after level 1 runs; see the memory of the decision.
+Level 2 is the slow tier below.
+
+## The slow tier (level 2)
+
+Four 200-tick runs of level 1 showed the predicted stall: coverage plateaus at about a fifth of
+the field by tick 150 and the rover never reaches the ice or the far rough ground, because novelty
+is local (a flat gradient beyond the cells the plan can reach) while a mapping survey is a global
+task. The slow tier is a survey scheduler with both drives: an epistemic drive over the field it
+shares with the rover, and a pragmatic drive over energy. It is composed with the rover by
+`merge` and run as two `subsystem` views on two clocks, as the previous showcase's tiers were.
+
+**Factors.** `visit`: the cell the rover stands on, a categorical over the grid's cells, observed
+through a `cell_obs` modality fed with the rover's own cell (the mode of its position belief's
+cell mass) at each slow step; this is the coverage reading from the fast tier. Its transition is
+conditioned on `(visit, option)`: under "survey sector k" a uniform distribution over sector k's
+cells whatever the previous cell, under "charge" the identity, the rover stays where it is. That
+last clause matters: a first draft gave charge a uniform distribution over the current sector,
+which promised the same information as surveying it at no energy cost, and the scheduler charged
+at every decision. `energy`: the four bands, a known table conditioned on `(energy, visit, option)`
+built from the world's maps so that distance enters as energy cost: the expected drain from the
+visited cell to sector k's centre plus about twelve ticks of surveying, in bands; under charge the
+band rises with a probability set by the field-wide mean illumination, since the scheduler does
+not know where light falls. `map`: the terrain at the visited cell, parent `visit`, whose table is
+the parameter variable `field`, identified at `merge` with the rover's
+(`docs/design/shared-parameters.md`, the 2026-11-05 amendment). The scheduler has no observation
+of `map`'s child: it never counts into the field, and its view is run with the field's rate at
+zero. Its novelty term (`transition:map`) is the expected information about the field from the
+cells its plan visits, and that expectation is honoured by the rover counting on the fast clock.
+This is the one place a reader could be tempted to add a second count update; do not, it would
+double the evidence.
+
+**Observations and options.** `cell_obs` and `gauge` (the energy band). Options: survey sector 1
+to 4, charge; a slow step of twelve fast ticks. Objective: novelty on `map`, the energy target.
+The energy target's logits are `(-12, -4, -0.3, 0)` on both tiers: a survey of a far sector must
+be affordable at the full band, and a steeper ladder (`-12, -6, -2, 0`, the first draft) priced
+every survey above its novelty, so the scheduler never left its first sector.
+
+**The pooled reading.** A survey step pools about twelve fast readings of distinct cells, so the
+scheduler declares `readings=(("map", "u_option"),)` with twelve readings under each survey
+level and one under charge, where the rover is stationary and its readings repeat one cell
+(`docs/design/step-durations.md`, T10). Without it a survey was credited one reading against its
+whole energy cost and the scheduler never left its first sector; with it the two-level run
+leaves at the fourth decision, surveys all four sectors and covers more than twice the field the
+one-level ablation does by tick 400. With twelve readings under charge as well, the scheduler
+charged at the full band at most of its charges, since a stationary step promised a survey's
+information.
+
+**Downward.** The option reaches the rover as a control node (`ActionControl`), and conditions
+two targets: a position target at the chosen sector's centre under a survey option (none under
+charge), and the image preference on `(energy, option)`, so that charge pulls the rover to light
+at every band while a survey only does so when the band is low.
+
+**Lag and horizon.** The map is read where the survey stands one slow step earlier, as the terrain
+is read where the rover stood one fast tick earlier (the order-within-a-tick rule above), so the
+slow planner needs `policy_len >= 2` for the same reason the fast one does.
+
+**How the runner drives the tiers.** The composite is one `merge` of the scheduler and the rover,
+run as two `subsystem` views: the mission view decides every twelfth tick, the rover view runs
+between decisions with the option pinned on its control node, the rover's learned field is
+written back to the composite before each decision and the mission view is taken again from it,
+and the scheduler never learns. The scheduler's cell reading is computed from the rover view's
+position belief in the runner, because `couple` wires process outputs only; a wire from a mind's
+belief is a queued composition item.
+
+**The ablation.** The page shows the one-level run beside the two-level one: the same composite
+with the option pinned to a single survey sector, which is level 1 as run.
 
 ## Out of scope here
 
