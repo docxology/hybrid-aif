@@ -15,7 +15,9 @@ A :class:`Wire` is an identity between an out-port and an in-port of one type: a
 a process input, a process observation to a mind's modality, or an action node to a mind's
 modality. It carries no kernel; anything that transforms is a System run as a process. What
 crosses a wire is action or sensation, never a belief: a mind's belief reaches another mind only
-as the realised value of an action node, and a parameter only as a report of counts. An action
+as the realised value of an action node, and a parameter only as a report of counts. (Inside one
+particle a modality may read a belief of another component, a sibling-belief read declared at
+:func:`~hybrid_aif.composition.merge.merge`; between particles nothing does.) An action
 node is realised once, when its mind chooses, by a draw (``sample``) from that mind's
 ``params.actuator`` kernel (a delta where there is no entry); the realised value stands until the
 mind chooses again, and every wire from the node carries it. :func:`couple` checks the

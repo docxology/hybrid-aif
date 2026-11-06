@@ -48,6 +48,7 @@ from hybrid_aif.objectives import registry as _registry
 from hybrid_aif.objectives.base import INFOGAIN
 from hybrid_aif.objectives.closed_loop import FEEDBACK
 from hybrid_aif.planning.base import planner_branches
+from hybrid_aif.reads import LEGACY, REALISATIONS, Read, as_read
 from hybrid_aif.system import _KEY_KINDS, System, SystemParams
 from hybrid_aif.system.core import Subsystem
 from hybrid_aif.system.validation import _check_dim_names
@@ -1220,12 +1221,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         if s in declared_dims:  # only declared names are written; dim0, dim1, … are implied
             w.variables[s]["dims"] = list(declared_dims[s])
     for s, grid in system.cells:
-        w.variables[s]["cells"] = {
-            "shape": list(grid.shape),
-            "low": list(grid.low),
-            "high": list(grid.high),
-            "axes": list(grid.axes),
-        }
+        w.variables[s]["cells"] = _grid_record(grid)
     for k, u in enumerate(nodes):
         if space.kinds[k] == FLOAT:
             box = params.control[u]
@@ -1322,6 +1318,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         record = _with_readings(record, system, params, s)
         w.record(s, "transition", _with_parents(record, b_parents))
 
+    reads = {read.modality: read for read in system._reads}
     for m, o in enumerate(mods):
         a = params.likelihood[m]
         if ("likelihood", m) in reading:
@@ -1335,9 +1332,11 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
                 f"{where}likelihood:{o}",
                 ("likelihood", o),
             )
-        lagged = dict(system.lagged).get(o)
-        if lagged is not None:  # the datum read from the carry (structure-learning.md S8)
-            record = {**record, "options": {**record.get("options", {}), "datum": f"{lagged}[t-1]"}}
+        read = reads.get(o)
+        if read is not None:
+            #  the datum read from a source's belief in the carry, through a kernel, realised
+            #  (design: structure-learning.md S8; nesting-and-coupling.md N3, The format)
+            record = {**record, "options": {**record.get("options", {}), "datum": _datum(read)}}
         record = _with_readings(record, system, params, o)
         w.record(o, "likelihood", _with_parents(record, [parent_name(g) for g in system.A_deps[m]]))
 
@@ -2156,6 +2155,32 @@ def _module_tree(family: str, module: Any) -> Any:
     return _mlp_tree(trunk, "")
 
 
+def _grid_record(grid: Grid) -> dict[str, Any]:
+    """The ``cells`` record of a :class:`~hybrid_aif.cells.Grid`."""
+    return {
+        "shape": list(grid.shape),
+        "low": list(grid.low),
+        "high": list(grid.high),
+        "axes": list(grid.axes),
+    }
+
+
+def _datum(read: Read) -> str | dict[str, Any]:
+    """A modality's ``datum`` option for its read: the pair form's ``"<source>[t-1]"`` for a
+    pair, else a record of the source, the kernel (``identity``, or ``indicator`` with its grid)
+    and the realisation (design: nesting-and-coupling.md N3, the format)."""
+    if read.kernel == "identity" and read.realise == LEGACY:
+        return f"{read.source}[t-1]"
+    record: dict[str, Any] = {"source": f"{read.source}[t-1]"}
+    if isinstance(read.kernel, Grid):
+        record["kernel"] = "indicator"
+        record["grid"] = _grid_record(read.kernel)
+    else:
+        record["kernel"] = "identity"
+    record["realise"] = read.realise
+    return record
+
+
 def _grid_of(record: Mapping[str, Any]) -> Grid:
     """The :class:`~hybrid_aif.cells.Grid` a variable's ``cells`` record describes."""
     return Grid(
@@ -2214,7 +2239,9 @@ class _Model:
     def __init__(self, reader: _Reader, document: Mapping[str, Any], where: str) -> None:
         self.reader, self.doc, self.where = reader, document, where
         self.faults: list[str] = []
-        self.lagged: dict[str, str] = {}  # modality → its datum's source at the previous tick
+        self.lagged: dict[
+            str, str | Read
+        ] = {}  # modality → its datum's source (a pair) or its read
 
     def fail(self, sentence: str) -> DescriptionError:
         return DescriptionError(f"{self.where}{sentence}")
@@ -2586,15 +2613,9 @@ class _Model:
                 raise self.fail(f"{address}.{part} must be an object")
         options = dict(record.get("options", {}))
         if label == "likelihood" and "datum" in options:
-            #  the datum read from the carry, a source at the previous tick (S8)
-            datum = options.pop("datum")
-            source, offset = _parse_parent(datum, f"{address}.options.datum")
-            if offset != 1 or source not in self.variables:
-                raise self.fail(
-                    f"{address}.options.datum is {datum!r}; a lagged datum names a state or an "
-                    "action node at the previous tick, as name[t-1]"
-                )
-            self.lagged[child] = source
+            #  the datum read from a source's belief in the carry, through a kernel, realised
+            #  (design: nesting-and-coupling.md N3, The format)
+            self.lagged[child] = self._read_of(child, options.pop("datum"), address)
         return _Factor(
             child,
             label,
@@ -2605,6 +2626,53 @@ class _Model:
             None if label in _UNTIMED else steps,
             address,
         )
+
+    def _read_for(self, modality: str) -> Read:
+        """The :class:`~hybrid_aif.reads.Read` of ``modality``, a pair stood for by its form."""
+        entry = self.lagged[modality]
+        return entry if isinstance(entry, Read) else as_read((modality, entry))
+
+    def _read_of(self, child: str, datum: Any, address: str) -> str | Read:
+        """A modality's ``datum`` option as the source of a pair (``"name[t-1]"``) or as a
+        :class:`~hybrid_aif.reads.Read` (a record of ``source``, ``kernel``, ``grid`` and
+        ``realise``)."""
+        where = f"{address}.options.datum"
+        pair = isinstance(datum, str)
+        if not pair and not isinstance(datum, Mapping):
+            raise self.fail(f"{where} is {datum!r}; write name[t-1] or a record of a read")
+        if not pair:
+            unknown = sorted(set(datum) - {"source", "kernel", "grid", "realise"})
+            if unknown or "source" not in datum:
+                raise self.fail(
+                    f"{where} holds {sorted(datum)}; a read has a source and, optionally, a "
+                    "kernel, a grid and a realise"
+                )
+        source, offset = _parse_parent(datum if pair else datum["source"], where)
+        if offset != 1 or source not in self.variables:
+            raise self.fail(
+                f"{where} is {datum!r}; a lagged datum names a state or an action node at the "
+                "previous tick, as name[t-1]"
+            )
+        if pair:
+            return source
+        kernel = datum.get("kernel", "identity")
+        if kernel not in ("identity", "indicator"):
+            raise self.fail(f"{where}.kernel is {kernel!r}; it is 'identity' or 'indicator'")
+        if (kernel == "indicator") != ("grid" in datum):
+            raise self.fail(f"{where}: an indicator kernel has a grid, and no other kernel does")
+        realise = datum.get("realise", "sample")
+        if realise not in REALISATIONS:
+            raise self.fail(f"{where}.realise is {realise!r}; it is one of {list(REALISATIONS)}")
+        grid: str | Grid = "identity"
+        if kernel == "indicator":
+            record = datum["grid"]
+            if not isinstance(record, Mapping) or not {"shape", "low", "high"} <= set(record):
+                raise self.fail(f"{where}.grid must be a mapping with shape, low and high")
+            try:
+                grid = _grid_of(record)
+            except (ValueError, TypeError) as exc:
+                raise self.fail(f"{where}.grid: {exc}") from None
+        return Read(child, source, grid, realise)
 
     def _check_target_parents(self, fac: _Factor, states: set[str], nodes: set[str]) -> None:
         """A ``target``'s parents are its conditioning variables, discrete control nodes or
@@ -4894,7 +4962,11 @@ class _Model:
             mixture_schedule=self.config["mixture_schedule"],
             reduction_period=self.config["reduction_period"],
             reduction_pairs=self.config["reduction_pairs"],
-            lagged=tuple((o, self.lagged[o]) for o in mods if o in self.lagged),
+            lagged=tuple(
+                (o, self.lagged[o]) if isinstance(self.lagged[o], str) else self.lagged[o]
+                for o in mods
+                if o in self.lagged
+            ),
             readings=tuple((child, node) for child, (node, _) in self.pooled.items()),
             D_deps=D_deps,
             H_deps=H_deps,
@@ -4987,11 +5059,49 @@ class _Model:
                 "names the weights of networks and learned vectors"
             )
 
+    def _boundaries(self) -> dict[str, str]:
+        """Each component's boundary as the document shows it (``Subsystem.boundary``): an edge
+        across components is ``"shared"`` where it identifies a latent (a state parent, a
+        modality's parents, a terminal's parents, a parameter variable another component reads)
+        and ``"blanket"`` where it is a sibling-belief read or a control node read across."""
+        components = tuple(self.components)
+
+        def owner(name: str) -> str | None:
+            head = name.partition(_SEP)[0]
+            return head if head in components else None
+
+        kinds: dict[str, set[str]] = {c: set() for c in components}
+
+        def cross(kind: str, a: str, b: str) -> None:
+            ends = {owner(a), owner(b)}
+            if len(ends) == 2 and None not in ends:
+                for end in ends:
+                    kinds[end].add(kind)
+
+        states = set(self.states)
+        for s in self.states:
+            for p, _ in self.transition[s].parents:
+                cross("shared" if p in states else "blanket", s, p)
+            if s in self.terminals:
+                for p, _ in self.terminals[s].parents:
+                    cross("shared", s, p)
+        for o in self.mods:
+            for p, _ in self.likelihood[o].parents:
+                cross("shared" if p in states else "blanket", o, p)
+            if o in self.lagged:
+                cross("blanket", o, self._read_for(o).source)
+        for (child, _), home in self.reads.items():
+            cross("shared", child, home)
+        return {
+            c: "shared" if "shared" in k else "blanket" if k else "none" for c, k in kinds.items()
+        }
+
     def _subsystems(self, A_deps, H) -> tuple[tuple[str, Subsystem], ...] | None:
         """The per-component record of a composite, reconstructed from the name prefixes: what
         the document shows (Q18.2)."""
         if not self.components:
             return None
+        boundary = self._boundaries()
         out = []
         for name in self.components:
             prefix = f"{name}{_SEP}"
@@ -5001,6 +5111,14 @@ class _Model:
             action_of = dict(zip(self.nodes, self.actions, strict=True))
             #  an action node a modality observes is no state factor of any component
             state_deps = [tuple(g for g in deps if g < len(self.states)) for deps in A_deps]
+            #  a modality whose read has its source in another component
+            reads = tuple(
+                (self.mods[m], read.source, read.kernel, read.realise)
+                for m in mods
+                if self.mods[m] in self.lagged
+                for read in (self._read_for(self.mods[m]),)
+                if read.source in self.states and not read.source.startswith(prefix)
+            )
             out.append(
                 (
                     name,
@@ -5020,6 +5138,8 @@ class _Model:
                         target_emissions=tuple(
                             (f, H[f]) for f in facs if H[f] and any(g not in facs for g in H[f])
                         ),
+                        reads=reads,
+                        boundary=boundary.get(name, "none"),
                     ),
                 )
             )

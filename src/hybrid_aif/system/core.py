@@ -99,6 +99,8 @@ from hybrid_aif.planning.enumerate import (
     action_marginals,
     enumerate_policies,
 )
+from hybrid_aif.reads import Read, as_read
+from hybrid_aif.reads import check_declaration as check_read_declaration
 from hybrid_aif.system import keyed, selectors, validation
 from hybrid_aif.system.selectors import _KEY_KINDS, _EpistemicVar
 
@@ -479,15 +481,28 @@ class Subsystem(NamedTuple):
       versus ``(modality, foreign parents)`` for those an observation binding pointed across the
       boundary;
     - ``target_emissions`` — ``(factor, parents)`` whose ``H_deps`` parents lie outside this
-      subsystem.
+      subsystem;
+    - ``reads``: ``(modality, source, kernel, realise)``, composite names, for every modality of
+      this subsystem that reads a state factor of another component (a ``SiblingRead``): the view
+      leaves the modality an ordinary observation, and the driver supplies it each round from
+      the source component's carry;
+    - ``boundary``: what binds this subsystem to the others: ``"none"`` (no binding crosses
+      its boundary), ``"blanket"`` (every binding across it is a sibling-belief read or a
+      control-node ``ActionControl``), or ``"shared"`` (some binding identifies a latent
+      outright: a relay, an ``ObservationLink``, a ``TargetEmission``, a ``SharedParameter``).
+      :attr:`nested` is the middle case: the subsystem keeps a blanket of its own inside the
+      particle.
 
     A record :func:`~hybrid_aif.description.build` reconstructs from a model description carries
     only what the document shows: the composite's names, its factors, modalities and the control
-    nodes still present. ``relayed``, ``terminated`` and ``identified`` are empty there, and
-    ``actions`` names the present control nodes only, since a node a binding removed is absent
-    from the document (design: model-description-0.3.md Q18.2).
+    nodes still present. ``relayed``, ``terminated`` and ``identified`` are empty there and
+    ``boundary`` is derived from the edges the document shows between components (a parent, a
+    parameter variable or a read across them), ``reads`` is the document's own, and ``actions``
+    names the present control nodes only, since a node a binding removed is absent from the
+    document (design: model-description-0.3.md Q18.2).
 
-    Design: docs/design/nesting-systems.md; docs/design/control-states.md C12.
+    Design: docs/design/nesting-systems.md; docs/design/control-states.md C12;
+    nesting-and-coupling.md N2, N3.
     """
 
     factors: tuple[int, ...]
@@ -500,6 +515,15 @@ class Subsystem(NamedTuple):
     free_modalities: tuple[int, ...] = ()
     bound_modalities: tuple[tuple[int, tuple[int, ...]], ...] = ()
     target_emissions: tuple[tuple[int, tuple[int, ...]], ...] = ()
+    reads: tuple[tuple[str, str, "str | Grid", str], ...] = ()
+    boundary: str = "none"
+
+    @property
+    def nested(self) -> bool:
+        """Whether every binding across this component's boundary is a sibling-belief read or a
+        control-node ``ActionControl``, so the component keeps a blanket of its own inside the
+        particle (and at least one binding crosses it)."""
+        return self.boundary == "blanket"
 
 
 class System(eqx.Module):
@@ -668,18 +692,21 @@ class System(eqx.Module):
     #   epistemic chain's posterior plus the estimate spread the corrections leave), and a
     #   Gaussian target on a continuous control node also charges the corrections. Requires
     #   ``planning_belief="posterior"`` (design: closed-loop-planning.md)
-    lagged: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
-    #   ``(modality, source)`` pairs: the modality's datum is the source's value at the previous
-    #   tick, read from the carry at the filter step rather than supplied; the source is a state
-    #   factor (the datum is its carried belief's mean: a Gaussian's location, a categorical's
-    #   probability vector as a soft observation) or an action node (the level taken). The
-    #   modality's own parents explain that value, so a factor can emit what the model just
-    #   believed. An explicit observation for the modality wins over the carry; without either
-    #   (the first tick) the modality is absent. By source, the datum is ``stats`` for a
-    #   categorical source, ``mode`` (the location) for a Gaussian one, and the level for an
-    #   action node; the read is of the previous round's belief. A read inside one component,
-    #   identity kernel, the source's belief itself: the case of a sibling-belief read in which
-    #   source and reader share a component. Design: structure-learning.md S8;
+    lagged: tuple[tuple[str, str] | Read, ...] = eqx.field(static=True, default=())
+    #   the reads: ``(modality, source)`` pairs or :class:`~hybrid_aif.reads.Read` declarations
+    #   ``Read(modality, source, kernel, realise)``. The modality's datum is the source's
+    #   posterior of the previous round (``prev_beliefs``, after that round's inference), pushed
+    #   through the kernel at the
+    #   source (the identity, or an indicator over a :class:`~hybrid_aif.cells.Grid`, which a
+    #   categorical modality reads over the grid's cells) and realised by ``sample`` (the default
+    #   of a ``Read``), ``mode`` or ``stats``, rather than supplied. The source is a state factor
+    #   or an action node (the level taken); a state factor of another component is the source
+    #   of a sibling-belief read, which a merge's ``SiblingRead`` declares and the driver
+    #   supplies as the modality's observation. A pair is the identity kernel with ``stats`` for
+    #   a categorical source, ``mode`` (the location) for a Gaussian one, and the level for an
+    #   action node. The modality's own parents explain the datum, so a factor can emit what the
+    #   model just believed. An explicit observation for the modality wins over the carry;
+    #   without either (the first tick) the modality is absent. Design: structure-learning.md S8;
     #   nesting-and-coupling.md N3
     readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
     #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
@@ -1854,6 +1881,7 @@ class System(eqx.Module):
         support_floor: float = SUPPORT_FLOOR,
         key: Array | None = None,
         previous: Mapping[str, Belief | Array] | None = None,
+        read_key: Array | None = None,
     ) -> tuple[dict[str, Belief], InferenceDetail | None]:
         """Mean-field state posteriors for one tick's observations: ``(beliefs, detail)``.
 
@@ -1903,10 +1931,14 @@ class System(eqx.Module):
         (one-particle filtering; amortized carries pass through; on a predict-only tick it is
         the prior that collapses). See docs/composing-systems.md.
 
-        ``previous`` is the carry a lagged modality (``System.lagged``) reads its datum from:
-        the previous tick's beliefs keyed by factor name and the previous action keyed by
-        action name, any entry optional. A lagged modality whose observation is ``None`` takes
-        its datum from there; with no entry for its source it is absent.
+        ``previous`` is the carry a lagged modality (``System.lagged``) reads its datum from,
+        for a source in this component: the previous tick's posteriors keyed by factor name and
+        the previous action keyed by action name, any entry optional. A lagged modality whose
+        observation is ``None`` takes its datum from there, pushed through its kernel and
+        realised; with no entry for its source it is absent. A read realised by ``sample`` draws
+        with ``read_key`` (which is not ``key``, the posterior's collapse), and raises without one.
+        A source in another component is read from that component's carry by the driver and
+        arrives as the modality's observation. Design: nesting-and-coupling.md N3.
         """
         return _infer_face.infer_states(
             self,
@@ -1919,6 +1951,7 @@ class System(eqx.Module):
             support_floor,
             key,
             previous,
+            read_key,
         )
 
     def _infer_states(
@@ -1933,6 +1966,7 @@ class System(eqx.Module):
         key: Array | None = None,
         face: str = "this face",
         previous: tuple | None = None,
+        read_key: Array | None = None,
     ) -> tuple[tuple[Belief, ...], InferenceDetail | None]:
         """The engine: :func:`hybrid_aif.system.faces.infer._infer_states`."""
         return _infer_face._infer_states(
@@ -1947,21 +1981,33 @@ class System(eqx.Module):
             key,
             face,
             previous,
+            read_key,
         )
+
+    @property
+    def _reads(self) -> tuple[Read, ...]:
+        """``lagged`` with every ``(modality, source)`` pair as the :class:`~hybrid_aif.reads.Read`
+        it stands for."""
+        return tuple(as_read(entry) for entry in self.lagged)
+
+    @property
+    def _lagged_reads(self) -> dict[int, tuple[str, int, Read]]:
+        """Each lagged modality's index to ``("factor", f, read)`` or ``("action", k, read)``."""
+        out: dict[int, tuple[str, int, Read]] = {}
+        mods, facs = self.modality_names, self._facs[: len(self.B_deps)]
+        actions = tuple(self.action_names or ())
+        for read in self._reads:
+            m = mods.index(read.modality)
+            if read.source in facs:
+                out[m] = ("factor", facs.index(read.source), read)
+            else:
+                out[m] = ("action", actions.index(read.source), read)
+        return out
 
     @property
     def _lagged_sources(self) -> dict[int, tuple[str, int]]:
         """Each lagged modality's index to ``("factor", f)`` or ``("action", k)``."""
-        out: dict[int, tuple[str, int]] = {}
-        mods, facs = self.modality_names, self._facs[: len(self.B_deps)]
-        actions = tuple(self.action_names or ())
-        for modality, source in self.lagged:
-            m = mods.index(modality)
-            if source in facs:
-                out[m] = ("factor", facs.index(source))
-            else:
-                out[m] = ("action", actions.index(source))
-        return out
+        return {m: (kind, i) for m, (kind, i, _) in self._lagged_reads.items()}
 
     def _check_lagged(self) -> None:
         if not self.lagged:
@@ -1969,10 +2015,22 @@ class System(eqx.Module):
         mods, facs = self.modality_names, self._facs[: len(self.B_deps)]
         actions = tuple(self.action_names or ())
         seen = set()
-        for pair in self.lagged:
-            if not (isinstance(pair, tuple) and len(pair) == 2):
-                raise ValueError(f"lagged holds (modality, source) pairs of names, got {pair!r}")
-            modality, source = pair
+        for entry in self.lagged:
+            if not (
+                isinstance(entry, Read)
+                or (
+                    isinstance(entry, tuple)
+                    and len(entry) == 2
+                    and all(isinstance(x, str) for x in entry)
+                )
+            ):
+                raise ValueError(
+                    f"lagged holds (modality, source) pairs of names or Read declarations, got "
+                    f"{entry!r}"
+                )
+            read = as_read(entry)
+            modality, source = read.modality, read.source
+            check_read_declaration(read)
             if modality not in mods:
                 raise ValueError(
                     f"lagged names the modality {modality!r}, which is not one of {list(mods)}"
@@ -1984,6 +2042,16 @@ class System(eqx.Module):
                 raise ValueError(
                     f"lagged: modality {modality!r} reads {source!r} at the previous tick, which "
                     f"is neither a state factor {list(facs)} nor an action node {list(actions)}"
+                )
+            if source in actions and read.kernel != "identity":
+                raise ValueError(
+                    f"lagged: modality {modality!r} reads the action node {source!r}, a level, "
+                    "which takes the identity kernel only"
+                )
+            if source in actions and read.realise == "stats":
+                raise ValueError(
+                    f"lagged: modality {modality!r} reads the action node {source!r}, a level, "
+                    "so its datum is the level; declare realise='sample' or 'mode'"
                 )
 
     def _check_readings(self) -> None:
@@ -2040,7 +2108,7 @@ class System(eqx.Module):
         lagged modality's datum comes from the carry, so its key is optional."""
         if not self.lagged or not isinstance(observations, Mapping):
             return observations
-        return {**{o: None for o, _ in self.lagged}, **dict(observations)}
+        return {**{read.modality: None for read in self._reads}, **dict(observations)}
 
     def _fill_lagged(
         self,
@@ -2049,6 +2117,7 @@ class System(eqx.Module):
         prev_beliefs: tuple[Belief | None, ...] | None,
         prev_action: Array | tuple[Array | None, ...] | None,
         first: Array | bool = False,
+        read_key: Array | None = None,
     ) -> tuple[tuple[Array | None, ...], tuple[bool | Array, ...] | None]:
         """The engine: :func:`hybrid_aif.system.faces.infer._fill_lagged`."""
         return _infer_face._fill_lagged(
@@ -2058,6 +2127,7 @@ class System(eqx.Module):
             prev_beliefs,
             prev_action,
             first,
+            read_key,
         )
 
     @staticmethod
@@ -2086,6 +2156,7 @@ class System(eqx.Module):
         prior: SystemParams | None = None,
         priors: Mapping[str, Belief] | None = None,
         externals: Mapping[str, Array] | None = None,
+        read_key: Array | None = None,
     ) -> "SystemParams | tuple[SystemParams, LearnState]":
         """One tick's parameter update: every learnable slot absorbs this tick's statistic.
 
@@ -2178,7 +2249,10 @@ class System(eqx.Module):
         **Lagged modalities** (``System.lagged``) read their datum from ``prev_beliefs`` and
         ``action`` and may be left out of ``observations``; at tick 0, where ``prev_beliefs`` is
         a dummy, freeze their likelihood slots and the weights with a traced zero rate as for a
-        transition.
+        transition. A read realised by ``sample`` draws with ``read_key``, the key ``infer_states``
+        was given as ``read_key=``, so both see one datum, and raises without one; a sibling-belief
+        read whose source is in another component takes its datum from the observation the driver
+        supplies. Design: nesting-and-coupling.md N3.
 
         Design: docs/design/parameter-learning.md D1 D3 D4 D5 D7 D8;
         docs/design/per-variable-infogain.md V1 V7; docs/design/amortization.md A2;
@@ -2200,6 +2274,7 @@ class System(eqx.Module):
             prior,
             priors,
             externals,
+            read_key,
         )
 
     def _learn(
@@ -2221,6 +2296,7 @@ class System(eqx.Module):
         grow: bool = True,
         priors: tuple[Belief, ...] | None = None,
         externals: Mapping[str, Array] | None = None,
+        read_key: Array | None = None,
     ) -> "SystemParams | tuple[SystemParams, LearnState]":
         """The engine: :func:`hybrid_aif.system.faces.learn._learn`."""
         return _learn_face._learn(
@@ -2242,6 +2318,7 @@ class System(eqx.Module):
             grow,
             priors,
             externals,
+            read_key,
         )
 
     def carry(

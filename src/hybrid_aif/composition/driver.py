@@ -22,8 +22,10 @@ node carries it for the rest of the round; no other mind's choice redraws it.
 
 A belief is internal: each mind's posterior lives in its own carry and never crosses as a
 distribution. Minds reach each other only through the wires (in the composite form, through the
-world), and what a wire carries is the realised value of an action node, which may be the
-belief's statistics.
+world, or through a sibling-belief read: a modality that declares a state factor of another
+component as its source and takes its datum from that component's carry, realised by ``sample``,
+``mode`` or ``stats``), and what a wire carries is the realised value of an action node, which
+may be the belief's statistics.
 
 A round is one tick of time under every order, and every factor steps once per round; the
 orders are algorithms for one update, not amounts of time. ``"simultaneous"`` (default): every
@@ -39,7 +41,7 @@ one row per tick. The driver is a Python loop, so carries need no shared structu
 ``respond`` may be jitted.
 
 Design: docs/design/nesting-systems.md (architecture sketch; tick semantics);
-docs/design/control-states.md C13; nesting-and-coupling.md N1, N4.
+docs/design/control-states.md C13; nesting-and-coupling.md N1, N3, N4.
 """
 
 import dataclasses
@@ -59,6 +61,7 @@ from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical
 from hybrid_aif.envs.generative import ACTUATOR_TAG
 from hybrid_aif.planning.base import Planner
+from hybrid_aif.reads import modality_key, read_datum
 from hybrid_aif.system import Belief, LearnState, System, SystemParams, keyed
 
 TickOrder = Literal["simultaneous", "sequential", "async"]
@@ -67,15 +70,20 @@ TickOrder = Literal["simultaneous", "sequential", "async"]
 class MindCarry(NamedTuple):
     """One mind's internal state between ticks, the only place its beliefs live.
 
-    ``beliefs`` is ``None`` before the first tick (use the declared initial priors); ``learn_state``
-    holds the carry of ``System.learn`` once a mind learns online. Carries are never merged, so two
-    minds share no leaf.
+    ``beliefs`` is ``None`` before the first tick (use the declared initial priors): the empirical
+    prior the next tick filters from, the last posterior pushed through its transition under the
+    chosen action. ``posterior`` is that last posterior itself, before the push, which is what a
+    read of this mind's state takes as its datum (a custom respond that keeps none, or a carry
+    seeded through ``carries=`` without one, is read as absent on the next round).
+    ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
+    Carries are never merged, so two minds share no leaf.
 
     Design: nesting-and-coupling.md N1.
     """
 
     beliefs: Mapping[str, Belief] | None = None
     learn_state: LearnState | None = None
+    posterior: Mapping[str, Belief] | None = None
 
 
 #: The driver protocol: ``obs`` is this mind's own modalities keyed by name, ``action`` an int32
@@ -97,7 +105,8 @@ def agent_respond(
     ``update_empirical_prior`` under the chosen action. ``act_kwargs`` pass through to
     :meth:`System.act`; a ``legal`` among them (keyed by control node, or one bool per policy) is
     checked once, here. A System with no designations gives a Bayesian perceiver (flat ``q_pi``,
-    the same filtering).
+    the same filtering). A modality whose observation is ``None`` (a sibling's belief the driver
+    could not yet read) is absent that round.
     """
 
     legal = act_kwargs.get("legal")
@@ -127,10 +136,12 @@ def agent_respond(
 @eqx.filter_jit
 def _agent_tick(system, params, planner, kwargs, key, obs, carry):
     """One compiled tick: infer, act, push; ``params`` is an argument, so the program is shared."""
-    beliefs, _ = system.infer_states(params, obs, priors=carry.beliefs)
+    #  a modality the driver left absent this round (a sibling's belief not yet carried) is None
+    absent = {m: False for m, v in obs.items() if v is None}
+    beliefs, _ = system.infer_states(params, obs, priors=carry.beliefs, present=absent or None)
     action, _, _ = system.act(key, params, beliefs, planner=planner, metrics=False, **dict(kwargs))
     pushed = system.update_empirical_prior(params, beliefs, action)
-    return action, carry._replace(beliefs=pushed)
+    return action, carry._replace(beliefs=pushed, posterior=beliefs)
 
 
 def ancestral_respond(system: System, params: SystemParams) -> RespondFn:
@@ -339,6 +350,45 @@ def _durations_node(system: System, params: SystemParams) -> str:
     return node
 
 
+def _posterior(carry) -> Mapping[str, Belief] | None:
+    """The posterior of a mind's last round, by factor name: a :class:`MindCarry`'s, or the wrapped
+    mind's under :func:`hold`; ``None`` before the mind has one (or for a mind whose carry keeps
+    none)."""
+    while carry is not None and not hasattr(carry, "posterior"):
+        carry = getattr(carry, "inner", None)
+    return None if carry is None else carry.posterior
+
+
+def _driven_reads(
+    composite: System,
+    minds: Mapping[str, RespondFn],
+    routes: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]],
+    factors_of: Mapping[str, tuple[str, ...]],
+) -> dict[str, list[tuple[str, str | None, str, "str | object", str]]]:
+    """Every read the driver supplies, by reading mind: ``(modality, source mind, source,
+    kernel, realise)``. The source mind is the mind whose factors hold the source state factor
+    (the reader itself for a read inside its view), and ``None`` for an action node, whose datum
+    is the previous round's chosen level. A mind's view never fills its own reads (``respond``
+    takes no carry of past rounds), so the driver supplies all of them."""
+    out: dict[str, list] = {name: [] for name in minds}
+    c_facs = set(composite._table.state_names)
+    for read in composite._reads:
+        reader = next((n for n in minds if read.modality in routes[n][0]), None)
+        if reader is None:
+            continue
+        holder = None
+        if read.source in c_facs:
+            holder = next((n for n in minds if read.source in factors_of[n]), None)
+            if holder is None:
+                raise ValueError(
+                    f"modality {read.modality!r} reads {read.source!r}, a state factor of a "
+                    "component that has no mind, so there is no carried belief to read; give "
+                    "that component a RespondFn"
+                )
+        out[reader].append((read.modality, holder, read.source, read.kernel, read.realise))
+    return out
+
+
 def run(
     composite: "System | Wiring",
     params: SystemParams | None = None,
@@ -405,6 +455,20 @@ def run(
     (``params.actuator``) are drawn at the nodes with the wired form's keys over the composite's
     action order, and the world is stepped on the realised action with an ``env_params`` whose
     actuator mapping is empty, so the world draws nothing.
+
+    Every read of a minded component (``System.lagged`` of the composite: a component's own pairs,
+    a :class:`~hybrid_aif.composition.merge.SiblingRead`, a read inside an inner composite that
+    is one mind) is supplied to its mind each round, as an ordinary observation, in place of the
+    world's sample of that modality. A read of a state factor takes the source mind's posterior
+    of the previous round (``MindCarry.posterior``, as it stood when the round began, so a read
+    is one tick behind whatever the order; the reader's own for a source in its own view),
+    pushed through the read's kernel and realised (:func:`hybrid_aif.reads.read_datum`), a draw
+    keyed by ``modality_key(k_tick, m)`` for the composite's modality ``m``, the round's key
+    folded rather than split, so a composite with no read draws what it drew before. A read of
+    an action node takes the level chosen the round before. On the first round, or when the
+    source has no posterior, the entry is ``None`` (the modality is absent;
+    :func:`agent_respond` filters on it); a source mind must exist. Design:
+    nesting-and-coupling.md N3.
     """
     if isinstance(composite, Wiring):
         if any(v is not None for v in (params, minds, state, param_key)):
@@ -511,6 +575,8 @@ def _run_composite(
     factors_of = {name: tuple(c_facs[i] for i in table[name].factors) for name in minds}
     minded = {f for fs in factors_of.values() for f in fs}
     unminded = tuple(f for f in c_facs if f not in minded)
+    reads_in = _driven_reads(composite, minds, routes, factors_of)
+    modality_at = {m: i for i, m in enumerate(c_mods)}
 
     env, env_params = composite.as_env(params, param_key)
     key, k_reset = jax.random.split(key)
@@ -558,6 +624,15 @@ def _run_composite(
         keys = list(jax.random.split(k_tick, 2 * len(minds) + 2))
         if tick_order == "simultaneous":
             action = no_op()
+        #  the posteriors the sources held when the round began (a read is one tick behind),
+        #  and the previous round's chosen actions
+        begun = {
+            holder: _posterior(live[holder])
+            for reads in reads_in.values()
+            for _, holder, _, _, _ in reads
+            if holder is not None
+        }
+        last = action_log[-1] if action_log else None
         if tick_order == "async":
             # a fresh random permutation per round: no fixed ordering privilege
             perm = [int(i) for i in sweep_rng.permutation(len(names))]
@@ -566,7 +641,25 @@ def _run_composite(
         for j in perm:
             name, respond = names[j], minds[names[j]]
             mods, ports = routes[name]
-            chosen, live[name] = respond(keys[j], {m: obs[m] for m in mods}, live[name])
+            seen = {m: obs[m] for m in mods}
+            for modality, holder, source, kernel, realise in reads_in[name]:
+                if holder is None:
+                    seen[modality] = None if last is None else last[source]
+                    continue
+                carried = begun[holder]
+                belief = None if carried is None else carried.get(source)
+                seen[modality] = (
+                    None
+                    if belief is None
+                    else read_datum(
+                        belief,
+                        kernel,
+                        realise,
+                        modality_key(k_tick, modality_at[modality]),
+                        f"the read of modality {modality!r}",
+                    )
+                )
+            chosen, live[name] = respond(keys[j], seen, live[name])
             action = {
                 **action,
                 **_check_action(chosen, ports, name, action_of, {a: node_types[a] for a in ports}),

@@ -30,6 +30,7 @@ from hybrid_aif.inference.mixture_filter import (
 from hybrid_aif.objectives import continuous as _continuous
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives.discrete import expected_states
+from hybrid_aif.reads import modality_key, read_datum
 from hybrid_aif.system import keyed, validation
 from hybrid_aif.system.core import Belief, SystemParams
 
@@ -338,6 +339,7 @@ def infer_states(
     support_floor: float = SUPPORT_FLOOR,
     key: Array | None = None,
     previous: Mapping[str, Belief | Array] | None = None,
+    read_key: Array | None = None,
 ) -> tuple[dict[str, Belief], InferenceDetail | None]:
     params = system._params_in(params, "infer_states")
     validation._validate_cells(system, params, system._facs)
@@ -367,6 +369,7 @@ def infer_states(
         key,
         "infer_states",
         previous=(prev_beliefs, prev_action),
+        read_key=read_key,
     )
     posteriors = None
     if sensed is not None:
@@ -390,6 +393,7 @@ def _infer_states(
     key: Array | None = None,
     face: str = "this face",
     previous: tuple | None = None,
+    read_key: Array | None = None,
 ) -> tuple[tuple[Belief, ...], InferenceDetail | None]:
     """:meth:`infer_states` over positional tuples; ``present`` holds one flag per modality,
     or is a ``(M,)`` bool array; ``previous`` is ``(prev_beliefs, prev_action, first)``,
@@ -406,6 +410,7 @@ def _infer_states(
             prev_beliefs,
             prev_action,
             first,
+            read_key,
         )
     beliefs, info = _infer_states_expected(
         system, params, observations, priors, detail, externals, present, support_floor, face
@@ -927,23 +932,42 @@ def _fill_lagged(
     prev_beliefs: tuple[Belief | None, ...] | None,
     prev_action: Array | tuple[Array | None, ...] | None,
     first: Array | bool = False,
+    read_key: Array | None = None,
 ) -> tuple[tuple[Array | None, ...], tuple[bool | Array, ...] | None]:
-    """The observations with every lagged modality's datum read from the carry where none
-    was given: the source factor's previous belief mean, or the previous action's level (the
-    entry of a node ``prev_action`` does not name is absent, like a missing carry). A modality
-    with neither is absent, as is every lagged modality when ``first`` (a traced flag for the
-    tick with no carry)."""
-    sources = system._lagged_sources
+    """The observations with every read modality's datum taken from its source's posterior of the
+    previous round (``prev_beliefs``), pushed through the kernel at the source and realised
+    (``sample``, ``mode`` or ``stats``), where none was given; the identity kernel with the pair
+    form's realisation is ``stats`` for a categorical source (its probability vector), ``mode``
+    for a Gaussian one (its mean) and the previous action's level for an action node (the entry
+    of a node ``prev_action`` does not name is absent, like a missing carry). A modality with
+    neither is absent, as is every lagged modality when ``first`` (a traced flag for the tick
+    with no carry). ``read_key`` seeds the draws of ``sample``
+    (:func:`hybrid_aif.reads.modality_key`); it is not the face's ``key``, which collapses the
+    posterior.
+
+    Design: nesting-and-coupling.md N3.
+    """
+    sources = system._lagged_reads
     if not sources:
         return observations, present
     obs = list(observations)
     flags = list(present) if present is not None else [True] * len(obs)
-    for m, (kind, index) in sources.items():
+    for m, (kind, index, read) in sources.items():
         if obs[m] is not None:
             continue
         if kind == "factor":
             q = None if prev_beliefs is None else prev_beliefs[index]
-            datum = None if q is None else q.mean()
+            datum = (
+                None
+                if q is None
+                else read_datum(
+                    q,
+                    read.kernel,
+                    read.realise,
+                    None if read_key is None else modality_key(read_key, m),
+                    f"the read of modality {read.modality!r}",
+                )
+            )
         else:
             entry = None if prev_action is None else prev_action[index]
             datum = None if entry is None else jnp.asarray(entry)

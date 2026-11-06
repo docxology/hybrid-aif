@@ -862,7 +862,10 @@ def _trace_resolution(system: System, valid: np.ndarray) -> dict[str, float]:
     ticks = float(valid.sum())
     episodes = float(np.sum(np.any(valid, axis=-1)))
     states = tuple(system._table.state_names)
-    lagged = {modality for modality, _ in system.lagged}
+    #  a read's kernel, realisation and source are not yet priced (open: description-length.md,
+    #  the 2026-11-06 note, which prices the source as a parent choice when the format records
+    #  it); only the datum's absence on an episode's first tick enters the resolution
+    lagged = {read.modality for read in system._reads}
     n = {
         **{
             f"likelihood:{o}": ticks - (episodes if o in lagged else 0.0)

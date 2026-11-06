@@ -52,6 +52,7 @@ from hybrid_aif.factors import (
     gaussian_emission,
 )
 from hybrid_aif.interval import Interval
+from hybrid_aif.reads import Read
 from hybrid_aif.replay import Replay, replay, replay_document, stack_traces
 from hybrid_aif.system import System, SystemParams
 
@@ -83,6 +84,7 @@ __all__ = [
     "MixtureGaussian",
     "Parameter",
     "PredictorHead",
+    "Read",
     "Recognition",
     "TabularObservation",
     "TabularPrior",

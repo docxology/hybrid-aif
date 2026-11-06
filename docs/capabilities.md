@@ -53,12 +53,22 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   does. **A lagged datum** (`System(lagged=(("modality", "source"), ...))`): a modality reads
   its datum from the carry, a state factor's previous belief or the previous action, so a
   factor can emit what the model just believed (`design/structure-learning.md` S8). The datum
-  is the previous round's belief, by source: for a categorical source its probability vector
+  is the source's posterior of the previous round, by source: for a categorical source its probability vector
   (a soft observation), for a Gaussian source its location, for an action-node source the level
-  taken; a pair declared today keeps its behaviour. It is the within-component case of the
-  sibling-belief read, in which one component's modality takes another component's belief,
-  pushed through a kernel at the source and realised by `sample`, `mode` or `stats`, as its
-  datum (`design/nesting-and-coupling.md` N3).
+  taken; a pair declared this way keeps that behaviour. **A sibling-belief read**
+  (`Read(modality, source, kernel, realise)`, in the same `lagged` tuple, beside pairs, and
+  `SiblingRead(modality, source, kernel, realise)` in a merge, `design/nesting-and-coupling.md`
+  N3) generalises it three ways: the datum is the source's belief pushed through a kernel, the
+  identity or a cell indicator over a `Grid` (so a categorical modality over the grid's cells
+  reads a continuous position factor); the realisation is declared, `sample` (a draw, the
+  default of a `Read`; `infer_states` and `learn` take it as `read_key=`, `replay` from its `key`), `mode` (the argmax, or the
+  mean of a continuous belief) or `stats` (a categorical belief's probability vector, a soft
+  observation; not built for a Gaussian source); and the source may be a state factor of
+  another component of a merge, whose posterior of the previous round (`MindCarry.posterior`) `run`'s composite form supplies as the
+  modality's observation each round, one tick behind, absent on the first. `merge` carries a
+  component's own reads under its prefix, `Subsystem.reads` records the sibling ones, and a
+  component bound only by such reads and control-node `ActionControl` is nested (`nested`).
+  The description document records a read in `options.datum`.
 
 - **A categorical field over a continuous state** (`design/terrain-field.md`): a tabular
   factor may name a Gaussian or mixture-carried factor as a parent when the System declares a

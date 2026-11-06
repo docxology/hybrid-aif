@@ -19,6 +19,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from hybrid_aif.cells import Grid
 from hybrid_aif.controls import FLOAT, LEVEL, declared_parents, effective_control_deps
 from hybrid_aif.distributions import (
     ConditionalCategorical,
@@ -554,10 +555,14 @@ def _refuse_shared_controls(
 
 
 def _validate_lagged(system: System, params: SystemParams) -> None:
-    """A lagged modality's datum has its source's shape: a categorical source (or an action
-    node) is read by a tabular modality over as many levels, a continuous one by a
-    linear-Gaussian modality of its dimension."""
-    sources = system._lagged_sources
+    """A lagged modality's datum has the shape its read gives it: a categorical source (or an
+    action node) is read by a tabular modality over as many levels, a continuous one under the
+    identity kernel by a linear-Gaussian modality of its dimension, and through an indicator over
+    a grid by a tabular modality over the grid's cells. A Gaussian source has no ``stats``.
+
+    Design: nesting-and-coupling.md N3.
+    """
+    sources = system._lagged_reads
     if not sources:
         return
     if system._is_amortized(params):
@@ -567,11 +572,32 @@ def _validate_lagged(system: System, params: SystemParams) -> None:
         )
     mods, facs = system.modality_names, system._facs
     families = system._families(params)
-    for m, (kind, index) in sources.items():
+    for m, (kind, index, read) in sources.items():
         decl = params.likelihood[m]
+        grid = read.kernel if isinstance(read.kernel, Grid) else None
         if kind == "action":
             levels = system._control_levels(params)[index]
             what = f"the action node {system.action_names[index]!r} ({levels} levels)"
+            width = None
+        elif grid is not None:
+            if families[index] == _hybrid.CATEGORICAL:
+                raise ValueError(
+                    f"modality {mods[m]!r} reads the categorical factor {facs[index]!r} through "
+                    "an indicator kernel, which is the cell a continuous factor falls in; read "
+                    "a categorical factor through the identity kernel"
+                )
+            dim = params.initial_state_prior[index].dim
+            if max(grid.axes) >= dim:
+                raise ValueError(
+                    f"modality {mods[m]!r} reads the continuous factor {facs[index]!r} "
+                    f"({dim}-dimensional) through a grid over coordinate(s) {list(grid.axes)}; "
+                    "every axis must be a coordinate of the factor"
+                )
+            levels = grid.n_cells
+            what = (
+                f"the continuous factor {facs[index]!r} through an indicator over a grid of "
+                f"{levels} cells"
+            )
             width = None
         elif families[index] == _hybrid.CATEGORICAL:
             levels = _factor_levels(params, index)
@@ -581,6 +607,13 @@ def _validate_lagged(system: System, params: SystemParams) -> None:
             levels = None
             width = params.initial_state_prior[index].dim
             what = f"the continuous factor {facs[index]!r} ({width}-dimensional)"
+            if read.realise == "stats":
+                raise ValueError(
+                    f"modality {mods[m]!r} reads {what} with realise='stats', the sufficient "
+                    "statistics of a Gaussian belief, which are deferred (design: "
+                    "nesting-and-coupling.md, Deferred); declare 'sample' or 'mode', or read "
+                    "the factor through an indicator over a Grid"
+                )
         if levels is not None:
             if not isinstance(decl, TabularObservation):
                 raise ValueError(
@@ -595,10 +628,16 @@ def _validate_lagged(system: System, params: SystemParams) -> None:
                 )
         else:
             if not isinstance(decl, LGObservation):
+                hint = (
+                    "; a categorical modality reads a continuous factor through an indicator "
+                    "kernel, Read(modality, source, kernel=Grid(...))"
+                    if isinstance(decl, TabularObservation)
+                    else ""
+                )
                 raise ValueError(
                     f"modality {mods[m]!r} reads {what} at the previous tick as its datum, the "
                     f"belief's mean, so it is a linear-Gaussian modality over {width} "
-                    f"dimensions; it is {type(decl).__name__}"
+                    f"dimensions; it is {type(decl).__name__}{hint}"
                 )
             if decl.obs_dim != width:
                 raise ValueError(

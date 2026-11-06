@@ -5,15 +5,18 @@ face applies to a composite unchanged. It namespaces every node as ``"<sub>.<nam
 key grammar with it: ``"likelihood:arm.pose"``), concatenates state factors, modalities and control
 nodes in ``subsystems`` order with every dependency index offset, and applies the bindings:
 :class:`ActionControl`, :class:`ObservationLink`, :class:`TargetEmission`,
-:class:`BoundaryPrior`, and, for parameter variables, :class:`SharedParameter`. A merge makes one
-particle with one blanket to the world. :class:`ObservationLink`, the state-driver form of
-:class:`ActionControl` (the relay) and :class:`SharedParameter` identify a latent outright,
-sharing that variable with messages both ways. The control-node form of :class:`ActionControl`
-makes one node in the composite, the driver's decision, which the driven component's factors
-read as a supplied level; a decision is not a belief, so no belief of the driven component is
-identified with the driver's, and the binding is blanket-shaped at the driven component's
-boundary. A component whose every binding across its boundary is of that form keeps a blanket
-of its own inside the particle, and is nested. Control nodes no binding touches stay the
+:class:`BoundaryPrior`, :class:`SiblingRead`, and, for parameter variables,
+:class:`SharedParameter`. A merge makes one particle with one blanket to the world.
+:class:`ObservationLink`, the state-driver form of :class:`ActionControl` (the relay),
+:class:`TargetEmission` and :class:`SharedParameter` identify a latent outright, sharing that
+variable with messages both ways. The control-node form of :class:`ActionControl` makes one node
+in the composite, the driver's decision, which the driven component's factors read as a supplied
+level; a decision is not a belief, so no belief of the driven component is identified with the
+driver's, and the binding is blanket-shaped at the driven component's boundary. A
+:class:`SiblingRead` is sensing inside one particle: a modality of one component takes its datum
+from another component's belief, through a kernel, realised. A component whose every binding
+across its boundary is of those two forms keeps a blanket of its own inside the particle, and
+is nested (:func:`nested`, ``Subsystem.nested``). Control nodes no binding touches stay the
 composite's own, chosen by its planner. An ``ActionControl`` names a control node of one component,
 and the latent it is identified with decides the timing: another component's control node is read
 at the same step (the two nodes become one), a state of another component at the previous step (a
@@ -24,7 +27,7 @@ stubs for the neighbours it must model. The driver that interleaves the views is
 :mod:`hybrid_aif.composition.driver`.
 
 Design: docs/design/nesting-systems.md; docs/design/control-states.md C12;
-nesting-and-coupling.md N2.
+nesting-and-coupling.md N2, N3.
 """
 
 import dataclasses
@@ -35,6 +38,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from hybrid_aif.cells import Grid
 from hybrid_aif.controls import (
     FLOAT,
     LEVEL,
@@ -49,9 +53,16 @@ from hybrid_aif.distributions import (
     ConditionalGaussian,
     Gaussian,
 )
-from hybrid_aif.factors import LinearGaussianTransition, NonlinearGaussianTransition, Recognition
+from hybrid_aif.factors import (
+    LinearGaussianTransition,
+    NonlinearGaussianTransition,
+    Recognition,
+    TabularObservation,
+)
+from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives import registry
 from hybrid_aif.planning.enumerate import enumerate_policies
+from hybrid_aif.reads import REALISATIONS, Read, as_read, check_declaration
 from hybrid_aif.system import _KEY_KINDS, Subsystem, System, SystemParams, _is_pattern
 
 SEPARATOR = NAMESPACE_SEPARATOR
@@ -151,7 +162,37 @@ class SharedParameter(NamedTuple):
     right: str
 
 
-Binding = ActionControl | ObservationLink | TargetEmission | BoundaryPrior | SharedParameter
+class SiblingRead(NamedTuple):
+    """Binding (e): a modality of one component reads a state factor of another.
+
+    ``modality`` and ``source`` are namespaced names (``"mission.cell_obs"``, ``"rover.x"``). The
+    modality's datum is the source's posterior of the previous round, pushed through
+    ``kernel`` (``"identity"``, or a :class:`~hybrid_aif.cells.Grid`, the indicator of its cells
+    over a continuous source) and realised by ``realise`` (``"sample"``, ``"mode"`` or
+    ``"stats"``; see :class:`~hybrid_aif.reads.Read`). The composite carries it as a
+    :class:`~hybrid_aif.reads.Read` in ``System.lagged``; :func:`subsystem` leaves the modality
+    an ordinary observation of the reading component's view, and
+    :func:`~hybrid_aif.composition.driver.run` supplies it each round from the source component's
+    carry. The modality's own parents explain the datum, as for any observation.
+
+    Sensing inside one particle, with no action node: the belief read stays internal to the
+    particle and external to the reader. A component whose every binding across its boundary is
+    a ``SiblingRead`` or a control-node :class:`ActionControl` is nested. Refused: a modality
+    and a source in one component (a read inside a component is ``System.lagged``); a level
+    count that is not the source's under the identity kernel, nor the grid's cell count under an
+    indicator; a categorical modality reading a continuous source with no grid; ``"stats"`` of
+    a Gaussian source (deferred). Design: nesting-and-coupling.md N2, N3.
+    """
+
+    modality: str
+    source: str
+    kernel: "str | Grid" = "identity"
+    realise: str = "sample"
+
+
+Binding = (
+    ActionControl | ObservationLink | TargetEmission | BoundaryPrior | SharedParameter | SiblingRead
+)
 
 
 # ------------------------------------------------------------------- key helpers
@@ -576,6 +617,13 @@ def merge(
       under the component's prefix, the control node following a same-step identification to the
       driver's; a node a relay or ``BoundaryPrior`` removed raises. A view carries the entries of
       its own tables and raises where the node is another component's.
+    - ``lagged`` (a modality's datum read from a source's posterior of the previous round, a
+      pair or a :class:`~hybrid_aif.reads.Read`) carries under the component's prefix, the
+      source following its name and the kernel and realisation unchanged; a
+      :class:`SiblingRead` adds a read whose source is in another component. A component whose
+      every binding across its boundary is a sibling-belief read or a control-node
+      :class:`ActionControl` is nested (:func:`nested`). An action node a read names must stay
+      one its component chooses. Design: nesting-and-coupling.md N2, N3.
     - ``params.durations`` carries under the component's prefix; a round has one clock, so two
       components that both declare durations, or a binding that removes the node carrying them,
       raise (design: step-durations.md T1).
@@ -642,6 +690,7 @@ def merge(
     durations: dict[str, object] = {}
     parameters: dict[str, object] = {}  # the named parameter variables, by composite name
     reads: dict[tuple[str, int], str] = {}  # (slot, composite index) -> the variable it reads
+    own_reads: list[tuple[str, System, object]] = []  # a component's lagged entries
 
     scored = sorted(
         name for name, system in subsystems.items() if system.scoring or params[name].scoring
@@ -745,6 +794,7 @@ def merge(
         terms.extend(namespaced_term(name, key) for key in system.terms)
         dims.extend((f"{name}{SEPARATOR}{factor}", names) for factor, names in system.dims)
         cells.extend((f"{name}{SEPARATOR}{factor}", grid) for factor, grid in system.cells)
+        own_reads.extend((name, system, entry) for entry in system.lagged)
         readings.extend(
             (f"{name}{SEPARATOR}{table}", f"{name}{SEPARATOR}{node}")
             for table, node in system.readings
@@ -956,9 +1006,49 @@ def merge(
         nc.live = False
         same_step[ctl] = drv
 
+    #  what each binding that crosses a component's boundary is shaped as, per component record
+    #  (a top-level component and the components of an inner composite): "blanket" for a
+    #  sibling-belief read and a control-node ActionControl, "shared" for a binding that
+    #  identifies a latent outright
+    entry_names = [
+        *subsystems,
+        *(
+            f"{name}{SEPARATOR}{child}"
+            for name, s in subsystems.items()
+            for child, _ in s.subsystems or ()
+        ),
+    ]
+    crossing: dict[str, set[str]] = {entry: set() for entry in entry_names}
+    for name, system in subsystems.items():
+        for child, sub in system.subsystems or ():
+            if sub.boundary != "none":
+                crossing[f"{name}{SEPARATOR}{child}"].add(sub.boundary)
+
+    def chain(node: str) -> set[str]:
+        """The component records that contain the namespaced name ``node``."""
+        return {e for e in entry_names if node.startswith(f"{e}{SEPARATOR}")}
+
+    def cross(kind: str, *ends: str) -> None:
+        """Record a binding of shape ``kind`` among the namespaced names ``ends``, on every
+        component record that holds some of them and not all."""
+        chains = [chain(end) for end in ends]
+        for held in chains:
+            for entry in held - set.intersection(*chains):
+                crossing[entry].add(kind)
+
+    sibling: list[SiblingRead] = []
+    own_read_modalities = {
+        f"{name}{SEPARATOR}{as_read(entry).modality}" for name, _, entry in own_reads
+    }
+
     # ----------------------------------------------------------- the bindings
     for binding in bindings:
         if isinstance(binding, ActionControl):
+            cross(
+                "blanket" if binding.driver in node_index else "shared",
+                binding.driver,
+                binding.control,
+            )
             if binding.driver in node_index:
                 d = node_index[resolve(binding.driver)]
                 identify(d, driven_node(binding.control, "ActionControl"), binding)
@@ -1029,6 +1119,7 @@ def merge(
             cut(c, keep, weights)
             terminations[c] = (keep, weights)
         elif isinstance(binding, ObservationLink):
+            cross("shared", binding.modality, *binding.factors)
             m = _lookup(binding.modality, modality_index, "modality")
             linked = tuple(_lookup(f, factor_index, "factor") for f in binding.factors)
             a = likelihood[m]
@@ -1052,6 +1143,7 @@ def merge(
                     )
             A_deps[m] = linked
         elif isinstance(binding, TargetEmission):
+            cross("shared", binding.target, *binding.parents)
             f = _lookup(binding.target, factor_index, "factor")
             emitters = tuple(_lookup(g, factor_index, "factor") for g in binding.parents)
             if H_deps[f]:
@@ -1068,6 +1160,7 @@ def merge(
                 )
             H_deps[f] = emitters
         elif isinstance(binding, SharedParameter):
+            cross("shared", binding.left, binding.right)
             for end in (binding.left, binding.right):
                 if end not in parameters:
                     raise ValueError(
@@ -1082,15 +1175,87 @@ def merge(
                 if home == binding.right:
                     reads[address] = binding.left
             del parameters[binding.right]
+        elif isinstance(binding, SiblingRead):
+            _lookup(binding.modality, modality_index, "modality")
+            if binding.source not in factor_index:
+                what = (
+                    "a control node or an action node"
+                    if binding.source in node_index
+                    or binding.source in {node.action for node in nodes}
+                    else "not a state factor of the composite"
+                )
+                raise ValueError(
+                    f"SiblingRead({binding.modality!r} <- {binding.source!r}): the source is "
+                    f"{what}; a sibling read takes a state factor of another component, one of "
+                    f"{list(factor_names)}"
+                )
+            if binding.modality.split(SEPARATOR)[0] == binding.source.split(SEPARATOR)[0]:
+                raise ValueError(
+                    f"SiblingRead({binding.modality!r} <- {binding.source!r}): the modality and "
+                    f"the source are both in component {binding.modality.split(SEPARATOR)[0]!r}; "
+                    "a read inside one component is declared on that System, in System.lagged "
+                    "(a SiblingRead crosses a component boundary)"
+                    + (
+                        "; for components of an inner composite, declare the SiblingRead in the "
+                        "inner merge"
+                        if binding.modality.count(SEPARATOR) > 1
+                        else ""
+                    )
+                )
+            check_declaration(Read(*binding))
+            if binding.realise not in REALISATIONS:
+                raise ValueError(
+                    f"SiblingRead({binding.modality!r} <- {binding.source!r}): realise must be "
+                    f"one of {list(REALISATIONS)}, got {binding.realise!r}"
+                )
+            if binding.modality in {*own_read_modalities, *(b.modality for b in sibling)}:
+                raise ValueError(
+                    f"SiblingRead({binding.modality!r} <- {binding.source!r}): the modality "
+                    "already has a read (its component's System.lagged or another SiblingRead); "
+                    "a modality's datum has one source"
+                )
+            cross("blanket", binding.modality, binding.source)
+            sibling.append(binding)
         else:
             raise TypeError(
                 f"unknown binding {binding!r}; the kinds are ActionControl (control-node "
                 "identification or relay), ObservationLink (a modality's parents), "
-                "TargetEmission (H_deps, N1), BoundaryPrior (a control node's fixed prior) and "
+                "TargetEmission (H_deps, N1), BoundaryPrior (a control node's fixed prior), "
+                "SiblingRead (a modality's datum read from another component's state) and "
                 "SharedParameter (two parameter variables identified)"
             )
 
     same_step = {node: resolve(node) for node in same_step}
+
+    #  every component's own lagged entries under its prefix (an action source follows its node
+    #  through a same-step identification, to a node the component still chooses), then the
+    #  sibling reads
+    lagged_out: list[object] = []
+    for name, system, entry in own_reads:
+        read, prefix = as_read(entry), f"{name}{SEPARATOR}"
+        source = prefix + read.source
+        if read.source not in system._table.state_names:
+            node = next(n for n in nodes if n.action == source)
+            final = nodes[node_index[resolve(node.name)]]
+            if not final.live or not final.name.startswith(prefix):
+                gone = (
+                    "a binding removed"
+                    if not final.live
+                    else f"{final.name!r}, another component's"
+                )
+                raise ValueError(
+                    f"merge: modality {prefix + read.modality!r} reads the action node {source!r} "
+                    f"in System.lagged, whose control node {node.name!r} is {gone} node; a read "
+                    "of an action node stays inside the component that chooses it"
+                )
+            source = final.action
+        modality = prefix + read.modality
+        lagged_out.append(
+            Read(modality, source, read.kernel, read.realise)
+            if isinstance(entry, Read)
+            else (modality, source)
+        )
+    lagged_out.extend(Read(*binding) for binding in sibling)
 
     #  an observed action node, held as -(node + 1), takes its column among the live nodes: the
     #  composite's action node k sits at len(B_deps) + k
@@ -1204,12 +1369,12 @@ def merge(
                 action_of.setdefault(namespaced_key(name, node), namespaced_key(name, action))
     this_relayed = {nodes[k].name: factor_names[d] for k, d in relayed.items()}
     this_terminated = [nodes[k].name for k in terminations]
-    entries: list[tuple[str, tuple[int, ...], tuple[int, ...], dict, list]] = []
+    entries: list[tuple[str, tuple[int, ...], tuple[int, ...], dict, list, list]] = []
     for name, system in subsystems.items():
         f_off, m_off = fac_offset[name], mod_offset[name]
         facs = tuple(range(f_off, f_off + len(system._B)))
         mods = tuple(range(m_off, m_off + len(system.A_deps)))
-        entries.append((name, facs, mods, {}, []))
+        entries.append((name, facs, mods, {}, [], []))
         for child_name, child in system.subsystems or ():
             entries.append(
                 (
@@ -1221,10 +1386,14 @@ def merge(
                         for node, state in child.relayed
                     },
                     [namespaced_key(name, node) for node in child.terminated],
+                    [
+                        (f"{name}{SEPARATOR}{o}", f"{name}{SEPARATOR}{src}", kernel, realise)
+                        for o, src, kernel, realise in child.reads
+                    ],
                 )
             )
     metadata: list[tuple[str, Subsystem]] = []
-    for name, facs, mods, inherited_relayed, inherited_terminated in entries:
+    for name, facs, mods, inherited_relayed, inherited_terminated, inherited_reads in entries:
 
         def mine(node: str, prefix: str = f"{name}{SEPARATOR}") -> bool:
             return node.startswith(prefix)
@@ -1235,6 +1404,19 @@ def merge(
         )
         pairs = tuple(pair for pair in identified if mine(pair[0]))
         chosen = tuple(node for node in live_names if mine(node))
+        read_here = tuple(
+            [
+                *inherited_reads,
+                *(
+                    (b.modality, b.source, b.kernel, b.realise)
+                    for b in sibling
+                    if modality_index[b.modality] in mods
+                ),
+            ]
+        )
+        boundary = (
+            "shared" if "shared" in crossing[name] else "blanket" if crossing[name] else "none"
+        )
         relays = dict(sorted(relays.items(), key=lambda kv: _node_order(kv[0], factor_names)))
         ended = sorted(ended, key=lambda node: _node_order(node, factor_names))
         named = [*chosen, *relays, *ended, *(node for node, _ in pairs)]
@@ -1262,6 +1444,8 @@ def merge(
                         for f in facs
                         if H_deps[f] and any(g not in facs for g in H_deps[f])
                     ),
+                    reads=read_here,
+                    boundary=boundary,
                 ),
             )
         )
@@ -1333,6 +1517,7 @@ def merge(
         dims=tuple(dims),
         cells=tuple(cells),
         readings=tuple(pooled_over),
+        lagged=tuple(lagged_out),
         recognition=tuple(recognition_decl) or None,
         external_inputs=tuple(external_inputs),
         subsystems=tuple(metadata),
@@ -1365,8 +1550,51 @@ def merge(
         durations=durations,
         precision=next(iter(precisions.values()), None),
     )
+    for binding in sibling:
+        _check_sibling_shapes(binding, composite, composite_params)
     composite._validate(composite_params)
     return composite, composite._params_out(composite_params)
+
+
+def _check_sibling_shapes(binding: SiblingRead, composite: System, params: SystemParams) -> None:
+    """Refuse a :class:`SiblingRead` whose datum does not have the shape its modality takes."""
+    label = f"SiblingRead({binding.modality!r} <- {binding.source!r})"
+    f = composite._facs.index(binding.source)
+    decl = params.likelihood[composite.modality_names.index(binding.modality)]
+    categorical = composite._families(params)[f] == _hybrid.CATEGORICAL
+    if isinstance(binding.kernel, Grid):
+        if categorical:
+            raise ValueError(
+                f"{label}: an indicator kernel is the cell a continuous source falls in, and "
+                f"{binding.source!r} is categorical; read it through the identity kernel"
+            )
+        levels, what = binding.kernel.n_cells, "the grid's cells"
+    elif categorical:
+        levels, what = _factor_levels(params, f), "the source's levels"
+    else:
+        if binding.realise == "stats":
+            raise ValueError(
+                f"{label}: realise='stats' of a Gaussian source is deferred (the sufficient "
+                "statistics of a Gaussian belief; design: nesting-and-coupling.md, Deferred); "
+                "declare 'sample' or 'mode', or read the source through an indicator over a Grid"
+            )
+        if isinstance(decl, TabularObservation):
+            raise ValueError(
+                f"{label}: {binding.modality!r} is a categorical modality and {binding.source!r} "
+                "is continuous, so the read needs an indicator kernel, kernel=Grid(...), to give "
+                "the modality cells to observe"
+            )
+        return  # a linear-Gaussian modality reads the mean; the composite's validation checks it
+    if not isinstance(decl, TabularObservation) or decl.num_levels != levels:
+        have = (
+            f"{decl.num_levels} levels"
+            if isinstance(decl, TabularObservation)
+            else type(decl).__name__
+        )
+        raise ValueError(
+            f"{label}: the datum takes {levels} values ({what}) and {binding.modality!r} is a "
+            f"modality of {have}; a categorical modality's level count is {what}"
+        )
 
 
 def _table_of(decl):
@@ -1582,6 +1810,18 @@ def _subsystem_meta(composite: System, name: str) -> Subsystem:
     return table[name]
 
 
+def nested(composite: System, name: str) -> bool:
+    """Whether component ``name`` is nested in the merge: it keeps a blanket of its own inside the
+    particle, every binding across its boundary being a :class:`SiblingRead` or a control-node
+    :class:`ActionControl`, and at least one binding crossing it. A relay, an
+    :class:`ObservationLink`, a :class:`TargetEmission` or a :class:`SharedParameter` across its
+    boundary identifies a latent outright and makes it not nested.
+
+    Design: nesting-and-coupling.md N2.
+    """
+    return _subsystem_meta(composite, name).nested
+
+
 def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
     """Composite factor indices one mind's view carries, in composite order.
 
@@ -1649,7 +1889,10 @@ def subsystem(
     composite's, and raises otherwise.
 
     A view is one component's side of one particle: the neighbours it models are stubs, not other
-    minds' beliefs.
+    minds' beliefs. A modality that reads a state factor of this component (``System.lagged``)
+    keeps its read; one that reads another component's (a :class:`SiblingRead`) is left an
+    ordinary observation, which :func:`~hybrid_aif.composition.driver.run` supplies each round
+    from the source component's carry (``Subsystem.reads``).
 
     Design: docs/design/nesting-systems.md (architecture sketch; partner modeling);
     nesting-and-coupling.md N1, N2.
@@ -1827,6 +2070,26 @@ def subsystem(
         kept = tuple(p for p in c_parents if p not in absent)
         if kept:
             C_deps.append((key, kept))
+    #  a read whose source this component holds stays on the view; a read of a sibling's belief
+    #  leaves the modality an ordinary observation, which the driver supplies from the
+    #  sibling's carry (Subsystem.reads)
+    own_factors = {c_facs[f] for f in own}
+    view_lagged = []
+    for entry in composite.lagged:
+        read = as_read(entry)
+        if read.modality not in set(view_mods):
+            continue
+        if read.source in c_facs:
+            if read.source in own_factors:
+                view_lagged.append(entry)
+        elif read.source in set(view_actions):
+            view_lagged.append(entry)
+        else:
+            raise NotImplementedError(
+                f"modality {read.modality!r} of the view of {name!r} reads the action node "
+                f"{read.source!r}, which another component chooses; a view reads the action "
+                "nodes it chooses"
+            )
     prefix = f"{name}{SEPARATOR}"
     recognition = tuple(e for e in composite.recognition or () if e.variable.startswith(prefix))
     external = tuple((n, w) for n, w in composite.external_inputs if n.startswith(prefix))
@@ -1882,6 +2145,7 @@ def subsystem(
         dims=tuple((factor, names) for factor, names in composite.dims if factor in view_facs),
         cells=tuple((factor, grid) for factor, grid in composite.cells if factor in view_facs),
         readings=tuple(view_readings),
+        lagged=tuple(view_lagged),
         subsystems=_view_metadata(composite, name, index, mod_index, set(view_nodes), A_deps),
     )
     mine = {c_facs[f] for f in own} | set(view_mods)

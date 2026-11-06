@@ -895,6 +895,132 @@ def test_lagged_refusals_and_description():
         assert np.array_equal(np.asarray(a), np.asarray(b))
 
 
+# ------------------------------------------- the read declaration (nesting-and-coupling N3)
+
+
+def _explicit_reads():
+    from hybrid_aif.reads import Read
+
+    return (
+        Read("prev_x", "x", "identity", "mode"),
+        Read("prev_type", "kind", "identity", "stats"),
+    )
+
+
+def test_a_pair_and_its_explicit_read_give_identical_results():
+    pair, params = _lagged_system()
+    explicit, _ = _lagged_system(lagged=_explicit_reads())
+    obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
+    absent = {"prev_x": None, "prev_type": None}
+    first, _ = pair.infer_states(params, {**obs, **absent}, None)
+    a, _ = pair.infer_states(params, {**obs, **absent}, None, previous=first)
+    b, _ = explicit.infer_states(params, {**obs, **absent}, None, previous=first)
+    for name in a:
+        for x, y in zip(
+            jax.tree_util.tree_leaves(a[name]), jax.tree_util.tree_leaves(b[name]), strict=True
+        ):
+            assert np.array_equal(np.asarray(x), np.asarray(y))
+    la = pair.learn(params, {**obs, **absent}, a, prev_beliefs=first)
+    lb = explicit.learn(params, {**obs, **absent}, b, prev_beliefs=first)
+    for x, y in zip(jax.tree_util.tree_leaves(la), jax.tree_util.tree_leaves(lb), strict=True):
+        assert np.array_equal(np.asarray(x), np.asarray(y))
+    assert pair._reads[0].realise == "legacy" and explicit._reads[0].realise == "mode"
+
+
+def test_a_declared_sample_draws_with_the_key_and_a_mode_does_not():
+    from hybrid_aif.reads import Read
+
+    system, params = _lagged_system(lagged=(Read("prev_type", "kind", "identity", "sample"),))
+    obs = {
+        "obs_x": jnp.asarray([1.0, -1.0]),
+        "obs_kind": jnp.asarray(2, jnp.int32),
+        "prev_x": jnp.asarray([0.0, 0.0]),
+        "prev_type": None,
+    }
+    first, _ = system.infer_states(params, obs, None)
+    with pytest.raises(ValueError, match="needs a key"):
+        system.infer_states(params, obs, None, previous=first)
+    keys = [jax.random.PRNGKey(i) for i in range(20)]
+    data = {
+        int(system._fill_lagged((None,) * 4, None, tuple(first.values()), None, False, k)[0][3])
+        for k in keys
+    }
+    assert len(data) > 1  # it draws from the belief over 3 kinds
+    # learn, given the filter's read_key, absorbs the datum the filter was given; the face's key
+    # is a different thing (it collapses the posterior) and draws nothing for a read
+    with pytest.raises(ValueError, match="read_key"):
+        system.infer_states(params, obs, None, previous=first, key=keys[0])
+    key = keys[5]
+    post, _ = system.infer_states(params, obs, None, previous=first, read_key=key)
+    assert float(jnp.abs(post["x"].chol).max()) > 0  # not collapsed
+    learned = system.learn(params, obs, post, prev_beliefs=first, read_key=key)
+    datum = int(
+        system._fill_lagged((None,) * 4, None, tuple(first.values()), None, False, key)[0][3]
+    )
+    delta = np.asarray(learned.likelihood["prev_type"].concentration) - np.asarray(
+        params.likelihood["prev_type"].concentration
+    )
+    assert delta[datum].sum() > 0 and np.delete(delta, datum, axis=0).sum() == 0
+
+
+def test_a_gaussian_source_has_no_stats():
+    from hybrid_aif.reads import Read
+
+    system, params = _lagged_system(lagged=(Read("prev_x", "x", "identity", "stats"),))
+    with pytest.raises(ValueError, match="deferred"):
+        system.infer_states(
+            params,
+            {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0), "prev_x": None, "prev_type": None},
+            None,
+        )
+
+
+def test_a_read_through_a_grid_is_a_categorical_datum_over_the_cells():
+    from hybrid_aif import Grid
+    from hybrid_aif.reads import Read
+
+    grid = Grid(shape=(2, 2), low=-3.0, high=3.0)
+    system, params = _lagged_system(lagged=(Read("prev_type", "x", grid, "mode"),))
+    with pytest.raises(ValueError, match="4 observation levels, not 3"):
+        system.infer_states(
+            params,
+            {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0), "prev_x": None, "prev_type": None},
+            None,
+        )
+
+
+def test_a_read_round_trips_in_the_document_and_a_pair_keeps_its_spelling():
+    from hybrid_aif.reads import Read
+
+    reads = (Read("prev_x", "x", "identity", "sample"), ("prev_type", "kind"))
+    system, params = _lagged_system(lagged=reads)
+    document, arrays = describe(system, params, arrays="inline")
+    assert document["factors"]["prev_x"]["likelihood"]["options"]["datum"] == {
+        "source": "x[t-1]",
+        "kernel": "identity",
+        "realise": "sample",
+    }
+    assert document["factors"]["prev_type"]["likelihood"]["options"] == {"datum": "kind[t-1]"}
+    rebuilt, _ = build(document, arrays=arrays)
+    assert rebuilt == system
+
+
+def test_replay_draws_a_declared_sample_with_its_key():
+    from hybrid_aif import replay
+    from hybrid_aif.reads import Read
+
+    system, params = _lagged_system(lagged=(Read("prev_type", "kind", "identity", "sample"),))
+    T = 4
+    rng = np.random.default_rng(3)
+    xs = jnp.asarray(np.cumsum(rng.normal(size=(T, 2)), axis=0), jnp.float32)
+    kinds = jnp.asarray(rng.integers(0, 3, size=T), jnp.int32)
+    obs = {"obs_x": xs, "obs_kind": kinds, "prev_x": jnp.zeros((T, 2))}
+    with pytest.raises(ValueError, match="needs a key"):
+        replay(system, params, obs, {}, metrics=False)
+    out = replay(system, params, obs, {}, metrics=False, key=jax.random.PRNGKey(0))
+    assert out.beliefs["z"].probs.shape == (T, 4)
+
+
 # ================================================================ the acceptance task
 
 

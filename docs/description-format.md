@@ -306,13 +306,40 @@ so a document without shared tables is unchanged. Only tabular families are acce
 variables. The variable's own parameters are named `P_<name>` by default (section 10), and its
 learned prior is written once, under that name.
 
-*2026-11-06: planned, under the format's revision rule. The existing `source` field of a
-modality record that reads a sibling component's factor is extended with the read's kernel
-(`identity`, or `indicator` with its grid) and its realisation (`sample`, `mode` or `stats`); a
-merged component is marked `nested` when every binding across its boundary is such a read or an
-`ActionControl`; an action node of a state factor has a record beside the control nodes'
-action-node records, with its kernel and realisation; a control node supplied by another
-participant is marked `held` (`design/nesting-and-coupling.md`, The format). A coupling is not part of the document.*
+**A read.** A likelihood record whose modality takes its datum from a belief of the model, not
+from an observation, carries it in `options.datum`. The pair form of `System.lagged` is the
+string `"<source>[t-1]"`, the source's belief at the previous tick: its probability vector for a
+categorical source, its location for a Gaussian one, the level for an action node. The form of a
+declared `Read` (and of a `SiblingRead`, whose source is a factor of another component, named
+with its component prefix) is a record:
+
+```json
+"options": {"datum": {
+  "source": "rover.x[t-1]",
+  "kernel": "indicator",
+  "grid": {"shape": [2, 2], "low": [0.0, 0.0], "high": [2.0, 2.0], "axes": [0, 1]},
+  "realise": "sample"
+}}
+```
+
+`source` names a state factor or an action node at the previous tick (`name[t-1]`); `kernel` is
+`identity` (the default) or `indicator`, which needs a `grid` written as a variable's `cells`
+record is, and reads a continuous source as the cell it falls in; `realise` is `sample` (the
+default), `mode` or `stats` (`stats` of a Gaussian source is refused). A source in another
+component of a composite document makes a sibling-belief read, which `build` records on the
+reader's `Subsystem.reads`. The reading modality's table has as many levels as the source (identity
+kernel) or the grid has cells (indicator). The description length prices the read as it prices a
+pair: the kernel, the realisation and the source are not yet priced (open:
+`design/description-length.md`, the 2026-11-06 note, which prices the source as a parent choice
+when the format records it).
+
+*2026-11-06: planned, under the format's revision rule, and not yet written: a merged component
+is marked `nested` when every binding across its boundary is a sibling-belief read or an
+`ActionControl` (`Subsystem.nested` exists: `merge` sets it from its bindings, and `build` derives
+it from the edges the document shows between components, a parent, a parameter variable or a read);
+an action node of a state factor has a record beside the control nodes' action-node records,
+with its kernel and realisation; a control node supplied by another participant is marked `held`
+(`design/nesting-and-coupling.md`, The format). A coupling is not part of the document.*
 
 ## 4. Families
 

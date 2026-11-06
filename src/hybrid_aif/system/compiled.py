@@ -249,7 +249,17 @@ def _counted(face: str) -> Callable:
 
 @_counted("infer_states")
 def _infer_states(
-    system, params, observations, priors, externals, present, key, previous, detail, support_floor
+    system,
+    params,
+    observations,
+    priors,
+    externals,
+    present,
+    key,
+    previous,
+    detail,
+    support_floor,
+    read_key,
 ):
     return system.infer_states(
         params,
@@ -261,6 +271,7 @@ def _infer_states(
         support_floor=support_floor,
         key=key,
         previous=previous,
+        read_key=read_key,
     )
 
 
@@ -334,6 +345,7 @@ def _learn(
     prior,
     priors,
     externals,
+    read_key,
 ):
     return system.learn(
         params,
@@ -350,6 +362,7 @@ def _learn(
         prior=prior,
         priors=priors,
         externals=externals,
+        read_key=read_key,
     )
 
 
@@ -423,6 +436,7 @@ class CompiledSystem:
         support_floor: float = SUPPORT_FLOOR,
         key: Array | None = None,
         previous: Mapping[str, Any] | None = None,
+        read_key: Array | None = None,
     ):
         """:meth:`System.infer_states`, compiled: ``(beliefs, detail)``."""
         observations = self._observations(params, observations, "infer_states")
@@ -439,6 +453,7 @@ class CompiledSystem:
             previous,
             detail,
             support_floor,
+            _key(read_key),
         )
 
     def infer_policies(
@@ -529,6 +544,7 @@ class CompiledSystem:
         prior: SystemParams | None = None,
         priors: Mapping[str, Any] | None = None,
         externals: Mapping[str, Array] | None = None,
+        read_key: Array | None = None,
     ):
         """:meth:`System.learn`, compiled: the parameters, or ``(parameters, LearnState)``."""
         observations = self._observations(params, observations, "learn")
@@ -548,6 +564,7 @@ class CompiledSystem:
             _tree(_strong, prior),
             _tree(_strong, priors),
             _values(externals),
+            _key(read_key),
         )
 
     def __getattr__(self, name: str):

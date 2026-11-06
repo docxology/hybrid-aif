@@ -143,7 +143,7 @@ def _positional_trace(
             "control nodes are of one kind, or score the recorded plan with "
             "System.score_policies"
         )
-    lagged = {modality for modality, _ in system.lagged}
+    lagged = {read.modality for read in system._reads}
     if lagged:  # a lagged modality's trace may be left out: its datum comes from the carry
         observations = {**{name: None for name in lagged}, **dict(observations)}
     obs = keyed.observations_in(names, observations, "replay")
@@ -369,9 +369,15 @@ def _replay_core(
             priors_t, params_t, ls_t = carry, params, None
         obs_t, act_t, mask_t, valid_t, plan_key_t, legal_t, ext_t, t = xs
         if system.lagged:
-            #  a lagged modality reads the carry; the first tick has none, so it is absent
+            #  a lagged modality reads the carry, pushed through its kernel and realised (a draw
+            #  takes the tick's key); the first tick has none, so it is absent
             obs_t, mask_t = system._fill_lagged(
-                obs_t, system._present(mask_t, len(obs_t)), prev_beliefs, prev_action, t == 0
+                obs_t,
+                system._present(mask_t, len(obs_t)),
+                prev_beliefs,
+                prev_action,
+                t == 0,
+                plan_key_t,
             )
         beliefs, detail = system._infer_states(
             params_t,

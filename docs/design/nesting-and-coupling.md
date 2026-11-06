@@ -151,7 +151,8 @@ it. Both are merges; nesting is a shape a merge can have, per component, and a m
 it. Friston's deep temporal models are nestings: the descending empirical prior is an internal
 interaction, which a nest permits as a distribution through `D_deps` and `H_deps`, and the
 ascending message, the lower level's posterior, is a sibling read. Jason's hierarchical model is
-a nesting. The two-tier rover is a nesting with one identification: the scheduler is the rover's
+a nesting. The two-tier rover is nested but for one identification, which by N2's definition makes its
+boundary shared rather than nested (A11): the scheduler is the rover's
 own slow tier, its reads of the position are sensing, its option is `ActionControl`, and the
 field is one home shared outright because the rover's counts and the scheduler's novelty are one
 belief by design.
@@ -332,7 +333,8 @@ The physics paragraph above stays as the caveat: a `stats` value is a bounded ef
 it lands, and `sample` is the exact form. *Alex to confirm:* this closes the earlier draft's open
 question in favour of uniformity.
 
-**N9. The demo.** It stays a merge: a nesting with one identification. The runner's four pieces
+**N9. The demo.** It stays a merge: the scheduler nested but for the one variable it shares, the
+field, so its boundary reports as shared (A11). The runner's four pieces
 become: the scheduler's cell modality reads the rover's position through the cell indicator (N3,
 `mode` to reproduce the page's run, `sample` thereafter); the option is `ActionControl`, as now;
 the field is `SharedParameter`, as now, written back by `run`'s composite form (N4) rather than
@@ -348,9 +350,9 @@ adopted and before the build.
 
 ## The format
 
-The description document extends the `source` field a bound observation's record already
-carries (today it names the component and state the modality was bound to) with the kernel
-(`identity`, or `indicator` with its grid) and the realisation of a sibling read; marks a merged
+The description document records a read on the modality record's `options.datum` entry, a
+string naming the source for a pair and, for a `Read`, a record with the source, the kernel
+(`identity`, or `indicator` with its grid) and the realisation; marks a merged
 component `nested` when N2 says so; gives an action node of a state factor a record beside the
 control nodes' action-node records, with its kernel and realisation; and marks a control node
 another participant supplies `held`. A coupling is not part of the document and stays so; a
@@ -363,7 +365,8 @@ run's record names the wires. Details at build, under the format's own revision 
   posterior equals the runner's today; under `sample` the empirical read frequency over many
   ticks matches the cell mass; under `stats` the posterior equals the filter's soft-observation
   posterior and the measured Jensen gap lies within the stated bound. `merge` reports the
-  scheduler nested.
+  scheduler's boundary as shared, the field being its one identification, and nested once the
+  field is not shared.
 - N4: `run` on the composite with the scheduler's respond in `hold` (durations twelve) and the
   rover's unwrapped; decision ticks at 0, 12, 24; the held action stands between; the field the
   composite holds after each round equals the runner's write-back today.
@@ -454,3 +457,23 @@ the demo uses neither.
 **A10. Names at the build.** `System.act` already has a `mode` keyword meaning marginal against
 policy, and its `selection` takes "stochastic" and "deterministic". The realisations `sample` and
 `mode` map onto those values; the build does not reuse `mode` as a keyword name.
+
+**A11. From the N3 build and its review (2026-11-06).** A read takes the source's *posterior* of
+the previous round, as today's `lagged` does under `replay`, `learn` and
+`infer_states(previous=)`; under `run` the mind's carry holds that posterior beside the pushed
+prior, and the driver supplies every read of a minded component from it, a component's own reads
+included. A read's draw under `sample` uses its own `read_key`, never a face's `key`, which means
+posterior collapse. The description records a read on the modality's `options.datum` entry (the
+format paragraph above, corrected: no `source` field existed to extend). The nested report is a
+tri-state `boundary` on the subsystem record: blanket (every crossing binding is a `SiblingRead`
+or a control-node `ActionControl`, and the source component of a read counts as blanket-shaped
+too), shared (any identification crosses, `SharedParameter` included, by N2's definition), or
+none (no binding crosses; such a component is not nested, the vacuous case refused);
+`BoundaryPrior` crosses nothing. So the demo's scheduler reports shared, the field being its one
+identification; "a nesting with one identification" in N9 and the acceptance list meant that, and
+now say it. The kernel and realisation of a read are not yet priced in the description length
+(open: `description-length.md`, which prices the source as a parent choice when the format
+records it). The driver finds cross reads from the composite's `lagged`, the subsystem record
+being the record and not the source of truth; a `SiblingRead` of an action node is refused; the
+planner's scoring of a read is as N3 says, the hard-outcome estimate under `stats` documented as
+an upper bound and not otherwise built.

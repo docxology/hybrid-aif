@@ -56,6 +56,7 @@ def learn(
     prior: SystemParams | None = None,
     priors: Mapping[str, Belief] | None = None,
     externals: Mapping[str, Array] | None = None,
+    read_key: Array | None = None,
 ) -> "SystemParams | tuple[SystemParams, LearnState]":
     params = system._params_in(params, "learn")
     names = system._names(params)
@@ -77,6 +78,7 @@ def learn(
         prior=None if prior is None else system._params_in(prior, "learn"),
         priors=None if priors is None else system._beliefs_in(params, priors, "learn"),
         externals=externals,
+        read_key=read_key,
     )
     if isinstance(out, tuple):
         return system._params_out(out[0]), out[1]
@@ -102,6 +104,7 @@ def _learn(
     grow: bool = True,
     priors: tuple[Belief, ...] | None = None,
     externals: Mapping[str, Array] | None = None,
+    read_key: Array | None = None,
 ) -> "SystemParams | tuple[SystemParams, LearnState]":
     """:meth:`learn` over positional tuples and the positional action. ``present`` is one
     flag per modality: a modality absent at the tick teaches its likelihood slot nothing
@@ -168,7 +171,9 @@ def _learn(
         return lr_rates is not None and skipped(lr_rates.get(f"{slot}:{name}", 1.0))
 
     if system.lagged:
-        observations, present = system._fill_lagged(observations, present, prev_beliefs, action)
+        observations, present = system._fill_lagged(
+            observations, present, prev_beliefs, action, read_key=read_key
+        )
     # structure moves with the weights: a growable factor whose weights' rate is a static
     # zero neither grows nor reduces, and a traced rate gates both at run time
     gates: dict[int, bool | Array] = {}

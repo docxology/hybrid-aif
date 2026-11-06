@@ -506,7 +506,7 @@ their namespaced names. A binding is one of two shapes. A binding that identifie
 outright (`SharedParameter`, the relay, a joint `ObservationLink`, which makes one modality
 read several components' factors) makes the components share that variable, with messages both
 ways and no blanket between them on it. A binding that is blanket-shaped (an `ActionControl`
-from a control node, or, once built, a sibling-belief read, in which a modality of one component
+from a control node, or a `SiblingRead`, in which a modality of one component
 takes another component's belief as its datum, pushed through a kernel at the source and
 realised by `sample`, `mode` or `stats`) leaves its component *nested*: its beliefs are its own,
 the rest of the particle is its external world, and it reads that world only as sensing. Separate minds
@@ -588,6 +588,44 @@ variable's reader can be kept out of its updates with a static `0.0` on the read
 table avoids adding its predictions to the counts.
 A binding that rewrites a reader's control axis (a `BoundaryPrior`, a relay) refuses a
 reader of a shared variable, since the table is not the reader's alone.
+
+**`SiblingRead(modality, source, kernel="identity", realise="sample")`** makes a modality of
+one component take its datum from a state factor of another: sensing inside one particle, with
+no action node. The datum is the source's posterior of the previous round, pushed
+through `kernel` (the identity, or a `Grid`, the indicator of its cells over a continuous
+source) and realised by `realise` (`"sample"`, a draw; `"mode"`, the argmax of a categorical
+belief or the mean of a continuous one; `"stats"`, a categorical belief's probability vector, the
+filter's soft observation). The modality's own parents explain the datum, as for any
+observation. `merge` carries the read into the composite's `System.lagged` as a
+`hybrid_aif.Read`, and records it on the reader's `Subsystem.reads`; a component's own
+`System.lagged` entries carry too, under its prefix. `subsystem` leaves the reading
+component's modality an ordinary observation, and `run`'s composite form supplies every read
+of a minded component (its own pairs and reads inside it as well) each round, in place of the
+world's sample of that modality: a read of a state takes the source mind's
+`MindCarry.posterior` (the posterior of its last round, which `agent_respond` keeps beside the
+pushed prior), a draw keyed by the round's key, and `None` (absent) on the first round, before
+the source has a posterior. `agent_respond` treats a `None` observation as absent.
+
+```python
+from hybrid_aif import Grid
+from hybrid_aif.composition import SiblingRead, merge, nested
+
+composite, params = merge(
+    {"rover": rover, "mission": scheduler},
+    {"rover": rover_params, "mission": scheduler_params},
+    [SiblingRead("mission.cell_obs", "rover.x", Grid(shape=(3, 3), low=0.0, high=3.0), "mode")],
+)
+nested(composite, "mission")  # True: its only binding across the boundary is a sibling read
+```
+
+Refused: a modality and a source in one component (a read inside a component is
+`System.lagged`); a modality whose level count is not the source's under the identity kernel,
+nor the grid's cell count under an indicator; a categorical modality reading a continuous
+source with no grid; `"stats"` of a Gaussian source, which is deferred. `nested(composite, name)`
+(also `Subsystem.nested`) is true when at least one binding crosses the component's boundary
+and every one is a `SiblingRead` or a control-node `ActionControl`; a relay, an
+`ObservationLink`, a `TargetEmission` or a `SharedParameter` across it makes the component not
+nested (`design/nesting-and-coupling.md` N2, N3).
 
 **Names a binding removed.** A node a binding removed is gone from the
 composite, and a mapping keyed by it or by its action node (an action, a node

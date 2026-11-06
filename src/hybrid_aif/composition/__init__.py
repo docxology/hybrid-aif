@@ -4,7 +4,8 @@ particles by wires, and the clock that runs them.
 - :mod:`~hybrid_aif.composition.merge` — :func:`merge` makes several Systems one particle: a
   namespaced composite whose components share latents through bindings (control-node
   identification or relay, a modality's parents, target emission, boundary prior, a shared
-  parameter variable); a component bound only by blanket-shaped bindings is nested;
+  parameter variable, a modality's datum read from another component's state); a component bound
+  only by blanket-shaped bindings, sibling-belief reads and control-node acts, is nested;
   :func:`subsystem` derives one mind's System from the composite and :func:`write_back` returns
   a view's learned parameter variables to it.
 - :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins separate particles, minds and
@@ -36,9 +37,11 @@ from hybrid_aif.composition.merge import (
     BoundaryPrior,
     ObservationLink,
     SharedParameter,
+    SiblingRead,
     TargetEmission,
     merge,
     namespaced_key,
+    nested,
     resolved_epistemic,
     subsystem,
     subsystem_factors,
@@ -54,6 +57,7 @@ __all__ = [
     "ObservationLink",
     "ProcessRecord",
     "SharedParameter",
+    "SiblingRead",
     "TargetEmission",
     "Trajectory",
     "Wire",
@@ -64,6 +68,7 @@ __all__ = [
     "hold",
     "merge",
     "namespaced_key",
+    "nested",
     "resolved_epistemic",
     "run",
     "subsystem",
