@@ -98,13 +98,15 @@ Key design commitments (rationale in the companion docs):
   blanket. An env *is* a `System`; systems compose; the outermost
   boundary interfaces with external environments (robot hardware, simulators,
   other software). **Composition is a first-class theme, not a feature**:
-  hierarchy and multi-agent influence are two constructs, chosen by topology.
-  `merge()` makes one particle, a hierarchy or any model whose parts share a
-  blanket to the world, with `subsystem()` views of its components; `couple()`
-  joins separate particles, which exchange only action and sensation. The
-  tick-semantics `driver` runs both (`design/nesting-and-coupling.md` N2,
-  `design/nesting-systems.md`); the instruments live together under
-  `hybrid_aif.composition` (v0.7).
+  hierarchy and multi-agent influence are one mechanism at two timescale tiers
+  (`design/nesting-systems.md`): a hierarchy is a system of sub-agents, each
+  keeping a blanket of its own, and its levels exchange what agents exchange,
+  sensing and acting. What differs is where the blanket lies: levels inside one
+  particle are *nested*, by `merge()`, and may read each other's beliefs as
+  sensing; separate particles are *coupled*, by `couple()`, and exchange only
+  realised actions and sensations (`design/nesting-and-coupling.md` N2). The
+  instruments, `merge()` / `couple()` / `subsystem()` and the tick-semantics
+  `driver`, live together under `hybrid_aif.composition` (v0.7).
 - **Per-node objective control and metrics.** Every node carries a mean-field
   block id; epistemic/KL terms toggle per block, and EFE/VFE come back as
   structured term trees (per-variable × per-policy × per-term) on demand.
@@ -295,16 +297,15 @@ or shared mutable state.** Colocated deployments pass the same pytrees in
 memory and may fuse all three loops into one jit'd program (the
 pymdp-style fused rollout remains the default for simulation); a deployment
 boundary serializes the identical objects (beliefs are small pytrees;
-parameters use the sidecar format; structure uses the versioned spec).
-The three loops are parts of one particle, so what they exchange is internal interaction, and
-serialising it at a deployment cut changes where the parts run, not what they are. This is not
-a crossing of a blanket, and it is not the interface of a nested hierarchy or of two coupled
-minds: inside a nest a slow component reads a fast one's belief as sensing (a sibling-belief
-read, realised as a sample, a mode or the belief's statistics) and the descending empirical
-prior is an internal interaction (`D_deps`, `H_deps`); between separate minds only action and
-sensation cross, and a parameter crosses only as a report of counts (`design/nesting-and-coupling.md` N1,
-N2, N6, N8).
-One honest asymmetry: **end-to-end gradient flows
+parameters use the sidecar format; structure uses the versioned spec). This
+contract is AIF-native rather than bolted on: timescale-separated levels
+already communicate by passing distribution parameters as messages —
+pseudo-observations upward, empirical priors downward (parametric depth; in
+the library a sibling-belief read realised as the belief's statistics, and
+`D_deps` / `H_deps`, `design/nesting-and-coupling.md` N3, N7) — so the
+deployment interface and the hierarchical-model interface are the same kind
+of object. Between separate particles the same statistics cross only as the
+realised value of an action (N1, N8). One honest asymmetry: **end-to-end gradient flows
 cannot cross a serialization boundary** — training that differentiates
 through planning (differentiable EFE, distillation losses through rollouts)
 requires colocation; cloud learning otherwise consumes logged traces.
