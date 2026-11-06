@@ -222,7 +222,7 @@ def make_mind(
         q_pi, tree, policies = compiled.infer_policies(
             params, beliefs, planner=planner, metrics=True, return_policies=True
         )
-        v_plans = policies  # (1, policy_len, 2): the gradient planner returns its best plan
+        v_plans = policies  # (starts, policy_len, 2): every warm start, q_pi on the picked one
         best = int(jnp.argmax(q_pi.probs))
         action = {pre + "a_v": v_plans[best, 0]}
         pushed = compiled.update_empirical_prior(params, beliefs, action)
@@ -532,6 +532,23 @@ def downsampled_maps():
     )
 
 
+def dynamics_record():
+    """The true dynamics a velocity plan integrates under, per terrain (firm, rough, ice)."""
+    return dict(
+        dt=float(wd.DT),
+        gain=[float(g) for g in wd.GAIN],
+        keep=[float(k) for k in wd.KEEP],
+        terrain_sd=[float(v) for v in wd.TERRAIN_SD],
+        terrain_names=list(wd.TERRAIN_NAMES),
+        rule=(
+            "per tick, with the terrain at the current position: position += dt * velocity (the "
+            "velocity before the tick), velocity = keep * velocity + gain * command (command in "
+            "[-1, 1]^2) + noise of sd terrain_sd; then the position is clipped to the field, "
+            "the velocity into a wall is zeroed, and an empty energy band zeroes the gain"
+        ),
+    )
+
+
 def meta_record(ticks, camera_report, grid):
     return dict(
         library_version=__version__,
@@ -540,6 +557,7 @@ def meta_record(ticks, camera_report, grid):
         field=[list(wd.FIELD[0]), list(wd.FIELD[1])],
         start=list(wd.START),
         world=downsampled_maps(),
+        dynamics=dynamics_record(),
         names=NAMES,
         image=dict(
             side=wd.IMG_SIDE,

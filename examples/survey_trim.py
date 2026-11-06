@@ -29,9 +29,10 @@ def rounded(obj):
     return obj
 
 
-def trim_policies(tick, limit=MAX_POLICIES):
+def trim_policies(tick, limit=MAX_POLICIES, per_option=False):
     """Keep the ``limit`` best policies of ``tick`` (a rover tick or a slow step), the chosen one
-    among them, in their original order with ``chosen`` re-indexed."""
+    among them, in their original order with ``chosen`` re-indexed. With ``per_option`` (a slow
+    step) the best sequence of every first option is kept as well."""
     policies = tick.get("policies")
     if not policies or len(policies) <= limit:
         return
@@ -42,6 +43,11 @@ def trim_policies(tick, limit=MAX_POLICIES):
         if len(keep) >= limit:
             break
         keep.add(i)
+    if per_option:  # the best sequence of each first option, for the slow tier's bars
+        best = {}
+        for i in order:
+            best.setdefault(policies[i]["options"][0], i)
+        keep |= set(best.values())
     kept = sorted(keep)
     tick["policies"] = [policies[i] for i in kept]
     tick["chosen"] = kept.index(chosen)
@@ -60,7 +66,7 @@ def main(src, out):
         for tick in run["ticks"]:
             trim_policies(tick)
             if tick.get("slow", {}).get("decision"):
-                trim_policies(tick["slow"])
+                trim_policies(tick["slow"], per_option=True)
             pack(tick)
     meta = bundle.setdefault("meta", {})
     meta.setdefault("image", {})["encoding"] = "base64 of the pixel bytes"
