@@ -1,7 +1,8 @@
 # The launch page
 
-A static page that replays a precomputed run of the two-tier rover showcase. GitHub Pages
-serves `docs/`; `docs/index.html` redirects here.
+A static page that replays a precomputed run of the survey rover showcase: a mapping rover with
+solar charging, a fast rover tier and a slow survey scheduler that read one learned terrain
+table. GitHub Pages serves `docs/`; `docs/index.html` redirects here.
 
 Files:
 
@@ -13,32 +14,59 @@ Files:
 To regenerate the data:
 
 ```bash
-python examples/showcase_rover.py --out OUT_DIR            # the whole grid, one part file per setting
-python examples/showcase_rover.py --out OUT_DIR --assemble # OUT_DIR/bundle.json
-python examples/showcase_trim.py OUT_DIR/bundle.json docs/site
+python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR            # both settings, one part file each
+python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR --assemble # OUT_DIR/bundle.json
+python examples/survey_trim.py OUT_DIR/bundle.json docs/site
 ```
 
-The first call trains and caches the camera's decoder and encoder in `OUT_DIR` on its first
-run. Settings can be run in parallel with `--settings id,id`.
+The first call trains and caches the camera's decoder in `OUT_DIR` on its first run. Settings can
+be run in parallel with `--settings two-level,one-level`.
 
-Bundle schema notes for the camera and the settings:
+Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`, `one-level`),
+`mdl`, `description`.
 
-- `meta.image`: `side` (pixels per side), `layout` (row 0 is the largest y offset from the
-  rover, columns run along x), `half_width` (the patch spans plus or minus this many field units
-  around the rover), `camera_report` (the held-out numbers of the decoder and the recogniser).
-- Per tick, `img` and `recon` are `side` x `side` uint8 rows of that patch (observed, and the
-  decoder's mean at the posterior mean and the most likely terrain). `encoder` is the recogniser's
-  probability vector over the three terrain levels, applied in the encoder setting and run for
-  comparison in the others. `camera` holds the log evidence of the image (inverted settings) or
-  the recogniser's `normaliser` and the `covered_term` (encoder setting).
-- Per setting, `infogain` lists the modalities whose information gain the rover planner scores
-  (`fix`, `img`; empty when the epistemic terms are off). The page shows it under the setting
-  selector.
-- The rover tier has two modalities, `fix` and `img`. The recognition entry in `graph.recognition`
-  reads `rover.img` and targets the `rover.terrain` state factor.
+- `meta.grid`: the rover's cell grid (`shape` 16 x 16, `low`, `high`); `meta.field` is the field
+  extent `[[x0, x1], [y0, y1]]`; `meta.start` the start position.
+- `meta.world`: 61 x 61 maps over the field (`xs`, `ys`), each indexed `[ix][iy]`, x first:
+  `height`, `light` (illumination), `openness`, `sd_fix` (the satellite fix's noise sd, larger
+  where terrain blocks the sky), `slope`, `terrain` (class index per `meta.names.terrain`).
+- `meta.names`: `terrain` (firm, rough, ice) and `energy` (empty, low, medium, full).
+- `meta.tiers`: `slow_ticks` (12), `options` (survey sector 1 to 4, charge), `zones`,
+  `zone_split` (the field's quadrants are split at these x and y), `sector_centres`,
+  `pinned_option` (the option of the one-level run).
+- `meta.image`: `side` (48), `layout` (row 0 is the top of the picture, the top quarter is sky;
+  the camera looks along +y), `camera_report`. `meta.map_layout` describes `map` and `counts`.
+- `meta.dynamics`: `dt`, `gain` and `keep` per terrain class, `terrain_sd`, `terrain_names` and
+  `rule`, a sentence giving the integration rule. The page rolls each plan forward with it.
+- `meta.sign_convention`: every leaf is added to G with its sign applied, so an epistemic leaf
+  appears negative.
+- `graph`: `tiers` (factors, modalities, controls per tier), `edges` (`from`, `to`, `kind`:
+  transition, likelihood, target, parameter) and `parameters` (`[{name: "rover.field", readers:
+  [...]}]`). The viewer places the nodes by hand (the model is fixed) and draws the parameter
+  variable once, with an edge to each reader.
+- Per tick of a run: `t`, `v`, `true_x` (position and velocity), `true_terrain`,
+  `true_energy` (`band`, `level`), `stalled`, `fix`, `gauge`, `img` and `recon` (48 x 48 uint8,
+  observed and the decoder's prediction at the belief), `belief` (`components` with `w`, `mu`,
+  `cov`; `terrain`; `energy`; `velocity`; `mean`), `policies` (the rover tier's four warm
+  starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,
+  `free_energy`, `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
+  first), `counts` (observations absorbed per cell), `coverage` (fraction of cells whose top
+  probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
+  force).
+- Per tick of the two-level run, `slow`: `decision` (true every twelfth tick), and on a decision
+  `option`, `cell`, `efe_by_option` (G of the best sequence per first option), `q_by_option`,
+  `policies` (the best option sequences, trimmed to keep at least the best one per first option: `options`, `terms` with the `infogain`
+  `transition:mission.map` leaf and the `risk` `mission.energy` leaf, `G`, `q_pi`), `chosen`,
+  `belief` (`energy`, `visit`) and `seconds`. The one-level run has no `slow`.
+- `mdl.components`: one entry per priced component (`name`, `kind`, `nats`, `exact`, `entries`),
+  including `parameter:rover.field`, priced once; the two readers' `transition` entries carry
+  structure only (`entries` 0). The page groups them by tier from the name's prefix.
 
-Testing: open `index.html` from disk or serve the folder; the URL hash
-`#t=30&tier=mission&view=terms&setting=<id>&theme=dark` sets the initial view, and
+Testing: open `index.html` from a local server (or from disk); the URL hash
+`#t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` sets the initial view, and
 `window.__app.set({...})` drives it from a script.
 
-Images: after `showcase_trim.py`, each tick's `img` and `recon` is one base64 string of the pixel bytes in the layout `meta.image.layout` describes (`meta.image.encoding` says so); before trimming they are rows of 0..255 integers. The viewer accepts both forms.
+Images: after `survey_trim.py`, each tick's `img`, `recon` and `map` is one base64 string of the
+bytes in the layout `meta.image.layout` and `meta.map_layout` describe (`meta.image.encoding` and
+`meta.map_encoding` say so); before trimming they are lists. The viewer accepts both forms.
+`static/*.png` are screenshots of the page at tick 150 of the two-level run.
