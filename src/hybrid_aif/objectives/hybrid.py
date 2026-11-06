@@ -102,6 +102,7 @@ from hybrid_aif.objectives.discrete import (
     terminal_risk,
     utility,
 )
+from hybrid_aif.objectives.pooling import Pooled, scale_pooled
 from hybrid_aif.objectives.presence import Presence, mask_absent, presence_at, static_absent
 
 #: The term holding what a per-channel sum miscounts when several channels read one Gaussian
@@ -1720,6 +1721,7 @@ def make_step_terms(
     layout: ControlLayout | None = None,
     sensed: SensedNodes | None = None,
     cells: dict[int, Grid] | None = None,
+    pooled: Pooled | None = None,
 ):
     """Per-step term evaluator over distribution-object beliefs.
 
@@ -1754,7 +1756,8 @@ def make_step_terms(
     ``System.B_control_deps``. A :class:`BeliefPair` in the carry is read as its predictive
     member by every consumer but the linear-Gaussian information-gain leaves and, under
     ``utility_infogain``, the interaction, which read its epistemic member
-    (``StepContext.qs_epistemic``). ``present`` is a
+    (``StepContext.qs_epistemic``). ``pooled`` multiplies a declared table's novelty leaf by the
+    count of the step's level of its control node. ``present`` is a
     :class:`~hybrid_aif.objectives.presence.Presence`: a modality absent at a step has its
     leaves zeroed there and drops out of its factor's interaction and correlation.
     ``branching`` marks a closure built for a branching (closed-loop) planner,
@@ -1800,6 +1803,7 @@ def make_step_terms(
         c_deps=c_deps,
         layout=layout,
         cells=cells,
+        pooled=pooled,
     )
     if sensed is None:
         return _make_step_terms(
@@ -1887,6 +1891,7 @@ def _make_step_terms(
     c_deps: Mapping[str, TargetParents] | None = None,
     layout: ControlLayout | None = None,
     cells: dict[int, Grid] | None = None,
+    pooled: Pooled | None = None,
 ):
     """:func:`make_step_terms` over declarations every channel reads whole."""
     mods, facs = modality_names, factor_names
@@ -2346,6 +2351,7 @@ def _make_step_terms(
                 trees.append(risk(qs, kl_targets, facs))
             trees.append(cross_entropy_risk(qs, ce_targets, facs))
         tree = registry.stamp_tree(merge(*trees), approx)
+        tree = scale_pooled(tree, pooled, action, layout)
         if present_t is not None:
             tree = mask_absent(tree, present_t, mods)
         return tree

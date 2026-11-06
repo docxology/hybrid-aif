@@ -409,6 +409,28 @@
               "type": "string",
               "minLength": 1
             },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            },
             "steps": {
               "const": "0"
             }
@@ -490,6 +512,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             },
             "steps": {
               "const": "1+"
@@ -573,6 +617,28 @@
               "type": "string",
               "minLength": 1
             },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            },
             "steps": {
               "const": "all"
             }
@@ -654,6 +720,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             },
             "steps": {
               "const": "all"
@@ -737,6 +825,28 @@
               "type": "string",
               "minLength": 1
             },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            },
             "steps": {
               "const": "all"
             }
@@ -818,6 +928,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             }
           },
           "dependentSchemas": {
@@ -897,6 +1029,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             }
           },
           "dependentSchemas": {
@@ -976,6 +1130,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             }
           },
           "dependentSchemas": {
@@ -1055,6 +1231,28 @@
             "parameter": {
               "type": "string",
               "minLength": 1
+            },
+            "readings": {
+              "type": "object",
+              "required": [
+                "control",
+                "counts"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "counts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
             }
           },
           "dependentSchemas": {
@@ -1135,6 +1333,28 @@
           "parameter": {
             "type": "string",
             "minLength": 1
+          },
+          "readings": {
+            "type": "object",
+            "required": [
+              "control",
+              "counts"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "control": {
+                "type": "string",
+                "minLength": 1
+              },
+              "counts": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
           },
           "steps": {
             "enum": [

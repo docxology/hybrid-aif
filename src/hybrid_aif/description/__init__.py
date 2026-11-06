@@ -1108,6 +1108,17 @@ def _base(child: str, label: str) -> str:
     return _qualified(child, lambda name: f"{name}_{label}")
 
 
+def _with_readings(
+    record: dict[str, Any], system: System, params: SystemParams, name: str
+) -> dict[str, Any]:
+    """``record`` with the table's declared pooled reading: the control node and the counts."""
+    for table, node in system.readings:
+        if table == name:
+            counts = np.asarray(params.readings[name], np.float64).tolist()
+            return {**record, "readings": {"control": node, "counts": counts}}
+    return record
+
+
 def _with_parents(record: dict[str, Any], parents: list[str]) -> dict[str, Any]:
     if not parents:
         return record
@@ -1308,6 +1319,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
                 b_parents.append(f"{states[i]}[t]" if same_step else states[i])
             else:
                 b_parents.append(nodes[i])
+        record = _with_readings(record, system, params, s)
         w.record(s, "transition", _with_parents(record, b_parents))
 
     for m, o in enumerate(mods):
@@ -1326,6 +1338,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         lagged = dict(system.lagged).get(o)
         if lagged is not None:  # the datum read from the carry (structure-learning.md S8)
             record = {**record, "options": {**record.get("options", {}), "datum": f"{lagged}[t-1]"}}
+        record = _with_readings(record, system, params, o)
         w.record(o, "likelihood", _with_parents(record, [parent_name(g) for g in system.A_deps[m]]))
 
     for k, a_name in enumerate(actions):
@@ -1951,7 +1964,7 @@ class _Learned(NamedTuple):
     address: str
 
 
-_RECORD_KEYS = ("family", "parameter", "parents", "parameters", "options", "steps")
+_RECORD_KEYS = ("family", "parameter", "parents", "parameters", "options", "steps", "readings")
 _LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
 _TERM_KEYS = ("term", "on", "parameters", "options", "model")
 _RELATIONS = ("controls", "observed", "external")
@@ -2429,6 +2442,7 @@ class _Model:
         factors = self._section("factors", {})
         self.factors: list[_Factor] = []
         self.reads: dict[tuple[str, str], str] = {}
+        self.pooled: dict[str, tuple[str, list]] = {}
         for child, block in factors.items():
             with self.noting():
                 if child not in self.variables:
@@ -2455,6 +2469,28 @@ class _Model:
             raise self.fail(
                 f"{address} has key(s) {unknown}; a factor record has {list(_RECORD_KEYS)}"
             )
+        pooled = record.get("readings")
+        if pooled is not None:
+            if label not in ("transition", "likelihood"):
+                raise self.fail(
+                    f"{address}: only a transition or likelihood record pools readings, and this "
+                    f"one is under {label!r}"
+                )
+            if (
+                not isinstance(pooled, Mapping)
+                or set(pooled) != {"control", "counts"}
+                or not isinstance(pooled["control"], str)
+                or not isinstance(pooled["counts"], list)
+                or not all(
+                    isinstance(c, int | float) and not isinstance(c, bool) and c > 0
+                    for c in pooled["counts"]
+                )
+            ):
+                raise self.fail(
+                    f"{address}.readings is {{'control': <control node>, 'counts': [positive "
+                    f"number per level]}}, got {pooled!r}"
+                )
+            self.pooled[child] = (pooled["control"], pooled["counts"])
         named = record.get("parameter")
         if named is not None:
             if label not in ("transition", "likelihood"):
@@ -4840,6 +4876,12 @@ class _Model:
                 f"variables {stray} carry cells, which grids a latent for the tables reading "
                 "it; only a latent's record carries it"
             )
+        for child, (node, _) in self.pooled.items():
+            if node not in nodes:
+                raise self.fail(
+                    f"factors[{child!r}].readings pools over {node!r}, which is not a control "
+                    f"node of the document ({list(nodes)})"
+                )
         kwargs: dict[str, Any] = dict(
             B_deps=B_deps,
             A_deps=A_deps,
@@ -4853,6 +4895,7 @@ class _Model:
             reduction_period=self.config["reduction_period"],
             reduction_pairs=self.config["reduction_pairs"],
             lagged=tuple((o, self.lagged[o]) for o in mods if o in self.lagged),
+            readings=tuple((child, node) for child, (node, _) in self.pooled.items()),
             D_deps=D_deps,
             H_deps=H_deps,
             C_deps=C_deps,
@@ -4887,6 +4930,10 @@ class _Model:
             control=dict(self.boxes),
             actuator=actuator,
             durations=dict(self.durations),
+            readings={
+                child: jnp.asarray(counts, jnp.result_type(float))
+                for child, (_, counts) in self.pooled.items()
+            },
             parameters={name: parameters[name] for name in self.homes},
         )
         return system, params
@@ -5014,6 +5061,19 @@ def schema() -> dict[str, Any]:
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/names"}},
         "options": {"type": "object"},
         "parameter": {"type": "string", "minLength": 1},
+        "readings": {
+            "type": "object",
+            "required": ["control", "counts"],
+            "additionalProperties": False,
+            "properties": {
+                "control": {"type": "string", "minLength": 1},
+                "counts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "number", "exclusiveMinimum": 0},
+                },
+            },
+        },
     }
 
     def record(steps: object) -> dict[str, Any]:

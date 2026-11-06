@@ -548,6 +548,10 @@ def merge(
     - A continuous control node's box (``params.control``) and an action node's kernel
       (``params.actuator``) move with their nodes, under the namespaced names; a node identified
       with a driver's node leaves its box and its action node, the driver's governing.
+    - ``readings`` (a table's pooled reading, ``System.readings`` and ``params.readings``) carries
+      under the component's prefix, the control node following a same-step identification to the
+      driver's; a node a relay or ``BoundaryPrior`` removed raises. A view carries the entries of
+      its own tables and raises where the node is another component's.
     - ``params.durations`` carries under the component's prefix; a round has one clock, so two
       components that both declare durations, or a binding that removes the node carrying them,
       raise (design: step-durations.md T1).
@@ -608,6 +612,8 @@ def merge(
     epistemic_keys: list[str] = []
     dims: list[tuple[str, tuple[str, ...]]] = []
     cells: list[tuple[str, object]] = []
+    readings: list[tuple[str, str]] = []
+    reading_counts: dict[str, object] = {}
     C_deps: list[tuple[str, tuple[str, ...]]] = []
     durations: dict[str, object] = {}
     parameters: dict[str, object] = {}  # the named parameter variables, by composite name
@@ -715,6 +721,11 @@ def merge(
         terms.extend(namespaced_term(name, key) for key in system.terms)
         dims.extend((f"{name}{SEPARATOR}{factor}", names) for factor, names in system.dims)
         cells.extend((f"{name}{SEPARATOR}{factor}", grid) for factor, grid in system.cells)
+        readings.extend(
+            (f"{name}{SEPARATOR}{table}", f"{name}{SEPARATOR}{node}")
+            for table, node in system.readings
+        )
+        reading_counts.update({f"{name}{SEPARATOR}{k}": v for k, v in p.readings.items()})
         C_deps.extend(
             (namespaced_key(name, key), tuple(namespaced_key(name, p) for p in parents))
             for key, parents in system.C_deps
@@ -1060,6 +1071,18 @@ def merge(
     #  an observed action node, held as -(node + 1), takes its column among the live nodes: the
     #  composite's action node k sits at len(B_deps) + k
     live_nodes = [k for k, node in enumerate(nodes) if node.live]
+    pooled_over = []
+    for table, node in readings:
+        final = resolve(node)
+        k = node_index.get(final)
+        if k is None or not nodes[k].live:
+            raise ValueError(
+                f"merge: {table!r} pools its reading over the control node {node!r}, which a "
+                "binding removed (relayed into a state or terminated with a BoundaryPrior), so "
+                "its count has no level to follow; identify the node with a driver's instead, "
+                "or drop the binding"
+            )
+        pooled_over.append((table, final))
     n_states = len(factor_names)
     n_columns = n_states + len(live_nodes)
     for m, deps in enumerate(A_deps):
@@ -1284,6 +1307,7 @@ def merge(
         factor_names=(*factor_names, *(nodes[k].name for k in live)),
         dims=tuple(dims),
         cells=tuple(cells),
+        readings=tuple(pooled_over),
         recognition=tuple(recognition_decl) or None,
         external_inputs=tuple(external_inputs),
         subsystems=tuple(metadata),
@@ -1292,6 +1316,7 @@ def merge(
     for (slot, i), home in reads.items():  # every reader's position holds its variable's table
         (transition if slot == "transition" else likelihood)[i] = parameters[home]
     composite_params = SystemParams(
+        readings=reading_counts,
         parameters=parameters,
         references=tuple(sorted((slot, i, home) for (slot, i), home in reads.items())),
         transition=tuple(transition),
@@ -1731,6 +1756,18 @@ def subsystem(
     view_facs = tuple(c_facs[f] for f in facs)
     view_mods = tuple(c_mods[m] for m in mods)
     view_actions = tuple(composite.action_names[k] for k in ours)
+    own_tables = {c_facs[f] for f in own} | set(c_mods[m] for m in mods)
+    view_readings = []
+    for table, node in composite.readings:
+        if table not in own_tables:
+            continue  # a stub's reading is not this view's to score
+        if node not in view_nodes:
+            raise NotImplementedError(
+                f"{table!r} of the view of {name!r} pools its reading over {node!r}, a control "
+                "node another component chooses, so the view would score a count it cannot "
+                "follow; declare the table's reading over a node this component chooses"
+            )
+        view_readings.append((table, node))
     #  a target on a node goes with its view while the view still chooses it
     contracted: dict[str, object] = {}
     C_deps = []
@@ -1786,6 +1823,7 @@ def subsystem(
         control={k: v for k, v in params.control.items() if k in set(view_nodes)},
         actuator={k: v for k, v in params.actuator.items() if k in set(view_actions)},
         durations={k: v for k, v in params.durations.items() if k in set(view_nodes)},
+        readings={t: params.readings[t] for t, _ in view_readings},
         precision=params.precision,
     )
     view = System(
@@ -1812,6 +1850,7 @@ def subsystem(
         factor_names=(*view_facs, *view_nodes),
         dims=tuple((factor, names) for factor, names in composite.dims if factor in view_facs),
         cells=tuple((factor, grid) for factor, grid in composite.cells if factor in view_facs),
+        readings=tuple(view_readings),
         subsystems=_view_metadata(composite, name, index, mod_index, set(view_nodes), A_deps),
     )
     mine = {c_facs[f] for f in own} | set(view_mods)

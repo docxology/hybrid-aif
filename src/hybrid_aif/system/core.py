@@ -86,6 +86,7 @@ from hybrid_aif.objectives import TermTree
 from hybrid_aif.objectives import amortized as _amortized_terms
 from hybrid_aif.objectives import closed_loop as _closed_loop
 from hybrid_aif.objectives import hybrid as _hybrid
+from hybrid_aif.objectives import pooling as _pooling
 from hybrid_aif.objectives.discrete import resolve_conditional_targets
 from hybrid_aif.objectives.presence import Presence
 from hybrid_aif.planning.base import (
@@ -330,6 +331,10 @@ class SystemParams(eqx.Module):
     #   the policy precision gamma as a scalar array, traced through every face: q_pi ~
     #   softmax(-precision * G + log E). ``None`` reads ``System.gamma``. Design:
     #   docs/design/recompilation.md R5
+    readings: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
+    #   the reading counts of ``System.readings``, by the named factor or modality: one positive
+    #   count per level of its control node, the fast readings one slow reading pools under that
+    #   level. Read only by the novelty term of that table. Design: step-durations.md T10
     parameters: dict[str, TabularHome] = eqx.field(default_factory=dict, converter=_strong)
     #   named parameter variables, by name: a tabular declaration (a table, or a Dirichlet over
     #   one) that a ``transition`` or ``likelihood`` entry reads through ``Parameter(name)``.
@@ -668,6 +673,11 @@ class System(eqx.Module):
     #   modality's own parents explain that value, so a factor can emit what the model just
     #   believed. An explicit observation for the modality wins over the carry; without either
     #   (the first tick) the modality is absent. Design: structure-learning.md S8
+    readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
+    #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
+    #   at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
+    #   control node's at that step, and its novelty term is scaled by that count. A table not
+    #   named pools one. Design: step-durations.md T10
     reduction_period: int | None = eqx.field(static=True, default=None)
     #   the schedule of Bayesian model reduction on the growable factors: every
     #   ``reduction_period``-th call of ``learn`` runs :meth:`reduce` on each of them, the
@@ -1000,6 +1010,7 @@ class System(eqx.Module):
             )
         self._table  # noqa: B018  (validates the control nodes)
         self._check_lagged()
+        self._check_readings()
         self._check_C_deps()
         self._check_cells()
 
@@ -1962,6 +1973,55 @@ class System(eqx.Module):
                     f"lagged: modality {modality!r} reads {source!r} at the previous tick, which "
                     f"is neither a state factor {list(facs)} nor an action node {list(actions)}"
                 )
+
+    def _check_readings(self) -> None:
+        if not self.readings:
+            return
+        table = self._table
+        facs, mods, nodes = table.state_names, self.modality_names, table.control_names
+        seen = set()
+        for pair in self.readings:
+            if not (isinstance(pair, tuple) and len(pair) == 2):
+                raise ValueError(
+                    "readings holds (factor or modality, control node) pairs of names, "
+                    f"got {pair!r}"
+                )
+            name, node = pair
+            if name in facs and name in mods:
+                raise ValueError(
+                    f"readings names {name!r}, which is both a factor and a modality; rename one"
+                )
+            if name not in facs and name not in mods:
+                raise ValueError(
+                    f"readings names {name!r}, which is neither a state factor {list(facs)} nor "
+                    f"a modality {list(mods)}"
+                )
+            if name in seen:
+                raise ValueError(f"readings names {name!r} twice")
+            seen.add(name)
+            if node not in nodes:
+                raise ValueError(
+                    f"readings: {name!r} pools its reading over {node!r}, which is not a control "
+                    f"node of this System ({list(nodes)}); a reading pools over the System's own "
+                    "node"
+                )
+
+    def _pooled(self, params: SystemParams) -> "_pooling.Pooled | None":
+        """The declared reading counts as the planner's per-step scales, or ``None``."""
+        if not self.readings:
+            return None
+        params = self._p(params)
+        nodes = self._table.control_names
+        mods = self.modality_names
+        entries = tuple(
+            _pooling.PooledEntry(
+                f"likelihood:{name}" if name in mods else f"transition:{name}",
+                nodes.index(node),
+                jnp.asarray(params.readings[name], jnp.result_type(float)),
+            )
+            for name, node in self.readings
+        )
+        return _pooling.Pooled(entries)
 
     def _with_lagged(self, observations: Mapping[str, Array | None]) -> Mapping:
         """``observations`` with a ``None`` entry for every lagged modality it leaves out: a

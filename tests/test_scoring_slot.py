@@ -48,6 +48,7 @@ GROUPS: dict[str, frozenset[str]] = {
             "durations",
             "parameters",
             "references",
+            "readings",
         }
     ),
     # 2: the closed-loop factors — these two and no others

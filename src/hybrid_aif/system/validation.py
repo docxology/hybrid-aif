@@ -15,10 +15,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
-from hybrid_aif.controls import FLOAT, declared_parents, effective_control_deps
+from hybrid_aif.controls import FLOAT, LEVEL, declared_parents, effective_control_deps
 from hybrid_aif.distributions import (
     ConditionalCategorical,
     ConditionalDirichlet,
@@ -280,6 +281,7 @@ def _validate(
     _validate_cells(system, params, facs)
     _validate_table_arity(system, params, facs)
     _validate_likelihood_parents(system, params, facs)
+    _validate_readings(system, params)
     system._row_mounts(params)  # raises on a non-amortized System that declares rows
     space = system._space(params)  # node kinds and sizes; readers that disagree raise
     if system._is_amortized(params):
@@ -470,6 +472,64 @@ def _validate_likelihood_parents(
                     f"{a.parent_shape[pos]} entries, but its parent {facs[g]!r} has {size} "
                     "levels; give the table one entry per level of each parent"
                 )
+
+
+def _validate_readings(system: System, params: SystemParams) -> None:
+    """``System.readings`` against the params: an entry per declared table, each a positive count
+    per level of a discrete control node of this System, over a learnable (Dirichlet) table."""
+    declared = {name for name, _ in system.readings}
+    given = set(params.readings)
+    if not declared and not given:
+        return
+    if system._is_amortized(params):
+        raise NotImplementedError(
+            "readings on an amortized (neural state-space) System: the pooled count scales a "
+            "tabular table's novelty term, which the amortized path does not compute"
+        )
+    if declared - given or given - declared:
+        raise ValueError(
+            f"readings declares {sorted(declared)} and params.readings holds {sorted(given)}; "
+            "each declared table needs its counts, and a count names a declared table"
+        )
+    table = system._table
+    space = system._space(params)
+    facs, mods = table.state_names, system.modality_names
+    _, selected_mods, selected_facs = system._term_targets(params, planning=False)
+    for name, node in system.readings:
+        slot = "likelihood" if name in mods else "transition"
+        decl = (
+            params.likelihood[mods.index(name)]
+            if name in mods
+            else params.transition[facs.index(name)]
+        )
+        if not isinstance(decl, ConditionalDirichlet):
+            raise ValueError(
+                f"readings: {slot}:{name} holds a {type(decl).__name__}, and a pooled reading "
+                "scales the novelty of a learnable table (a ConditionalDirichlet, directly or "
+                "through a parameter variable)"
+            )
+        k = table.control_names.index(node)
+        if space.kinds[k] != LEVEL:
+            raise ValueError(
+                f"readings: {name!r} pools over {node!r}, a continuous control node; a count is "
+                "one per level of a discrete node"
+            )
+        chosen = (
+            mods.index(name) in selected_mods if name in mods else facs.index(name) in selected_facs
+        )
+        if not chosen:
+            raise ValueError(
+                f"readings: {name!r} pools the novelty term {slot}:{name}, which epistemic does "
+                f"not select, so the count would scale nothing; add {slot}:{name!r} to epistemic"
+            )
+        counts = jnp.asarray(params.readings[name])
+        if counts.shape != (space.sizes[k],):
+            raise ValueError(
+                f"readings[{name!r}] has shape {tuple(counts.shape)}; node {node!r} has "
+                f"{space.sizes[k]} level(s), one positive count each"
+            )
+        if not isinstance(counts, jax.core.Tracer) and not bool(jnp.all(counts > 0.0)):
+            raise ValueError(f"readings[{name!r}] must be positive counts, got {counts.tolist()}")
 
 
 def _refuse_shared_controls(

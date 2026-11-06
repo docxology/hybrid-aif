@@ -540,6 +540,7 @@ def _context_without_control_risk(
             layout=space.layout,
             sensed=sensed,
             cells=system._cell_parents(),
+            pooled=system._pooled(params),
         )
         terminal_terms_fn = _hybrid.make_terminal_terms(
             params.terminal_targets,
@@ -618,6 +619,7 @@ def _context_without_control_risk(
         c_deps=system._effective_C_deps(),
         sensed=sensed,
         present=present_mask,
+        pooled=system._pooled(params),
     )
     terminal_terms_fn = make_terminal_terms(
         tables, num_factors, system._facs, system._effective_H_deps(), branching=branching

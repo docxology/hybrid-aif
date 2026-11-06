@@ -175,6 +175,7 @@ that child:
 | `parameters` | the factor's static arguments, keyed by the family's field names, each value a parameter variable's name; a field that is itself a module is a nested record of names (`"innovations": {"loc": ..., "chol": ...}`) |
 | `options` | the family's configuration (activation, head, loss, ...); absent options take the family's defaults |
 | `steps` | the steps the record applies at: `"0"`, `"1+"` or `"all"` (section 3.4) |
+| `readings` | on a `transition` or `likelihood` record of a learnable table: `{"control": "<node>", "counts": [...]}`, the fast readings one reading of the table pools under each level of that control node (its novelty term is scaled by the count at the step's level); the description length prices nothing for it |
 
 Layout is never written: the number of parent axes, the parents' widths and the child's size are
 derived from `parents` and the variables' domains, and every array's shape is checked against

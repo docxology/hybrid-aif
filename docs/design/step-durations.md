@@ -362,3 +362,37 @@ fixed; 2,469 tests, the notebook gate green.
 - **Reviewer could not verify:** the corrected closed-loop leaf of a level-changing plan against
   an independent Riccati reference (the per-step weights were checked at every step, the
   recursion's indexing read); the amortized-path refusal (no fixture).
+
+**T10: a pooled reading of a learnable table (amendment 2026-11-05, Fable; first customer the
+survey scheduler of `terrain-field.md`).** T7 says a slow System's reading is scored once per
+step "with its expected precision", and its acceptance test declares that precision pooled over
+the option's duration (`n·Λ` for `n` fast readings). T4 says "the objective never reads
+durations": the slow model's declarations carry the pooled quantity, and a helper may write them
+from the durations. The amendment applies both to a slow factor whose table is learnable, where
+the reading's precision is a count. The survey scheduler's `map` factor reads the shared terrain
+field at the cell the survey visits; the fast tier makes about one reading per tick, so a
+twelve-tick survey pools about twelve readings of distinct cells, and scoring one credited the
+scheduler a tenth of the information it would gather against the whole energy cost of the trip
+(measured: the unvisited sector's option stayed a few hundredths of a nat behind the visited one
+at every decision, so the scheduler never left its first sector).
+
+- **Declaration.** `System(readings=(("<factor>", "<control node>"),))` with
+  `SystemParams.readings[<factor>]`, one positive count per level of that control node: the
+  number of fast readings the factor's one slow reading pools under each option. A factor not
+  declared pools one. The factor must carry a learnable table (a `ConditionalDirichlet`
+  transition or likelihood, a parameter variable included); the control node must be the
+  System's own. The modeller writes the counts from the durations (`readings={"map":
+  params.durations["u_option"]}`); no helper is needed because the two arrays coincide.
+- **Scoring.** The factor's novelty term (`transition:<factor>`, `likelihood:<modality>`) is
+  multiplied by the count of the level selected at that step, inside the plan as `take_controls`
+  slices the table. The form is linear in the count, which is exact when the pooled readings
+  fall on distinct cells of the table (independent Dirichlet rows, information additive) and an
+  upper bound when they repeat a cell, since repeated readings of one row saturate; the counts
+  the learner has already gathered are what make later steps sublinear. No other term reads the
+  count: the energy cost of the trip is the conditional transition's business (T5), the step's
+  clock is T1's.
+- **Record.** The description document records `readings` on the factor (the control node and the
+  counts); the description length prices nothing for it, as for durations.
+- **What this is not.** Not the temper T4 rejected: no target is scaled, no normaliser is
+  multiplied, and the objective reads a declared count, never a duration. Not a change to T7: the
+  slow reading is still one reading, scored once, with its pooled precision declared.

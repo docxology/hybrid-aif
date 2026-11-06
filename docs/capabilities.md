@@ -80,6 +80,15 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   top-level `parameters` entry with each reader pointing at it; `merge` identifies two
   components' variables with `SharedParameter`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build.
 
+- **A slow factor's reading pooled over an option level** (`design/step-durations.md` T10):
+  `System(readings=(("<factor>", "<control node>"),))` with `SystemParams.readings[<factor>]`, a
+  positive count per level of that node, multiplies the novelty term of the factor's learnable
+  table (a `ConditionalDirichlet`, directly or through a parameter variable) by the count of the
+  level selected at each plan step, so a slow step scores the information of the fast readings it
+  pools; no target is scaled and nothing else reads the count. `merge` namespaces it, a
+  description document records it on the factor's record, and the description length prices
+  nothing for it.
+
 ## Infer
 
 - Discrete: mean-field FPI at pymdp parity (function, term, policy

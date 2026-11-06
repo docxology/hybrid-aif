@@ -290,6 +290,7 @@ def test_no_parameter_duplicating_field_on_system_params():
         "precision",
         "parameters",
         "references",
+        "readings",
     }
 
 

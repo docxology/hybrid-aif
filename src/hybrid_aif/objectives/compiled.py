@@ -45,6 +45,7 @@ from hybrid_aif.objectives.discrete import (
     terminal_cross_entropy_risk,
 )
 from hybrid_aif.objectives.discrete import contract_probs as _contract
+from hybrid_aif.objectives.pooling import Pooled, scale_pooled
 from hybrid_aif.objectives.presence import Presence, mask_absent, presence_at
 
 
@@ -150,6 +151,7 @@ def make_step_terms(
     c_deps: dict[str, TargetParents] | None = None,
     sensed: SensedNodes | None = None,
     present: Presence | None = None,
+    pooled: Pooled | None = None,
 ):
     """Fused per-step term evaluator with the System's designation/selector semantics.
 
@@ -179,7 +181,9 @@ def make_step_terms(
     keyed by it and nothing about it is carried, and a channel over action nodes alone has no
     information-gain leaf (its ambiguity, risk and utility leaves are scored as any channel's).
     ``present`` (:class:`~hybrid_aif.objectives.presence.Presence`) zeroes the leaves of a
-    modality absent at the step, keyed by its name and by ``likelihood:<name>``.
+    modality absent at the step, keyed by its name and by ``likelihood:<name>``. ``pooled``
+    (:class:`~hybrid_aif.objectives.pooling.Pooled`) multiplies a declared table's novelty leaf by
+    the count of the step's level of its control node.
     """
     mods = _block_names("modality", len(A_deps), modality_names)
     c_deps = dict(c_deps or {})
@@ -295,6 +299,7 @@ def make_step_terms(
                 else:
                     q_f = Categorical(logits=jnp.log(qs[f]))
                     leaves[facs[f]] = q_f.kl_to(target)
+        tree = scale_pooled(tree, pooled, action, None)
         if present_t is not None:
             tree = mask_absent(tree, present_t, mods)
         return tree
