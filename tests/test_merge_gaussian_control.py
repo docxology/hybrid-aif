@@ -298,10 +298,10 @@ def float_composite():
 
 
 def _mind(width):
-    def respond(key, obs, carry):
-        return {"c.push": jnp.full((width,), 0.5, jnp.float32)}, carry
+    def step(key, obs, carry, params):
+        return {"c.push": jnp.full((width,), 0.5, jnp.float32)}, carry, params
 
-    return respond
+    return step
 
 
 @pytest.mark.parametrize("order", ["simultaneous", "sequential"])

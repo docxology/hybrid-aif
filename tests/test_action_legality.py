@@ -318,29 +318,31 @@ def test_replay_carries_a_per_tick_mask():
         replay(system, params, observations, actions, legal={"u_location": dead_step})
 
 
-def test_agent_respond_takes_legal_keyed_by_node(tmaze):
-    """The driver's responder passes the keyed mask to act, and refuses the tuple, an unknown
-    key and an all-illegal entry eagerly, when it is built."""
-    from hybrid_aif.composition.driver import MindCarry, agent_respond
+def test_agent_step_takes_legal_keyed_by_node(tmaze):
+    """The driver's step passes the keyed mask to act, and refuses the tuple, an unknown
+    key and an all-illegal entry on its first call, where the params are in hand."""
+    from hybrid_aif.composition.driver import MindCarry, agent_step
 
     system, params = tmaze
     obs = system.from_positional("observations", (jnp.asarray(0), jnp.asarray(0), jnp.asarray(0)))
-    free = agent_respond(system, params, selection="deterministic")
-    chosen, _ = free(KEY, obs, MindCarry())
+    free = agent_step(system, selection="deterministic")
+    chosen, _, _ = free(KEY, obs, MindCarry(), params)
     forbid = jnp.ones(_levels(system, params), bool).at[int(chosen["a_location"])].set(False)
-    bound = agent_respond(system, params, selection="deterministic", legal={"u_location": forbid})
-    action, _ = bound(KEY, obs, MindCarry())
+    bound = agent_step(system, selection="deterministic", legal={"u_location": forbid})
+    action, _, _ = bound(KEY, obs, MindCarry(), params)
     assert int(action["a_location"]) != int(chosen["a_location"])
     with pytest.raises(TypeError, match="legal= is keyed by control node"):
-        agent_respond(system, params, legal=(forbid, None))
+        agent_step(system, legal=(forbid, None))(KEY, obs, MindCarry(), params)
     with pytest.raises(ValueError, match=r"legal has unknown key \['location'\]"):
-        agent_respond(system, params, legal={"location": forbid})
+        agent_step(system, legal={"location": forbid})(KEY, obs, MindCarry(), params)
     with pytest.raises(ValueError, match=r"legal\['u_location'\] masks every level"):
-        agent_respond(system, params, legal={"u_location": jnp.zeros_like(forbid)})
+        agent_step(system, legal={"u_location": jnp.zeros_like(forbid)})(
+            KEY, obs, MindCarry(), params
+        )
 
 
 def test_legal_sentences_name_the_face_and_a_list_is_the_policy_mask(tmaze):
-    from hybrid_aif.composition.driver import agent_respond
+    from hybrid_aif.composition.driver import MindCarry, agent_step
 
     system, params = tmaze
     beliefs = _initial_beliefs(system, params)
@@ -349,8 +351,8 @@ def test_legal_sentences_name_the_face_and_a_list_is_the_policy_mask(tmaze):
         system.act(KEY, params, beliefs, legal=dead)
     with pytest.raises(ValueError, match=r"^infer_policies: legal\['u_location'\] has shape"):
         system.infer_policies(params, beliefs, legal={"u_location": jnp.ones(4, bool)})
-    with pytest.raises(ValueError, match=r"^agent_respond: legal\['u_location'\] masks every"):
-        agent_respond(system, params, legal=dead)
+    with pytest.raises(ValueError, match=r"^agent_step: legal\['u_location'\] masks every"):
+        agent_step(system, legal=dead)(KEY, {}, MindCarry(), params)
     with pytest.raises(ValueError, match=r"^act: legal= leaves no legal policy"):
         system.act(KEY, params, beliefs, legal=jnp.zeros(25, bool))
     #  a list of P bools is the (P,) mask

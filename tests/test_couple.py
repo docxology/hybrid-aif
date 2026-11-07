@@ -1,6 +1,6 @@
 """Coupling through blankets: minds and processes joined by typed wires, run by the driver.
 
-A run's participants are minds (a System with a respond function) and processes (a keyed env);
+A run's participants are minds (a System with a step function) and processes (a keyed env);
 a wire is an identity from an action node to a process input or a mind's modality, or from a
 process observation to a mind's modality. An action node is realised once per step from its
 mind's actuator and every wire from it carries that value. A merged composite run by name is the
@@ -23,8 +23,8 @@ from hybrid_aif.composition import (
     ProcessRecord,
     Wire,
     Wiring,
-    agent_respond,
-    ancestral_respond,
+    agent_step,
+    ancestral_step,
     couple,
     merge,
     run,
@@ -75,12 +75,12 @@ def process(system, params):
 
 
 def constant(level):
-    """A RespondFn emitting ``level`` on the action node ``push`` every tick."""
+    """A Step emitting ``level`` on the action node ``push`` every tick."""
 
-    def respond(key, obs, carry):
-        return {"push": jnp.asarray(level, jnp.int32)}, carry
+    def step(key, obs, carry, params):
+        return {"push": jnp.asarray(level, jnp.int32)}, carry, params
 
-    return respond
+    return step
 
 
 def equal(a, b):
@@ -96,13 +96,12 @@ def _two_minds(kernel):
         {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
     )
     if kernel:
-        cp = dataclasses.replace(
-            cp, actuator={"agent.a_location": KERNEL5, "world.a_location": KERNEL5}
-        )
+        #  the agent's view reads the world's node, so a kernel there would be refused
+        cp = dataclasses.replace(cp, actuator={"agent.a_location": KERNEL5})
     views = {name: subsystem(composite, cp, name) for name in ("agent", "world")}
     responds = {
-        "agent": agent_respond(*views["agent"]),
-        "world": ancestral_respond(*views["world"]),
+        "agent": agent_step(views["agent"][0]),
+        "world": ancestral_step(views["world"][0]),
     }
     return composite, cp, views, responds
 
@@ -137,9 +136,8 @@ def test_the_composite_run_is_the_one_process_wiring_bitwise(kernel):
         for a in views[name][0].names.actions:
             assert equal(mind.actions[a], traj.actions[a]), a
             assert equal(mind.realised[a], traj.realised[a]), a
-    if kernel:  # each kernel moved some draw off the intended level
-        for a in ("agent.a_location", "world.a_location"):
-            assert not equal(traj.realised[a], traj.actions[a]), a
+    if kernel:  # the kernel moved some draw off the intended level
+        assert not equal(traj.realised["agent.a_location"], traj.actions["agent.a_location"])
     if tick_order == "simultaneous":  # the agent received the process's rows
         for m in views["agent"][0].names.modalities:
             assert equal(record["agent"].observations[m], traj.observations[m])
@@ -154,7 +152,7 @@ def _three_pushers(order):
     )
     cp = dataclasses.replace(cp, actuator={f"{n}.push": KERNEL for n in comps})
     views = {n: subsystem(composite, cp, n) for n in order}
-    responds = {n: (agent_respond if n == "a" else ancestral_respond)(*views[n]) for n in order}
+    responds = {n: (agent_step if n == "a" else ancestral_step)(views[n][0]) for n in order}
     return composite, cp, views, responds
 
 
@@ -193,8 +191,8 @@ def test_two_minds_on_two_processes_record_by_participant_and_match_a_hand_loop(
     b_sys, b_par = watcher()
     wiring = couple(
         minds={
-            "A": (a_sys, a_par, agent_respond(a_sys, a_par)),
-            "B": (b_sys, b_par, ancestral_respond(b_sys, b_par)),
+            "A": (a_sys, a_par, agent_step(a_sys)),
+            "B": (b_sys, b_par, ancestral_step(b_sys)),
         },
         processes={"P1": process(*pusher()), "P2": process(*pusher())},
         wires=[
@@ -249,8 +247,8 @@ def _direct(tick_order, kernel=None):
     b_sys, b_par = pusher()
     wiring = couple(
         minds={
-            "A": (a_sys, a_par, ancestral_respond(a_sys, a_par)),
-            "B": (b_sys, b_par, ancestral_respond(b_sys, b_par)),
+            "A": (a_sys, a_par, ancestral_step(a_sys)),
+            "B": (b_sys, b_par, ancestral_step(b_sys)),
         },
         processes={"P1": process(*pusher(noise=0.0))},
         wires=[
@@ -314,7 +312,7 @@ def test_the_composite_moves_each_component_once_on_its_own_draw_under_sequentia
         {n: s for n, (s, _) in parts.items()}, {n: p for n, (_, p) in parts.items()}, []
     )
     cp = dataclasses.replace(cp, actuator={"a.push": KERNEL})
-    minds = {n: ancestral_respond(*subsystem(composite, cp, n)) for n in ("a", "b")}
+    minds = {n: ancestral_step(subsystem(composite, cp, n)[0]) for n in ("a", "b")}
     traj = run(composite, cp, minds, ticks=12, key=KEY, tick_order="sequential")
     xa, xb = traj.states["a.x"], traj.states["b.x"]
     assert equal((xa[1:] - xa[:-1]) % 3, traj.realised["a.push"])
@@ -323,13 +321,14 @@ def test_the_composite_moves_each_component_once_on_its_own_draw_under_sequentia
 
 
 def test_a_simultaneous_kernel_run_is_pinned():
-    """Under simultaneous every node is drawn at the tick's one step with the env actuator's
-    keys, ``split(fold_in(k, ACTUATOR_TAG), n)[i]`` in composite action order; pinned."""
+    """Under simultaneous a node with a kernel is drawn at the tick's one step with the env
+    actuator's keys, ``split(fold_in(k, ACTUATOR_TAG), n)[i]`` in composite action order; the
+    world's node has none, so it is realised as intended; pinned."""
     composite, cp, _, responds = _two_minds(True)
     traj = run(composite, cp, responds, ticks=12, key=KEY)
     assert traj.realised["agent.a_location"].tolist() == [4, 4, 3, 4, 1, 1, 2, 3, 4, 0, 1, 2]
-    assert traj.realised["world.a_location"].tolist() == [1, 2, 2, 0, 0, 4, 2, 2, 1, 4, 0, 2]
-    assert traj.states["world.location"].tolist() == [0, 0, 0, 0, 0, 0, 4, 2, 2, 2, 4, 0, 0]
+    assert traj.realised["world.a_location"].tolist() == [1, 2, 2, 0, 1, 4, 2, 4, 1, 4, 0, 4]
+    assert traj.states["world.location"].tolist() == [0, 0, 0, 0, 0, 0, 4, 2, 4, 1, 4, 0, 4]
 
 
 # ---------------------------------------------------------------------------------- 4. fixed=
@@ -408,8 +407,8 @@ def _continuous(width):
 def test_a_continuous_action_node_drives_a_continuous_input_of_its_width():
     m_sys, m_par = _continuous(1)
 
-    def push(key, obs, carry):
-        return {"u": jnp.asarray([1.0], jnp.float32)}, carry
+    def push(key, obs, carry, params):
+        return {"u": jnp.asarray([1.0], jnp.float32)}, carry, params
 
     wiring = couple(
         minds={"M": (m_sys, m_par, push)},

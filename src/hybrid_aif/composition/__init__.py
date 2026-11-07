@@ -14,8 +14,8 @@ particles by wires, and the clock that runs them.
   :class:`Wiring`.
 - :mod:`~hybrid_aif.composition.driver` — :func:`run` closes the loop under a declared tick
   order, over a :class:`Wiring` (one :class:`MindRecord` or :class:`ProcessRecord` per
-  participant) or over a merged composite, each mind acting through its own view (a
-  :class:`Trajectory`).
+  participant) or over a merged composite, each :data:`Step` acting through its own view of the
+  composite's params, which learning is written back to (a :class:`Trajectory`).
 
 Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
 """
@@ -27,15 +27,13 @@ from hybrid_aif.composition.driver import (
     MindRecord,
     ParticleCarry,
     ProcessRecord,
+    Step,
     Trajectory,
-    ViewRespond,
-    agent_respond,
-    ancestral_respond,
+    agent_step,
+    ancestral_step,
     hold,
     particle,
-    particle_params,
     run,
-    view_respond,
 )
 from hybrid_aif.composition.merge import (
     ActionControl,
@@ -64,24 +62,22 @@ __all__ = [
     "ProcessRecord",
     "SharedParameter",
     "SiblingRead",
+    "Step",
     "TargetEmission",
     "Trajectory",
-    "ViewRespond",
     "Wire",
     "Wiring",
-    "agent_respond",
-    "ancestral_respond",
+    "agent_step",
+    "ancestral_step",
     "couple",
     "hold",
     "merge",
     "namespaced_key",
     "nested",
     "particle",
-    "particle_params",
     "resolved_epistemic",
     "run",
     "subsystem",
     "subsystem_factors",
-    "view_respond",
     "write_back",
 ]

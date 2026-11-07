@@ -191,12 +191,13 @@ def test_mixture_sample_is_bitwise_unchanged(sample_shape):
 def test_async_with_one_mind_is_bitwise_sequential():
     """The async sweep draws its permutation host-side and consumes no device
     key, so a single-mind composite ticks identically under both orders."""
-    from hybrid_aif.composition.driver import agent_respond
+    from hybrid_aif.composition.driver import agent_step
     from hybrid_aif.composition.merge import subsystem
     from tests.test_merge import merged
 
     composite, cp = merged(policy_len=3)
-    minds = {"agent": agent_respond(*subsystem(composite, cp, "agent"), selection="deterministic")}
+    view = subsystem(composite, cp, "agent")[0]
+    minds = {"agent": agent_step(view, selection="deterministic")}
     seq = run(composite, cp, minds, ticks=3, key=KEY, tick_order="sequential")
     asy = run(composite, cp, minds, ticks=3, key=KEY, tick_order="async")
     assert list(seq.states) == list(asy.states) and list(seq.actions) == list(asy.actions)

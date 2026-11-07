@@ -1,53 +1,60 @@
-"""The driver: minds and processes on a clock, in either of two forms.
+"""The driver: participants on a clock, in either of two forms.
 
-A mind is a :data:`RespondFn`, ``respond(key, obs, carry) -> (action, carry')``.
-:func:`agent_respond` and :func:`ancestral_respond` build the two ends of that spectrum.
+A participant of a round is a :data:`Step`, ``step(key, obs, carry, params) -> (action, carry',
+params')``: it is handed its parameters each round and returns them, the very same object when it
+did not learn, so a learner and a non-learner are one shape and the runner keeps what comes back.
+A step that holds a planner is informally a mind. :func:`agent_step` and :func:`ancestral_step`
+build the two ends of that spectrum, and :func:`hold` slows a step to one decision per option.
 :func:`run` closes the loop in one of two forms:
 
 - **Wired** (:func:`~hybrid_aif.composition.couple.couple`): separate particles, minds and
   processes joined by typed wires, from an action node to a process input or a mind's modality,
-  and from a process observation to a mind's modality. Each action node is realised from its mind's
-  ``params.actuator`` when the mind chooses, and every wire from it carries the realised value;
-  the processes step on their realised inputs. The record is one entry per participant,
-  :class:`MindRecord` or :class:`ProcessRecord`.
+  and from a process observation to a mind's modality. A mind is declared as ``(System, params,
+  step)``; ``run`` starts it from those params, hands it the current ones each round and records
+  the last ones. Each action node is realised from the mind's ``params.actuator`` (as declared
+  at ``couple``) when the mind
+  chooses, and every wire from it carries the realised value; the processes step on their
+  realised inputs. The record is one entry per participant, :class:`MindRecord` or
+  :class:`ProcessRecord`.
 - **Composite** (:func:`~hybrid_aif.composition.merge.merge`): one particle, whose components
-  are the minds' views; the world is the composite's ``as_env``, with the wires by name:
-  observations route in by the ``subsystems`` metadata (each mind sees its own modalities, keyed
-  by name); actions route out by action-node name, each mind's action nodes merged into the
-  composite action, realised at its nodes, on which the world moves. The record is a
-  :class:`Trajectory`.
+  are the steps' views; the world is the composite's ``as_env``, with the wires by name:
+  observations route in by the ``subsystems`` metadata (each step sees its own modalities, keyed
+  by name); actions route out by action-node name, each step's action nodes merged into the
+  composite action, realised at its nodes, on which the world moves. The composite's params are
+  the one parameter home: each round every step is handed the view of its component taken from
+  the home, with each control node another component chooses set to the level it last chose, a
+  learner's returned parameter variables are written back to the home
+  (:func:`~hybrid_aif.composition.merge.write_back`) and the next view is taken from the new
+  home. The record is a :class:`Trajectory`, whose ``params`` is the home after the last round.
 
 A merged composite is also one participant of the wired form: :func:`particle` turns it, with one
-mind per view, into a single mind for :func:`~hybrid_aif.composition.couple.couple`, so a particle
-meets an outside world through wires. Inside it the parameter home (the composite's params as
-learned so far, from which every view is taken) is written back each round a view learns
-(:class:`ViewRespond`), the views are re-taken from it, a driving component's decision is routed
-into the driven view (handed to it as the level of the node in force), and :func:`hold` is the slow
-tier's clock. The composite form's world is the composite's own model and it does no write-back or
-routing; a particle with an outside world is the wired form.
+step per view, into a single step for :func:`~hybrid_aif.composition.couple.couple`, so a particle
+meets an outside world through wires; it runs the same per-round body as the composite form, with
+the params the wiring hands it as the home. The composite form's world is the composite's own
+model; a particle with an outside world is the wired form.
 
-In both forms a realised action is drawn once, when its mind chooses, and every wire from the
-node carries it for the rest of the round; no other mind's choice redraws it.
+In both forms a realised action is drawn once, when its step chooses, and every wire from the
+node carries it for the rest of the round; no other step's choice redraws it.
 
-A belief is internal: each mind's posterior lives in its own carry and never crosses as a
-distribution. Minds reach each other only through the wires (in the composite form, through the
-world, or through a sibling-belief read: a modality that declares a state factor of another
+A belief is internal: each participant's posterior lives in its own carry and never crosses as a
+distribution. Participants reach each other only through the wires (in the composite form, through
+the world, or through a sibling-belief read: a modality that declares a state factor of another
 component as its source and takes its datum from that component's carry, realised by ``sample``,
 ``mode`` or ``stats``), and what a wire carries is the realised value of an action node, which
 may be the belief's statistics.
 
 A round is one tick of time under every order, and every factor steps once per round; the
 orders are algorithms for one update, not amounts of time. ``"simultaneous"`` (default): every
-mind responds to the round's boundary, then every process (in the composite form, the world)
-steps once on the round's actions. ``"sequential"``: minds respond in declaration order (the
+step responds to the round's boundary, then every process (in the composite form, the world)
+steps once on the round's actions. ``"sequential"``: steps run in declaration order (the
 order given to :func:`~hybrid_aif.composition.couple.couple`, or the order of ``minds`` in the
 composite form), each reading current values, fresh where the source has already stepped this
 round: in the wired form a direct wire carries an earlier mind's act to a later mind, and the
 processes step once at the end of the round; in the composite form each component's factors
-step at that component's turn, and a component with no mind steps at the end. ``"async"``: as
+step at that component's turn, and a component with no step goes at the end. ``"async"``: as
 sequential, in a fresh random order per round (reproducible from the run key). Each records
 one row per tick. The driver is a Python loop, so carries need no shared structure; each
-``respond`` may be jitted.
+step may be jitted.
 
 Design: docs/design/nesting-systems.md (architecture sketch; tick semantics);
 docs/design/control-states.md C13; nesting-and-coupling.md N1, N3, N4.
@@ -57,7 +64,7 @@ import dataclasses
 import math
 import numbers
 from collections.abc import Callable, Mapping
-from typing import ClassVar, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -83,7 +90,7 @@ class MindCarry(NamedTuple):
     ``beliefs`` is ``None`` before the first tick (use the declared initial priors): the empirical
     prior the next tick filters from, the last posterior pushed through its transition under the
     chosen action. ``posterior`` is that last posterior itself, before the push, which is what a
-    read of this mind's state takes as its datum (a custom respond that keeps none, or a carry
+    read of this mind's state takes as its datum (a custom step that keeps none, or a carry
     seeded through ``carries=`` without one, is read as absent on the next round).
     ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
     Carries are never merged, so two minds share no leaf.
@@ -96,56 +103,14 @@ class MindCarry(NamedTuple):
     posterior: Mapping[str, Belief] | None = None
 
 
-#: The driver protocol: ``obs`` is this mind's own modalities keyed by name, ``action`` an int32
-#: level per action node of its *view*, keyed by action-node name as :meth:`System.act`
-#: returns it.
-RespondFn = Callable[[Array, Mapping[str, Array], MindCarry], tuple[Mapping[str, Array], MindCarry]]
-
-
-@dataclasses.dataclass(frozen=True)
-class ViewRespond:
-    """A mind whose view's params arrive as an argument and may come back changed.
-
-    ``fn(key, obs, carry, params) -> (action, carry', params')``: ``params`` is the view's params in
-    force this round (taken from the parameter home, at the levels of the control nodes other
-    components have chosen), and ``params'`` is the very same object unless the mind learned. A
-    ViewRespond is a mind for :func:`particle`, which writes the parameter variables of ``params'``
-    back to the home (:func:`~hybrid_aif.composition.merge.write_back`) and refuses a ``params'``
-    that differs anywhere else: under a particle only declared parameter variables are learned, so a
-    table that is learned must be declared as a ``Parameter``. Params are an argument, not carry
-    state: the carry holds beliefs. A key, ``obs`` by composite modality name and an action keyed by
-    action node are as for a :data:`RespondFn`. :func:`run` and :func:`couple` refuse a
-    ViewRespond. Design: nesting-and-coupling.md N4.
-    """
-
-    takes_params: ClassVar[bool] = True
-    fn: Callable[
-        [Array, Mapping[str, Array], MindCarry, SystemParams],
-        tuple[Mapping[str, Array], MindCarry, SystemParams],
-    ]
-
-    def __call__(self, key, obs, carry, params):
-        return self.fn(key, obs, carry, params)
-
-
-def view_respond(system: System, planner: Planner | None = None, **act_kwargs) -> ViewRespond:
-    """:func:`agent_respond` with the view's params as an argument: infer, act, carry the empirical
-    prior, and hand the params back unchanged (this mind never learns; a learner is the caller's
-    own :class:`ViewRespond`). ``act_kwargs`` pass through to :meth:`System.act`; a ``legal`` among
-    them is checked on the first call, while the params are concrete."""
-    kwargs = tuple(sorted(act_kwargs.items()))
-    legal = act_kwargs.get("legal")
-    checked = legal is None
-
-    def respond(key, obs, carry, params):
-        nonlocal checked
-        if not checked:
-            _check_legal(system, params, legal, "view_respond")
-            checked = True
-        action, carry = _agent_tick(system, params, planner, kwargs, key, obs, carry)
-        return action, carry, params
-
-    return ViewRespond(respond)
+#: One participant's round: ``obs`` is its own modalities keyed by name, ``action`` an int32 level
+#: per action node (a float vector for a continuous one), keyed by action-node name as
+#: :meth:`System.act` returns it. The params returned are the very same object as the ones given
+#: unless the step learned; the runner treats identity as "did not learn".
+Step = Callable[
+    [Array, Mapping[str, Array], MindCarry, SystemParams],
+    tuple[Mapping[str, Array], MindCarry, SystemParams],
+]
 
 
 def _check_legal(system: System, params: SystemParams, legal, who: str) -> None:
@@ -157,34 +122,34 @@ def _check_legal(system: System, params: SystemParams, legal, who: str) -> None:
         system._legal_logits(system._params_in(params, who), legal, system.policies(params), who)
 
 
-def agent_respond(
-    system: System,
-    params: SystemParams,
-    planner: Planner | None = None,
-    **act_kwargs,
-) -> RespondFn:
-    """A full agent as a :data:`RespondFn`: infer, act, carry the empirical prior.
+def agent_step(system: System, planner: Planner | None = None, **act_kwargs) -> Step:
+    """A full agent as a :data:`Step`: infer, act, carry the empirical prior, hand the params back.
 
-    Closed over one mind's view (typically :func:`hybrid_aif.composition.merge.subsystem`'s
-    output): ``infer_states`` with the carried beliefs as priors, ``act``, then
-    ``update_empirical_prior`` under the chosen action. ``act_kwargs`` pass through to
-    :meth:`System.act`; a ``legal`` among them (keyed by control node, or one bool per policy) is
-    checked once, here. A System with no designations gives a Bayesian perceiver (flat ``q_pi``,
-    the same filtering). A modality whose observation is ``None`` (a sibling's belief the driver
-    could not yet read) is absent that round.
+    ``system`` is the participant's System (typically
+    :func:`hybrid_aif.composition.merge.subsystem`'s view): ``infer_states`` with the carried
+    beliefs as priors, ``act``, then ``update_empirical_prior`` under the chosen action. The
+    params come with each call and are returned as given, since this step never learns; a
+    learner is a hand-written step. ``act_kwargs`` pass through to :meth:`System.act`; a ``legal``
+    among them (keyed by control node, or one bool per policy) is checked on the first call,
+    where the params are concrete. A System with no designations gives a Bayesian perceiver (flat
+    ``q_pi``, the same filtering). A modality whose observation is ``None`` (a sibling's belief
+    the driver could not yet read) is absent that round. The step carries ``system`` as an
+    attribute, which :func:`hold` reads.
     """
-
-    legal = act_kwargs.get("legal")
-    if legal is not None:
-        _check_legal(system, params, legal, "agent_respond")
     kwargs = tuple(sorted(act_kwargs.items()))
+    legal = act_kwargs.get("legal")
+    checked = legal is None
 
-    def respond(
-        key: Array, obs: Mapping[str, Array], carry: MindCarry
-    ) -> tuple[dict[str, Array], MindCarry]:
-        return _agent_tick(system, params, planner, kwargs, key, obs, carry)
+    def step(key, obs, carry, params):
+        nonlocal checked
+        if not checked:
+            _check_legal(system, params, legal, "agent_step")
+            checked = True
+        action, carry = _agent_tick(system, params, planner, kwargs, key, obs, carry)
+        return action, carry, params
 
-    return respond
+    step.system = system
+    return step
 
 
 @eqx.filter_jit
@@ -198,58 +163,67 @@ def _agent_tick(system, params, planner, kwargs, key, obs, carry):
     return action, carry._replace(beliefs=pushed, posterior=beliefs)
 
 
-def ancestral_respond(system: System, params: SystemParams) -> RespondFn:
-    """An env-like component as a carry-free :data:`RespondFn`.
+def ancestral_step(system: System) -> Step:
+    """An env-like component as a carry-free :data:`Step`.
 
-    The action is drawn from the declared prior over the mind's own control nodes and emitted
-    keyed by their action nodes: ``policy_prior``'s first step if declared, else uniform per
-    node. A component with no control nodes responds with the empty action. The carry passes
-    through.
+    The action is drawn from the declared prior over the participant's own control nodes and
+    emitted keyed by their action nodes: ``policy_prior``'s first step if declared, else uniform
+    per node. A component with no control nodes responds with the empty action. The carry and the
+    params pass through. The level counts are read from the params on the first call, where they
+    are concrete (a System with continuous control nodes (A9) is refused there); the habit
+    (``policy_prior``) is read from the params handed in on every call.
     """
-    if any(k != "level" for k in system._space(params).kinds):
-        raise NotImplementedError(
-            "ancestral_respond draws a discrete control level per control node, and this System "
-            "has continuous control nodes (A9); supply a RespondFn that samples from their boxes "
-            "in params.control instead"
-        )
-    if system._table.sugar is not None:  # one draw per state factor, as the sugar lays them out
-        levels = tuple(
-            n if c else 1
-            for n, c in zip(
-                system._num_controls(params, "ancestral_respond"),
-                system._ctl("ancestral_respond"),
-                strict=True,
+    fixed: list = []
+
+    def prepare(params):
+        """The static structure: the draws' level counts and the policy enumeration."""
+        if any(k != "level" for k in system._space(params).kinds):
+            raise NotImplementedError(
+                "ancestral_step draws a discrete control level per control node, and this System "
+                "has continuous control nodes (A9); supply a Step that samples from their boxes "
+                "in params.control instead"
             )
-        )
-    else:
-        levels = system._control_levels(system._params_in(params, "ancestral_respond"))
-    policy_prior = params.policy_prior
-    policies = system.policies(params) if policy_prior is not None else None
-    logits = None
-    if policy_prior is not None:
-        logits = (
-            policy_prior.log_probs
-            if isinstance(policy_prior, Categorical)
-            else jnp.asarray(policy_prior)
-        )
+        if system._table.sugar is not None:  # one draw per state factor, as the sugar lays them out
+            levels = tuple(
+                n if c else 1
+                for n, c in zip(
+                    system._num_controls(params, "ancestral_step"),
+                    system._ctl("ancestral_step"),
+                    strict=True,
+                )
+            )
+        else:
+            levels = system._control_levels(system._params_in(params, "ancestral_step"))
+        fixed.append([levels, None])
 
     names = system._names()
 
-    def respond(
-        key: Array, obs: Mapping[str, Array], carry: MindCarry
-    ) -> tuple[dict[str, Array], MindCarry]:
+    def step(key, obs, carry, params):
         del obs
-        if logits is not None:
-            chosen = policies[Categorical(logits=logits).sample(key), 0].astype(jnp.int32)
-            return keyed.actions_out(names, chosen), carry
+        if not fixed:
+            prepare(params)
+        entry = fixed[0]
+        levels = entry[0]
+        policy_prior = params.policy_prior
+        if policy_prior is not None:
+            if entry[1] is None:
+                entry[1] = system.policies(params)
+            logits = (
+                policy_prior.log_probs
+                if isinstance(policy_prior, Categorical)
+                else jnp.asarray(policy_prior)
+            )
+            chosen = entry[1][Categorical(logits=logits).sample(key), 0].astype(jnp.int32)
+            return keyed.actions_out(names, chosen), carry, params
         keys = jax.random.split(key, len(levels))
         draws = [jax.random.randint(k, (), 0, n) for k, n in zip(list(keys), levels, strict=True)]
         drawn = jnp.stack(draws).astype(jnp.int32) if draws else jnp.zeros((0,), jnp.int32)
         if system._table.sugar is None:
-            return keyed.actions_out(names, drawn), carry
-        return keyed.factor_actions_out(names, drawn), carry
+            return keyed.actions_out(names, drawn), carry, params
+        return keyed.factor_actions_out(names, drawn), carry, params
 
-    return respond
+    step.system = system
+    return step
 
 
 class Trajectory(NamedTuple):
@@ -269,6 +243,7 @@ class Trajectory(NamedTuple):
     actions: dict[str, Array]
     carries: dict[str, MindCarry]
     realised: dict[str, Array] | None = None
+    params: SystemParams | None = None
 
 
 class MindRecord(NamedTuple):
@@ -281,13 +256,15 @@ class MindRecord(NamedTuple):
     rows are the tick boundaries a :class:`ProcessRecord` keeps. ``actions`` and ``realised``
     map each of its action nodes to ``ticks`` rows: the intended action it emitted, and the
     value the node realised from it, standing after the tick's last step. ``carry`` is its
-    final carry.
+    final carry, and ``params`` its params after the last round (the starting object if its
+    step never learned).
     """
 
     observations: dict[str, Array]
     actions: dict[str, Array]
     realised: dict[str, Array]
     carry: MindCarry
+    params: SystemParams
 
 
 class ProcessRecord(NamedTuple):
@@ -300,7 +277,7 @@ class ProcessRecord(NamedTuple):
 
 
 class HoldCarry(NamedTuple):
-    """A held mind's carry: the wrapped mind's own, the rounds still to hold, the held action."""
+    """A held step's carry: the wrapped step's own, the rounds still to hold, the held action."""
 
     inner: MindCarry
     remaining: int
@@ -308,37 +285,38 @@ class HoldCarry(NamedTuple):
 
 
 def hold(
-    system: System,
-    params: SystemParams,
-    respond: "RespondFn | ViewRespond",
+    step: Step,
     ticks_per_unit: numbers.Real | Array = 1,
-) -> "RespondFn | ViewRespond":
-    """A mind that decides once per option: ``respond`` held for the option's duration.
+    *,
+    system: System | None = None,
+) -> Step:
+    """A step that decides once per option: ``step`` held for the option's duration.
 
-    On a decision round the wrapper calls ``respond``, stores its action and reads the duration
-    with :meth:`System.elapsed`; the action is then returned unchanged for ``duration *
-    ticks_per_unit`` rounds in all (the decision round included), counting down on the host and
-    calling nothing, so the mind infers and plans once per option. The first round always
-    decides, whether ``run`` seeds a bare :class:`MindCarry` or ``carries=`` supplies one; the
-    wrapped carry is a :class:`HoldCarry`, and a ``HoldCarry`` supplied in ``carries=`` resumes
-    a count.
+    On a decision round the wrapper calls ``step``, stores its action and reads the duration with
+    :meth:`System.elapsed` at the params it was handed; the action is then returned unchanged,
+    with the params handed in, for ``duration * ticks_per_unit`` rounds in all (the decision
+    round included), counting down on the host and calling nothing, so the participant infers and
+    plans once per option. The first round always decides, whether ``run`` seeds a bare
+    :class:`MindCarry` or ``carries=`` supplies one; the wrapped carry is a :class:`HoldCarry`,
+    and a ``HoldCarry`` supplied in ``carries=`` resumes a count. What a decision round returns
+    for the params is the wrapped step's, so a held learner learns once per option.
 
-    ``system`` and ``params`` are the ones ``respond`` is closed over (in the composite form,
-    the mind's :func:`~hybrid_aif.composition.merge.subsystem` view), and must declare
-    ``params.durations``. Durations are in the preference's unit; ``ticks_per_unit`` converts
-    that unit to rounds (a positive number, checked at construction), and a duration whose product
-    with it is shorter than one round or not a whole number of rounds (to a relative 1e-5) is
-    refused when the action is read. A non-identity actuator kernel (``params.actuator``) on any
-    action node is refused at construction, since the driver realises every action node every
-    round, so a draw would repeat each round of the option; an identity kernel is accepted.
+    The System that reads the duration is ``step.system`` (:func:`agent_step` and
+    :func:`ancestral_step` set it; a hand-written step sets the attribute) or the ``system``
+    keyword. The params it is handed must declare ``params.durations``; this and the rest of
+    what needs concrete params is checked on each decision round, the first of which is the first
+    call. Durations are in the preference's unit; ``ticks_per_unit`` converts that unit to rounds
+    (a positive number, checked at construction), and a duration whose product with it is shorter
+    than one round or not a whole number of rounds (to a relative 1e-5) is refused when the
+    action is read. A non-identity actuator kernel (``params.actuator``) on any action node is
+    refused, since the driver realises every action node every round, so a draw would repeat each
+    round of the option; an identity kernel is accepted.
 
-    In the composite form (:func:`~hybrid_aif.composition.merge.merge`) the held mind's System
+    In the composite form (:func:`~hybrid_aif.composition.merge.merge`) the held step's System
     must own no world process: its factors are beliefs and the world is a separate component,
     or the composite environment would apply the option's whole-step kernel once per round of
     the fast tier. The wired form (:func:`~hybrid_aif.composition.couple.couple`) has no such
-    restriction. This is not checked. A :class:`ViewRespond` is held as a :class:`ViewRespond`: on
-    held rounds it returns the stored action and the params it was given, so nothing is written
-    back. Design: step-durations.md T9; nesting-and-coupling.md N4.
+    restriction. This is not checked. Design: step-durations.md T9; nesting-and-coupling.md N4.
     """
     scalar = isinstance(ticks_per_unit, numbers.Real) or (
         isinstance(ticks_per_unit, np.ndarray | Array) and ticks_per_unit.ndim == 0
@@ -354,22 +332,35 @@ def hold(
             f"hold: ticks_per_unit={ticks_per_unit!r} is not positive and finite; pass the "
             "number of rounds one unit of duration lasts"
         )
-    node = _durations_node(system, params)
-    for action_node, kernel in system._actuator(params, "hold").items():
-        table = np.asarray(kernel)
-        if table.ndim == 2 and table.shape[0] == table.shape[1]:
-            if np.allclose(table, np.eye(table.shape[0])):
-                continue  # an identity kernel changes nothing
-        raise ValueError(
-            f"hold: action node {action_node!r} has a non-identity actuator in params.actuator; "
-            "a held mind is refused under one, since the driver realises every "
-            "action node every round, so a held node's draw would be repeated each round of the "
-            "option and the duration is read off the realised level (step-durations.md T9)"
+    attached = getattr(step, "system", None)
+    if system is not None and attached is not None and system is not attached:
+        raise TypeError(
+            "hold: system= is a different System from step.system; pass one, or the one the "
+            "step is built over"
+        )
+    system = system if system is not None else attached
+    if not isinstance(system, System):
+        raise TypeError(
+            "hold: the step names no System to read durations from; build it with agent_step or "
+            "ancestral_step, set step.system, or pass system="
         )
 
-    def decide(key, obs, carry, call):
+    def held(key, obs, carry, params):
+        if isinstance(carry, HoldCarry) and carry.remaining > 0:
+            return carry.action, carry._replace(remaining=carry.remaining - 1), params
+        node = _durations_node(system, params)
+        for action_node, kernel in system._actuator(params, "hold").items():
+            if _is_identity(kernel):
+                continue  # an identity kernel changes nothing
+            raise ValueError(
+                f"hold: action node {action_node!r} has a non-identity actuator in "
+                "params.actuator; a held mind is refused under one, since the driver realises "
+                "every action node every round, so a held node's draw would be repeated each "
+                "round of the option and the duration is read off the realised level "
+                "(step-durations.md T9)"
+            )
         inner = carry.inner if isinstance(carry, HoldCarry) else carry
-        action, inner, learned = call(inner)
+        action, inner, learned = step(key, obs, inner, params)
         unit = float(system.elapsed(action, params))
         value = unit * ticks_per_unit
         rounds = round(value)
@@ -386,49 +377,255 @@ def hold(
             )
         return action, HoldCarry(inner, rounds - 1, action), learned
 
-    def held(key, obs, carry):
-        if isinstance(carry, HoldCarry) and carry.remaining > 0:
-            return carry.action, carry._replace(remaining=carry.remaining - 1)
-        action, carry, _ = decide(key, obs, carry, lambda c: (*respond(key, obs, c), None))
-        return action, carry
-
-    def held_view(key, obs, carry, view_params):
-        if isinstance(carry, HoldCarry) and carry.remaining > 0:
-            return carry.action, carry._replace(remaining=carry.remaining - 1), view_params
-        return decide(key, obs, carry, lambda c: respond(key, obs, c, view_params))
-
-    return ViewRespond(held_view) if isinstance(respond, ViewRespond) else held
+    held.system = system
+    return held
 
 
 class ParticleCarry(NamedTuple):
-    """A particle's carry: the carry of each mind inside it, the parameter home, the control
-    levels in force, and the previous round's composite action.
+    """A particle's carry: the carry of each step inside it, the control levels in force, and the
+    previous round's composite action.
 
-    ``home`` is the composite's params as learned so far (``None`` before the first round: the
-    params the particle was built with); ``standing`` maps a control node a mind chose to the level
-    it chose last (the level the minds that read it are handed); ``last`` is the composite action
-    of the round before, which a read of an action node takes as its datum. :func:`particle_params`
-    reads ``home``.
+    ``standing`` maps a control node a step chose to the level it chose last (the level the steps
+    that read it are handed); ``last`` is the composite action of the round before, which a read
+    of an action node takes as its datum. The parameter home is not in the carry: it is the params
+    the runner hands the particle each round, and the record's ``params`` after the last.
 
     Design: nesting-and-coupling.md N4.
     """
 
     minds: Mapping[str, object] = {}
-    home: SystemParams | None = None
     standing: Mapping[str, int] = {}
     last: Mapping[str, Array] | None = None
 
 
-class _ParticleRespond:
-    """The respond of :func:`particle`: a callable that also says which of its composite's
+class _ParticleStep:
+    """The step of :func:`particle`: a callable that also says which of its composite's
     modalities it supplies itself (``supplied``), so :func:`couple` asks for no wire to them."""
 
-    def __init__(self, respond, supplied: frozenset[str]):
-        self._respond = respond
+    def __init__(self, step, supplied: frozenset[str]):
+        self._step = step
         self.supplied = supplied
 
-    def __call__(self, key, obs, carry):
-        return self._respond(key, obs, carry)
+    def __call__(self, key, obs, carry, params):
+        return self._step(key, obs, carry, params)
+
+
+class _Body:
+    """The per-round body both forms of a merged composite share: what each step is handed and
+    what is done with what it returns.
+
+    Built once for a composite, its params (which type it), and a step per component. A turn
+    (:class:`_Round`) supplies the step's reads, hands it the view of its component taken from
+    the parameter home at the levels the other components last chose, writes returned params back
+    to the home, and checks the action. ``in_order`` says the steps take turns in the order of
+    ``minds`` every round (``particle``, and ``run`` under ``"sequential"``), so a chooser listed
+    first has chosen before a reader that needs its level responds.
+    """
+
+    def __init__(
+        self,
+        composite: System,
+        params: SystemParams,
+        minds: Mapping[str, Step],
+        who: str,
+        in_order: bool = True,
+        tick_order: str = "sequential",
+    ):
+        self.composite = composite
+        self.minds = minds
+        self.layout = _layout(composite, minds, who)
+        layout = self.layout
+        face = who.removesuffix("()")
+        typed = composite._names(composite._params_in(params, face))
+        self.node_types = {
+            a: (typed.kind(k), typed.sizes[k]) for k, a in enumerate(layout.names.actions)
+        }
+        order = list(minds)
+        self.partner = {name: partner_controls(composite, name) for name in order}
+        kernels = composite._actuator(composite._params_in(params, face), who)
+        for name in order:
+            for node in self.partner[name]:
+                chooser = layout.claimed[node]
+                kernel = kernels.get(layout.action_of[node])
+                if kernel is not None and not _is_identity(kernel):
+                    raise ValueError(
+                        f"{who}: the view of component {name!r} reads the control node {node!r}, "
+                        f"and its action node {layout.action_of[node]!r} has a non-identity "
+                        "kernel in params.actuator; the level handed on is the level the chooser "
+                        "intended, which differs from the realised one under such a kernel, so "
+                        "use an identity kernel there or do not read the node"
+                    )
+                if in_order and order.index(chooser) < order.index(name):
+                    continue
+                try:
+                    subsystem(composite, params, name)
+                except ValueError as err:
+                    if in_order:
+                        fix = (
+                            f"list {chooser!r} before {name!r} in minds, so its choice is in hand "
+                            f"before {name!r} responds"
+                        )
+                    else:
+                        fix = (
+                            f"tick_order={tick_order!r} does not guarantee that {chooser!r} "
+                            f"has chosen before {name!r} responds; use tick_order='sequential' "
+                            f"with {chooser!r} listed first, or fix the node with a "
+                            "BoundaryPrior, or make the targets not conditional on it"
+                        )
+                    raise ValueError(
+                        f"{who}: component {name!r} reads the control node {node!r}, which "
+                        f"component {chooser!r} chooses, and has no view before that choice is "
+                        f"made ({err}); {fix}"
+                    ) from err
+        self.supplied = frozenset(m for reads in layout.reads_in.values() for m, *_ in reads)
+        #  (name, levels) -> (home, view System, view params): built once per set of levels and
+        #  refreshed from the home when it changes, so equal Systems share one compiled program
+        self._cache: dict[tuple, tuple] = {}
+
+    def view(self, name: str, home: SystemParams, standing: Mapping[str, int]):
+        """``name``'s view System and params taken from ``home``, with each control node another
+        component chooses set to the level in ``standing`` (uniform before any choice)."""
+        levels = tuple((n, standing.get(n)) for n in self.partner[name])
+        entry = self._cache.get((name, levels))
+        if entry is None:
+            priors = {n: lv for n, lv in levels if lv is not None}
+            system, vparams = subsystem(self.composite, home, name, partner_priors=priors or None)
+        elif entry[0] is home:
+            return entry[1], entry[2]
+        else:
+            system = entry[1]
+            vparams = retake(self.composite, system, entry[2], home)
+        self._cache[(name, levels)] = (home, system, vparams)
+        return system, vparams
+
+
+def _is_identity(kernel) -> bool:
+    """Whether an action kernel is the identity table (square, equal to the identity)."""
+    table = np.asarray(kernel)
+    return (
+        table.ndim == 2
+        and table.shape[0] == table.shape[1]
+        and bool(np.allclose(table, np.eye(table.shape[0])))
+    )
+
+
+class _Round:
+    """One round of a :class:`_Body`: the carries, the parameter home and the control levels in
+    force, mutated turn by turn. ``live`` and ``standing`` are updated in place; ``home`` is
+    rebound when a step learns."""
+
+    def __init__(
+        self,
+        body: _Body,
+        live: dict[str, object],
+        home: SystemParams,
+        standing: dict[str, int],
+        last: Mapping[str, Array] | None,
+        read_key: Array,
+        frozen: bool = False,
+    ):
+        self.body, self.live, self.home, self.standing = body, live, home, standing
+        #  the levels the views are taken at: those standing when the round began if ``frozen``
+        #  (every step reads the round's boundary), else as they stand at each turn
+        self.levels = dict(standing) if frozen else standing
+        self.last, self.read_key = last, read_key
+        #  the posteriors the sources held when the round began (a read is one tick behind)
+        self.begun = {
+            holder: _posterior(live[holder])
+            for reads in body.layout.reads_in.values()
+            for _, holder, _, _, _ in reads
+            if holder is not None
+        }
+
+    def turn(self, name: str, key: Array, obs: Mapping[str, Array]) -> dict[str, Array]:
+        """``name``'s step called on ``obs`` (its own modalities picked out, its reads supplied)
+        and its view; returns its checked action."""
+        body, layout = self.body, self.body.layout
+        mods, ports = layout.routes[name]
+        seen = {m: obs[m] for m in mods if m in obs}
+        seen.update(
+            _supplied(
+                layout.reads_in[name], self.begun, self.last, self.read_key, layout.modality_at
+            )
+        )
+        system, given = body.view(name, self.home, self.levels)
+        chosen, self.live[name], learned = body.minds[name](key, seen, self.live[name], given)
+        if learned is not given:
+            _check_parameters_only(system, name, given, learned)
+            self.home = write_back(body.composite, self.home, name, given, learned)
+        action = _check_action(
+            chosen, ports, name, layout.action_of, {a: body.node_types[a] for a in ports}
+        )
+        for node, owner in layout.claimed.items():
+            if owner == name and body.node_types[layout.action_of[node]][0] == LEVEL:
+                self.standing[node] = int(action[layout.action_of[node]])
+        return action
+
+
+def particle(
+    composite: System,
+    params: SystemParams,
+    minds: Mapping[str, Step],
+) -> Step:
+    """A merged composite with one step per view, as one step for :func:`couple`.
+
+    The composite is one particle: its modalities are the participant's in-ports and its action
+    nodes the out-ports (``couple((composite, params, particle(...)))``, a world joined by
+    wires). Inside it each round runs the body of :func:`run`'s composite form, in the order of
+    ``minds`` (a step listed later sees an earlier step's decision of this round; the order is the
+    particle's own, not a tick order):
+
+    - every read of a minded component is supplied from the carries: a state factor's posterior
+      of the round before pushed through the read's kernel and realised, an action node's level
+      of the round before, ``None`` where nothing is carried yet (the modality is absent that
+      round);
+    - each step is handed the view of its component taken from the home (the composite's params
+      as the runner holds them, which are the ones handed to the particle), with each control
+      node another component chooses that its view reads set to the level that component last
+      chose (uniform before any choice): the per-level views are built once on first use
+      (``subsystem``) and refreshed from the home (``retake``) when it changes, equal Systems and
+      the shapes of one compiled program;
+    - when a step returns params other than the ones it was given, they are written back to the
+      home (:func:`~hybrid_aif.composition.merge.write_back`, with the view it was given as
+      ``before``, so the stale-``before`` rule holds by construction); the next step to respond
+      is handed a view taken from the new home, so a ``SharedParameter`` needs no bookkeeping.
+      The params returned may differ from the ones given in parameter variables only, else this
+      raises. The particle returns the home, so the record of the coupling holds the learned
+      composite params.
+
+    A step's key is the particle's for the first step in ``minds`` and ``fold_in(key, i)`` for the
+    ``i``-th after it; a read's draw is keyed by ``modality_key(key, m)``. Every component needs a
+    step (a component that chooses nothing takes :func:`ancestral_step` or a step returning no
+    action), and every control node must be chosen by a listed step. A view that reads a control
+    node another component chooses, and whose targets are conditional on it, has no view before
+    that component has chosen: list the chooser first, which this checks at construction. A step
+    wrapped in :func:`hold` composes as in the composite form. ``params`` types the composite and
+    is used to check the order; each step's carry is ``carry.minds[name]``.
+
+    Design: nesting-and-coupling.md N4, N9.
+    """
+    body = _Body(composite, params, minds, "particle()")
+    order = list(minds)
+    unminded = sorted(set(body.layout.table) - set(minds))
+    if unminded:
+        raise ValueError(
+            f"particle(): component(s) {unminded} have no step in minds; every component of a "
+            "particle needs one (ancestral_step(...) or a step returning no action for a "
+            "component that chooses nothing)"
+        )
+
+    def step(key, obs, carry, home):
+        if not isinstance(carry, ParticleCarry):
+            carry = ParticleCarry()
+        live = {n: carry.minds.get(n, MindCarry()) for n in order}
+        this = _Round(body, live, home, dict(carry.standing), carry.last, key)
+        action: dict[str, Array] = {}
+        for i, name in enumerate(order):
+            mind_key = key if i == 0 else jax.random.fold_in(key, i)
+            action.update(this.turn(name, mind_key, obs))
+        return action, ParticleCarry(live, this.standing, action), this.home
+
+    return _ParticleStep(step, body.supplied)
 
 
 def _own_fields(system: System, view_params: SystemParams) -> dict[str, object]:
@@ -457,8 +654,8 @@ def _check_parameters_only(
 ) -> None:
     """Refuse learned params that differ from the given ones outside the parameter variables.
     Leaves are compared by identity first and by value only where the identity changed."""
-    before = _own_fields(system, system._params_in(given, "particle"))
-    after = _own_fields(system, system._params_in(learned, "particle"))
+    before = _own_fields(system, system._params_in(given, "run"))
+    after = _own_fields(system, system._params_in(learned, "run"))
     differ = [] if before.keys() == after.keys() else ["the set of fields"]
     for field in before.keys() & after.keys():
         la, ta = jax.tree_util.tree_flatten(before[field])
@@ -478,143 +675,11 @@ def _check_parameters_only(
                 break
     if differ:
         raise ValueError(
-            f"particle(): the ViewRespond of component {name!r} returned params that differ from "
-            f"the ones it was given in {sorted(differ)}; under particle only declared parameter "
-            "variables are written back to the home, so a table that is learned must be declared "
-            "as a Parameter variable"
+            f"the step of component {name!r} returned params that differ from the ones it was "
+            f"given in {sorted(differ)}; on a composite only declared parameter variables are "
+            "written back to the home, so a table that is learned must be declared as a "
+            "Parameter variable"
         )
-
-
-def particle_params(carry: "ParticleCarry | HoldCarry | MindCarry") -> SystemParams | None:
-    """The parameter home a particle's carry holds (``None`` before its first round)."""
-    return carry.home if isinstance(carry, ParticleCarry) else None
-
-
-def particle(
-    composite: System,
-    params: SystemParams,
-    minds: Mapping[str, "RespondFn | ViewRespond"],
-) -> RespondFn:
-    """A merged composite with one mind per view, as one mind for :func:`couple`.
-
-    The composite is one particle: its modalities are the mind's in-ports and its action nodes the
-    out-ports (``couple((composite, params, particle(...)))``, a world joined by wires). Inside it,
-    each round, in the order of ``minds`` (a mind listed later sees an earlier mind's decision of
-    this round; the order is the particle's own, not a tick order):
-
-    - every read of a minded component is supplied from the carries, as in the composite form of
-      :func:`run`: a state factor's posterior of the round before pushed through the read's kernel
-      and realised, an action node's level of the round before, ``None`` where nothing is carried
-      yet (the modality is absent that round);
-    - a :class:`ViewRespond` mind is handed the view of its component taken from the home (the
-      composite's params as learned so far), with each control node another component chooses that
-      its view reads set to the level that component last chose (uniform before any choice): the
-      per-level views are built once on first use (``subsystem``) and refreshed from the home
-      (``retake``) when it changes, equal Systems and the shapes of one compiled program;
-    - when a ``ViewRespond`` returns params other than the ones it was given, they are written back
-      to the home (:func:`~hybrid_aif.composition.merge.write_back`, with the view it was given as
-      ``before``, so the stale-``before`` rule holds by construction); the next mind to respond is
-      handed a view taken from the new home, so a ``SharedParameter`` needs no bookkeeping. The
-      params returned may differ from the ones given in parameter variables only (see
-      :class:`ViewRespond`), else this raises;
-    - a plain :data:`RespondFn` mind is called as always and is handed no params.
-
-    A mind's key is the particle's for the first mind in ``minds`` and ``fold_in(key, i)`` for the
-    ``i``-th after it; a read's draw is keyed by ``modality_key(key, m)``. Every component needs a
-    mind (a component that chooses nothing takes :func:`ancestral_respond` or a respond returning no
-    action), and every control node must be chosen by a listed mind. A view that reads a control
-    node another component chooses, and whose targets are conditional on it, has no view before that
-    component has chosen: list the chooser first, which this checks at construction. A mind wrapped
-    in :func:`hold` composes as in the composite form. ``params`` seeds the home; the final home is
-    :func:`particle_params` of the particle's final carry, and each inner mind's carry is
-    ``carry.minds[name]``.
-
-    Design: nesting-and-coupling.md N4, N9.
-    """
-    layout = _layout(composite, minds, "particle()")
-    c_names, action_of = layout.names, layout.action_of
-    order = list(minds)
-    typed = composite._names(composite._params_in(params, "particle"))
-    node_types = {a: (typed.kind(k), typed.sizes[k]) for k, a in enumerate(c_names.actions)}
-    unminded = sorted(set(layout.table) - set(minds))
-    if unminded:
-        raise ValueError(
-            f"particle(): component(s) {unminded} have no mind in minds; every component of a "
-            "particle needs one (ancestral_respond(...) or a respond returning no action for a "
-            "component that chooses nothing)"
-        )
-    partner = {name: partner_controls(composite, name) for name in order}
-    for name in order:
-        if not isinstance(minds[name], ViewRespond):
-            continue
-        for node in partner[name]:
-            chooser = layout.claimed[node]
-            if order.index(chooser) < order.index(name):
-                continue
-            try:
-                subsystem(composite, params, name)
-            except ValueError as err:
-                raise ValueError(
-                    f"particle(): component {name!r} reads the control node {node!r}, which "
-                    f"component {chooser!r} chooses, and has no view before that choice is made "
-                    f"({err}); list {chooser!r} before {name!r} in minds, so its choice is in "
-                    f"hand before {name!r} responds"
-                ) from err
-    supplied = frozenset(m for reads in layout.reads_in.values() for m, *_ in reads)
-    cache: dict[tuple, tuple] = {}  # (name, levels) -> (home, view System, view params)
-
-    def view(name: str, home: SystemParams, standing: Mapping[str, int]):
-        levels = tuple((n, standing.get(n)) for n in partner[name])
-        entry = cache.get((name, levels))
-        if entry is None:
-            priors = {n: lv for n, lv in levels if lv is not None}
-            system, vparams = subsystem(composite, home, name, partner_priors=priors or None)
-        elif entry[0] is home:
-            return entry[1], entry[2]
-        else:
-            system = entry[1]
-            vparams = retake(composite, system, entry[2], home)
-        cache[(name, levels)] = (home, system, vparams)
-        return system, vparams
-
-    def respond(key, obs, carry):
-        if not isinstance(carry, ParticleCarry):
-            carry = ParticleCarry()
-        home = params if carry.home is None else carry.home
-        live = {n: carry.minds.get(n, MindCarry()) for n in order}
-        standing = dict(carry.standing)
-        begun = {
-            holder: _posterior(live[holder])
-            for reads in layout.reads_in.values()
-            for _, holder, _, _, _ in reads
-            if holder is not None
-        }
-        action: dict[str, Array] = {}
-        for i, name in enumerate(order):
-            mods, ports = layout.routes[name]
-            seen = {m: obs[m] for m in mods if m in obs}
-            seen.update(
-                _supplied(layout.reads_in[name], begun, carry.last, key, layout.modality_at)
-            )
-            mind_key = key if i == 0 else jax.random.fold_in(key, i)
-            respond_ = minds[name]
-            if isinstance(respond_, ViewRespond):
-                system, given = view(name, home, standing)
-                chosen, live[name], learned = respond_(mind_key, seen, live[name], given)
-                if learned is not given:
-                    _check_parameters_only(system, name, given, learned)
-                    home = write_back(composite, home, name, given, learned)
-            else:
-                chosen, live[name] = respond_(mind_key, seen, live[name])
-            action.update(
-                _check_action(chosen, ports, name, action_of, {a: node_types[a] for a in ports})
-            )
-            for node, owner in layout.claimed.items():
-                if owner == name and node_types[action_of[node]][0] == LEVEL:
-                    standing[node] = int(action[action_of[node]])
-        return action, ParticleCarry(live, home, standing, action)
-
-    return _ParticleRespond(respond, supplied)
 
 
 def _durations_node(system: System, params: SystemParams) -> str:
@@ -623,7 +688,7 @@ def _durations_node(system: System, params: SystemParams) -> str:
     if not declared:
         raise ValueError(
             "hold: this System declares no params.durations, so there is no option to hold; "
-            "a mind with no durations is a plain respond"
+            "a step with no durations is a plain step"
         )
     ((node, _),) = declared.items()
     return node
@@ -640,15 +705,15 @@ def _posterior(carry) -> Mapping[str, Belief] | None:
 
 def _driven_reads(
     composite: System,
-    minds: Mapping[str, RespondFn],
+    minds: Mapping[str, Step],
     routes: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]],
     factors_of: Mapping[str, tuple[str, ...]],
 ) -> dict[str, list[tuple[str, str | None, str, "str | object", str]]]:
     """Every read the driver supplies, by reading mind: ``(modality, source mind, source,
     kernel, realise)``. The source mind is the mind whose factors hold the source state factor
     (the reader itself for a read inside its view), and ``None`` for an action node, whose datum
-    is the previous round's chosen level. A mind's view never fills its own reads (``respond``
-    takes no carry of past rounds), so the driver supplies all of them."""
+    is the previous round's chosen level. A step's view never fills its own reads (it takes
+    no carry of past rounds), so the driver supplies all of them."""
     out: dict[str, list] = {name: [] for name in minds}
     c_facs = set(composite._table.state_names)
     for read in composite._reads:
@@ -662,7 +727,7 @@ def _driven_reads(
                 raise ValueError(
                     f"modality {read.modality!r} reads {read.source!r}, a state factor of a "
                     "component that has no mind, so there is no carried belief to read; give "
-                    "that component a RespondFn"
+                    "that component a step"
                 )
         out[reader].append((read.modality, holder, read.source, read.kernel, read.realise))
     return out
@@ -692,14 +757,6 @@ def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout
             f"{who} routes by the subsystems metadata, and this System carries none; build the "
             "composite with hybrid_aif.composition.merge.merge()"
         )
-    if who == "run()":
-        views = [n for n, m in minds.items() if getattr(m, "takes_params", False)]
-        if views:
-            raise ValueError(
-                f"run(): minds {views} are ViewRespond, a mind for particle(); wrap the composite "
-                "in particle(composite, params, {...}) and run the coupling, or use "
-                "agent_respond(...) for a mind closed over its own view"
-            )
     table = dict(composite.subsystems)
     unknown = sorted(set(minds) - set(table))
     if unknown:
@@ -725,7 +782,7 @@ def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout
     if unclaimed:
         raise ValueError(
             f"control node(s) {unclaimed} are chosen by no mind, so nothing would ever emit "
-            "their action; give the owning component a RespondFn (ancestral_respond(...) for an "
+            "their action; give the owning component a step (ancestral_step(...) for an "
             "env-like one), or fix the node with a BoundaryPrior naming it at merge time"
         )
     #  which composite factors step at which component's turn (sequential, async); the factors
@@ -781,7 +838,7 @@ def _supplied(
 def run(
     composite: "System | Wiring",
     params: SystemParams | None = None,
-    minds: Mapping[str, RespondFn] | None = None,
+    minds: Mapping[str, Step] | None = None,
     ticks: int | None = None,
     key: Array | None = None,
     tick_order: TickOrder = "simultaneous",
@@ -791,13 +848,16 @@ def run(
     *,
     states: Mapping[str, Mapping[str, Array]] | None = None,
 ):
-    """Run minds and processes for a number of ticks; see the module docstring.
+    """Run steps and processes for a number of ticks; see the module docstring.
 
     **Wired form**, ``run(wiring, ticks=..., key=..., tick_order="simultaneous", carries=None,
     states=None) -> dict[str, MindRecord | ProcessRecord]``: ``wiring`` is
     :func:`~hybrid_aif.composition.couple.couple`'s result, and ``ticks`` and ``key`` are given
     by keyword; ``carries`` seeds the minds' carries and ``states`` the processes' resets (a
-    point state keyed by factor name), each keyed by participant name. Every process steps once
+    point state keyed by factor name), each keyed by participant name. Each mind's params start
+    as the ones its entry in :func:`couple` declares; every round its step is handed the current
+    ones and what it returns is kept (:attr:`MindRecord.params` holds the last; a step that
+    returns the object it was given did not learn). Every process steps once
     per tick, at the end, on the acts of the tick. Under ``"simultaneous"`` every mind responds
     to the tick's boundary; under ``"sequential"`` and ``"async"`` a mind's action nodes are
     realised as it chooses, so a later mind sees an earlier mind's act this tick through a
@@ -823,15 +883,39 @@ def run(
     composite's ``as_env``, with the minds on its ``subsystem`` views and the wires by name,
     reproduces the composite form bitwise under ``"simultaneous"`` when the minds are given in
     the composite's component order, so that the action nodes, and the kernels keyed by them,
-    fall in the composite's action order; under the other orders the composite form steps each
+    fall in the composite's action order, and no component's view reads a control node another
+    component chooses (the composite form routes such a choice into the reading view, which a
+    view fixed by the caller does not); under the other orders the composite form steps each
     component's factors at its turn, which a wiring of one process cannot, and the two differ.
+    The action kernels of a mind (``params.actuator``) are those of its starting params, fixed
+    when :func:`~hybrid_aif.composition.couple.couple` runs, so a step that learns a kernel
+    changes nothing the wired form realises; a step that returns anything other than a
+    ``SystemParams`` (when it does not return the params it was given) is refused naming the mind.
 
     **Composite form**, ``run(composite, params, minds, ticks, key, tick_order="simultaneous",
     state=None, carries=None, param_key=None) -> Trajectory``: the composite's world is its own
-    model (``as_env``); the form does no write-back and routes no decision into a view, and a
-    particle with an outside world is :func:`particle` in the wired form. ``minds`` is keyed by
-    subsystem name, in the order ``"sequential"`` follows. Every control node of the composite must
-    be chosen by a named mind, or this raises (give the component a mind, or fix the node with a
+    model (``as_env``), run forward from ``params``. ``minds`` maps a subsystem name to its
+    :data:`Step`, in the order ``"sequential"`` follows. ``params`` is the parameter home, and
+    each round a step is handed the view of its component taken from the home as it stands
+    (:func:`~hybrid_aif.composition.merge.subsystem`, with each control node another component
+    chooses that the view reads at the level that component last intended, uniform before any
+    choice; built once per set of levels and refreshed with ``retake``). Under ``"simultaneous"``
+    the levels are those standing when the round began, since every step reads the round's
+    boundary; under ``"sequential"`` and ``"async"`` they are as they stand at the step's turn.
+    A non-identity ``params.actuator`` kernel on a node another component's view reads is refused
+    at construction, since the level handed on is the intended one, not the realised one. A step
+    that returns params
+    other than the ones it was given has them written back to the home
+    (:func:`~hybrid_aif.composition.merge.write_back`) and the next view is taken from the new
+    home; it may differ from what it was given in declared parameter variables only, else this
+    raises. The world does not learn: it keeps running the starting ``params``. A view that reads a
+    control node whose targets are conditional on it has no view before that node's chooser has
+    chosen, so it is supported only where the chooser has chosen before the reader responds in
+    every round: under ``"sequential"`` with the chooser listed first (checked up front); under
+    ``"simultaneous"`` and ``"async"`` it is refused up front. ``Trajectory.params`` is the
+    home after the last round. :func:`particle` is the same per-round body as one step of a
+    coupling. Every control node of the composite must be chosen by a named step, or this raises
+    (give the component a step, or fix the node with a
     :class:`~hybrid_aif.composition.merge.BoundaryPrior`); a component that chooses no control
     node needs none. ``state`` overrides the env's initial draw with a known point state keyed
     by composite factor name, ``carries`` seeds the minds' carries, and ``param_key`` draws
@@ -839,7 +923,7 @@ def run(
     ``"sequential"`` and ``"async"`` the composite steps a component's factors at that
     component's turn, on the realised actions standing then (every other mind's last realised
     action, level 0 before a mind has chosen), and the factors of the components that have no
-    mind at the end of the tick; under ``"simultaneous"`` the action is re-zeroed each tick and
+    step at the end of the tick; under ``"simultaneous"`` the action is re-zeroed each tick and
     the whole composite steps once on it. Every partial step emits the composite's observations
     afresh, so a later mind reads a stepped factor's new value and a new draw of any noisy
     modality, including one over factors that did not step. The composite's kernels
@@ -858,7 +942,7 @@ def run(
     folded rather than split, so a composite with no read draws what it drew before. A read of
     an action node takes the level chosen the round before. On the first round, or when the
     source has no posterior, the entry is ``None`` (the modality is absent;
-    :func:`agent_respond` filters on it); a source mind must exist. Design:
+    :func:`agent_step` filters on it); a source mind must exist. Design:
     nesting-and-coupling.md N3.
     """
     if isinstance(composite, Wiring):
@@ -891,7 +975,7 @@ def run(
 def _run_composite(
     composite: System,
     params: SystemParams,
-    minds: Mapping[str, RespondFn],
+    minds: Mapping[str, Step],
     ticks: int,
     key: Array,
     tick_order: TickOrder = "simultaneous",
@@ -899,11 +983,12 @@ def _run_composite(
     carries: Mapping[str, MindCarry] | None = None,
     param_key: Array | None = None,
 ) -> Trajectory:
-    """Run ``minds`` against the composite for ``ticks``: :func:`run`'s composite form.
+    """Run ``minds`` against the composite for ``ticks``: :func:`run`'s composite form, whose
+    docstring describes it. The per-round body is :class:`_Body`'s, shared with :func:`particle`.
 
     ``minds`` is keyed by subsystem name, in the order ``"sequential"`` follows. Every control
-    node of the composite must be chosen by a named mind, or this raises (give the component a
-    mind, or fix the node with a :class:`~hybrid_aif.composition.merge.BoundaryPrior`); a
+    node of the composite must be chosen by a named step, or this raises (give the component a
+    step, or fix the node with a :class:`~hybrid_aif.composition.merge.BoundaryPrior`); a
     component that chooses no control node needs none. ``state`` overrides the env's initial draw
     with a known point state keyed by composite factor name, ``carries`` seeds the minds'
     carries, and ``param_key`` draws ground-truth tables from learnable declarations, as in
@@ -927,21 +1012,20 @@ def _run_composite(
             "changes the game structure (design: nesting-systems.md, requirement 5 + "
             "tick-semantics note)."
         )
-    layout = _layout(composite, minds, "run()")
-    c_names, action_of = layout.names, layout.action_of
+    body = _Body(composite, params, minds, "run()", tick_order == "sequential", tick_order)
+    layout = body.layout
+    c_names = layout.names
     c_mods, c_facs = c_names.modalities, c_names.factors
-    routes, factors_of, unminded = layout.routes, layout.factors_of, layout.unminded
-    reads_in, modality_at = layout.reads_in, layout.modality_at
+    factors_of, unminded = layout.factors_of, layout.unminded
 
     env, env_params = composite.as_env(params, param_key)
     key, k_reset = jax.random.split(key)
     obs, world = env.reset(k_reset, env_params, state)
     live = {name: MindCarry() for name in minds}
     live.update(carries or {})
+    home, standing = params, {}
 
-    #  each action node's kind and width, read from the composite's control layout
-    typed = composite._names(composite._params_in(params, "run"))
-    node_types = {a: (typed.kind(k), typed.sizes[k]) for k, a in enumerate(c_names.actions)}
+    node_types = body.node_types
 
     def no_op() -> dict[str, Array]:
         return {
@@ -979,35 +1063,31 @@ def _run_composite(
         keys = list(jax.random.split(k_tick, 2 * len(minds) + 2))
         if tick_order == "simultaneous":
             action = no_op()
-        #  the posteriors the sources held when the round began (a read is one tick behind),
-        #  and the previous round's chosen actions
-        begun = {
-            holder: _posterior(live[holder])
-            for reads in reads_in.values()
-            for _, holder, _, _, _ in reads
-            if holder is not None
-        }
-        last = action_log[-1] if action_log else None
+        #  the previous round's chosen actions: a read of an action node takes them as its datum
+        this = _Round(
+            body,
+            live,
+            home,
+            standing,
+            action_log[-1] if action_log else None,
+            k_tick,
+            frozen=tick_order == "simultaneous",
+        )
         if tick_order == "async":
             # a fresh random permutation per round: no fixed ordering privilege
             perm = [int(i) for i in sweep_rng.permutation(len(names))]
         else:
             perm = list(range(len(names)))
         for j in perm:
-            name, respond = names[j], minds[names[j]]
-            mods, ports = routes[name]
-            seen = {m: obs[m] for m in mods}
-            seen.update(_supplied(reads_in[name], begun, last, k_tick, modality_at))
-            chosen, live[name] = respond(keys[j], seen, live[name])
-            action = {
-                **action,
-                **_check_action(chosen, ports, name, action_of, {a: node_types[a] for a in ports}),
-            }
+            name = names[j]
+            ports = layout.routes[name][1]
+            action = {**action, **this.turn(name, keys[j], obs)}
             if tick_order in ("sequential", "async"):
                 k_step = keys[len(minds) + j]
                 realised = {**realised, **actuate(k_step, ports)}
                 if factors_of[name]:
                     obs, world = env.step(k_step, world, realised, quiet, factors_of[name])
+        home = this.home
         if tick_order == "simultaneous":
             realised = actuate(keys[-1], c_names.actions)
             obs, world = env.step(keys[-1], world, realised, quiet)
@@ -1026,6 +1106,7 @@ def _run_composite(
             for k in c_names.actions
         },
         carries=live,
+        params=home,
         realised={
             k: jnp.stack([a[k] for a in realised_log])
             if realised_log
@@ -1143,6 +1224,7 @@ def _run_wired(
 
     live = {n: MindCarry() for n in mind_names}
     live.update(carries or {})
+    current = {n: wiring.minds[n].params for n in mind_names}
     received_log: dict[str, list] = {n: [] for n in mind_names}
     action_log: dict[str, list] = {n: [] for n in mind_names}
     realised_log: dict[str, list] = {n: [] for n in mind_names}
@@ -1162,7 +1244,14 @@ def _run_wired(
             n = mind_names[j]
             received = mind_inputs(n)
             received_log[n].append(received)
-            chosen, live[n] = wiring.minds[n].respond(keys[j], received, live[n])
+            chosen, live[n], learned = wiring.minds[n].step(keys[j], received, live[n], current[n])
+            if learned is not current[n]:
+                if not isinstance(learned, SystemParams):
+                    raise ValueError(
+                        f"run(): the step of mind {n!r} returned {type(learned).__name__} as its "
+                        "params; a step returns the SystemParams it was given, or learned ones"
+                    )
+                current[n] = learned
             intended[n] = _check_action(
                 chosen, tuple(port_types[n]), n, action_of[n], port_types[n]
             )
@@ -1196,6 +1285,7 @@ def _run_wired(
             actions=stacked(action_log[n], actions, empty),
             realised=stacked(realised_log[n], actions, empty),
             carry=live[n],
+            params=current[n],
         )
     for n in proc_names:
         names = wiring.processes[n].env.names
@@ -1233,7 +1323,7 @@ def _check_action(
     naming a control node is refused naming its action node."""
     if not isinstance(chosen, Mapping):
         raise TypeError(
-            f"mind {name!r} returned a positional action; a RespondFn returns its action keyed "
+            f"mind {name!r} returned a positional action; a step returns its action keyed "
             f"by action node, {list(ports)} (convert with view.from_positional('actions', ...))"
         )
     crossed = [k for k in chosen if k in (action_of or {}) and action_of[k] in ports]

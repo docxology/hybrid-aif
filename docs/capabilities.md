@@ -406,8 +406,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   and **async** (Gauss-Seidel sweeps in declaration or random order, each
   component's factors stepping at its turn — the statistically faithful mode
   for equilibrium/Ising-like composites; `nesting-systems.md`, tick
-  semantics and its 2026-10-14 amendment). `run` is synchronous: every round every mind
-  responds. A slow tier is a mind wrapped in `composition.hold`, which returns its stored action
+  semantics and its 2026-10-14 amendment). `run` is synchronous: every round every step
+  responds. A slow tier is a step wrapped in `composition.hold`, which returns its stored action
   until the last action's `elapsed` duration has passed (below, v0.19.0); there is no second
   clock (`design/nesting-and-coupling.md` N4). `couple` joins separate particles into a `Wiring` that `run` takes, and what
   crosses a wire is action or sensation (`design/nesting-and-coupling.md` N1, N2); a merged
@@ -1000,6 +1000,25 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
 
 ## In the field / in flight
 
+- **Params flow through the runner (unreleased)**: one participant shape,
+  `Step = step(key, obs, carry, params) -> (action, carry', params')`, for
+  every mind of `run`. `agent_step(system, planner=None, **act_kwargs)`,
+  `ancestral_step(system)` and `hold(step, ticks_per_unit=1)` replace the
+  closed-over `agent_respond`, `ancestral_respond` and `hold(system, params,
+  respond, ...)`; `hold` reads the option's duration through `step.system`
+  (set by the first two, or `system=` for a hand-written step). A step is handed
+  its params each round and returns them, the same object when it did not learn;
+  the wired `run` records the last in `MindRecord.params`, and the composite
+  form hands each component its view of the composite's params, writes learning
+  back and records the result in `Trajectory.params`. `ViewRespond`,
+  `view_respond` and `particle_params` are gone; `particle` takes plain steps.
+  Upgrading: a composite in which a view reads a control node another
+  component chooses now runs that view at the chooser's level rather than the
+  uniform prior the caller built, so its results change even without learning;
+  such a reader with no uniform view is refused up front except under
+  `"sequential"` with the chooser listed first, as is a non-identity action
+  kernel on the node it reads (`design/engine-consolidation.md` step 1;
+  `composing-systems.md`, "One step per component").
 - **Shipped to robots**: the downstream coverage agent (EFE-driven coverage
   at tuned-heuristic parity with the hand-tuned coefficients removed;
   stage-2 learns localization noise online).

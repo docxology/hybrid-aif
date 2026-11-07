@@ -26,8 +26,8 @@ from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition.driver import (
     MindCarry,
     _check_action,
-    agent_respond,
-    ancestral_respond,
+    agent_step,
+    ancestral_step,
     run,
 )
 from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
@@ -187,11 +187,11 @@ def test_every_action_face_keys_by_action_node_and_refuses_the_control_node():
 def test_the_driver_routes_and_records_action_nodes():
     composite, cp = merged()
     view, vp = subsystem(composite, cp, "agent")
-    traj = run(composite, cp, {"agent": ancestral_respond(view, vp)}, ticks=3, key=KEY)
+    traj = run(composite, cp, {"agent": ancestral_step(view)}, ticks=3, key=KEY)
     assert list(traj.actions) == list(composite.names.actions) == ["agent.a_location"]
     assert list(traj.realised) == ["agent.a_location"]
     assert jnp.array_equal(traj.realised["agent.a_location"], traj.actions["agent.a_location"])
-    action, _ = ancestral_respond(view, vp)(KEY, {}, MindCarry())
+    action, _, _ = ancestral_step(view)(KEY, {}, MindCarry(), vp)
     assert list(action) == ["agent.a_location"]
     with pytest.raises(ValueError, match="a control node; key the action by its action node"):
         _check_action(
@@ -272,7 +272,7 @@ def test_the_agents_control_belief_is_unchanged_by_the_draw():
     #  the driver records both: the intended action and the realised one
     composite, cp = merge({"m": system}, {"m": params})
     view, vp = subsystem(composite, cp, "m")
-    traj = run(composite, cp, {"m": ancestral_respond(view, vp)}, ticks=6, key=KEY)
+    traj = run(composite, cp, {"m": ancestral_step(view)}, ticks=6, key=KEY)
     assert jnp.array_equal(traj.realised["m.push"], (traj.actions["m.push"] + 1) % 3)
     x = traj.states["m.x"]
     assert jnp.array_equal(x[1:], (x[:-1] + traj.realised["m.push"]) % 3)
@@ -360,9 +360,9 @@ def test_a_merge_binds_native_control_nodes():
     with pytest.raises(ValueError, match="key it by 'a.push'"):
         composite.update_empirical_prior(cp, beliefs, {"a.push": 2, "b.push": 2})
     with pytest.raises(ValueError, match="key it by 'a.u_push'"):
-        agent_respond(composite, cp, legal={"b.u_push": jnp.ones(3, bool)})
+        agent_step(composite, legal={"b.u_push": jnp.ones(3, bool)})(KEY, {}, MindCarry(), cp)
     view, vp = subsystem(composite, cp, "a")
-    traj = run(composite, cp, {"a": ancestral_respond(view, vp)}, ticks=3, key=KEY)
+    traj = run(composite, cp, {"a": ancestral_step(view)}, ticks=3, key=KEY)
     assert list(traj.actions) == ["a.push"]
     #  a terminated native node, and a kernel that moves with its node
     one, op = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [BoundaryPrior("b.u_push", 1)])

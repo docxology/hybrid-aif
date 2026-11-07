@@ -1,7 +1,7 @@
 """Coupling through blankets: participants, typed ports, and the wires between them.
 
 A run's participants are **minds** and **processes**, each named at :func:`couple`. A mind is
-``(System, SystemParams, RespondFn)``: its in-ports are its modalities, its out-ports its action
+``(System, SystemParams, Step)``: its in-ports are its modalities, its out-ports its action
 nodes. A process is ``(GenerativeEnv, env_params)``: its in-ports are its action inputs (the
 env's action nodes), its out-ports its observations. A port is written ``"participant.port"``
 (the participant's name up to the first dot, the port's name after it).
@@ -43,7 +43,7 @@ from hybrid_aif.system import System, SystemParams
 from hybrid_aif.system.core import _observation_type
 
 if TYPE_CHECKING:
-    from hybrid_aif.composition.driver import RespondFn
+    from hybrid_aif.composition.driver import Step
 
 __all__ = ["Wire", "Wiring", "couple"]
 
@@ -60,12 +60,12 @@ class Wire(NamedTuple):
 
 
 class Mind(NamedTuple):
-    """A mind as :func:`couple` holds it: its System, its params, its respond function, and its
+    """A mind as :func:`couple` holds it: its System, its params, its step function, and its
     action nodes' kernels as ``params.actuator`` declares them, checked."""
 
     system: System
     params: SystemParams
-    respond: "RespondFn"
+    step: "Step"
     kernels: dict[str, Array]
 
 
@@ -156,31 +156,25 @@ def _mind(name: str, entry: object) -> tuple[Mind, dict[str, PortType], dict[str
     if not (isinstance(entry, tuple | list) and len(entry) == 3):
         raise TypeError(
             f"couple(): minds[{name!r}] is a {type(entry).__name__}; a mind is "
-            "(System, SystemParams, RespondFn)"
+            "(System, SystemParams, Step)"
         )
-    system, params, respond = entry
+    system, params, step = entry
     if not isinstance(system, System) or not isinstance(params, SystemParams):
         raise TypeError(
             f"couple(): minds[{name!r}] holds ({type(system).__name__}, "
-            f"{type(params).__name__}, ...); a mind is (System, SystemParams, RespondFn)"
+            f"{type(params).__name__}, ...); a mind is (System, SystemParams, Step)"
         )
-    if getattr(respond, "takes_params", False):
-        raise ValueError(
-            f"couple(): minds[{name!r}]'s respond is a ViewRespond, a mind for particle(); wrap "
-            "the composite in particle(composite, params, {...}) and couple that, or use "
-            "agent_respond(...) for a mind closed over its own view"
-        )
-    if not callable(respond):
+    if not callable(step):
         raise TypeError(
-            f"couple(): minds[{name!r}]'s third entry is a {type(respond).__name__}; pass its "
-            "RespondFn (agent_respond(...) or ancestral_respond(...))"
+            f"couple(): minds[{name!r}]'s third entry is a {type(step).__name__}; pass its "
+            "Step (agent_step(...) or ancestral_step(...))"
         )
     positional = system._params_in(params, "couple")
     names = system._names(positional)
     outs = {a: (names.kind(k), names.sizes[k]) for k, a in enumerate(names.actions)}
     ins = dict(system._modality_types(positional))
     kernels = system._actuator(params, f"couple(): minds[{name!r}]")
-    return Mind(system, params, respond, kernels), ins, outs
+    return Mind(system, params, step, kernels), ins, outs
 
 
 def _process(name: str, entry: object) -> tuple[Process, dict[str, PortType], dict[str, PortType]]:
@@ -259,7 +253,7 @@ def couple(
 ) -> Wiring:
     """Participants and the wires between them, checked into a :class:`Wiring`.
 
-    ``minds`` maps a name to ``(System, SystemParams, RespondFn)``, ``processes`` a name to
+    ``minds`` maps a name to ``(System, SystemParams, Step)``, ``processes`` a name to
     ``(GenerativeEnv, env_params)`` (``System.as_env`` gives one; ``GenerativeEnv.wrap`` keys an
     outside positional env). ``wires`` are :class:`Wire` s between ``"participant.port"``
     spellings; ``fixed`` holds a constant per tick for a process input, keyed the same way.
@@ -337,7 +331,7 @@ def couple(
             )
         _, s_role, _ = resolve(wire.source, "source")
         t_who, t_role, t_port = resolve(wire.target, "target")
-        if t_role == "mind" and t_port in getattr(mind_table[t_who].respond, "supplied", ()):
+        if t_role == "mind" and t_port in getattr(mind_table[t_who].step, "supplied", ()):
             raise ValueError(
                 f"couple(): Wire({wire.source!r}, {wire.target!r}) feeds modality {t_port!r}, a "
                 "read supplied inside the particle from a sibling's belief, so the wire would be "
@@ -385,7 +379,7 @@ def couple(
             port = f"{name}.{p}"
             if port in feeds:
                 continue
-            if role == "mind" and p in getattr(mind_table[name].respond, "supplied", ()):
+            if role == "mind" and p in getattr(mind_table[name].step, "supplied", ()):
                 continue  # a particle supplies this modality from inside (a sibling-belief read)
             if role == "process":
                 raise ValueError(

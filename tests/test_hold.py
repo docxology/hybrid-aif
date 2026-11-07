@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from hybrid_aif.composition import HoldCarry, MindCarry, agent_respond, couple, hold, merge, run
+from hybrid_aif.composition import HoldCarry, MindCarry, agent_step, couple, hold, merge, run
 from hybrid_aif.composition.merge import subsystem
 
 _PATH = pathlib.Path(__file__).resolve().parents[1] / "examples" / "compose_minds.py"
@@ -26,13 +26,14 @@ def _slow(durations):
     return system, dataclasses.replace(params, durations={"u_move": jnp.asarray(durations)})
 
 
-def _counted(respond):
+def _counted(step):
     calls = []
 
-    def wrapped(key, obs, carry):
+    def wrapped(key, obs, carry, params):
         calls.append(1)
-        return respond(key, obs, carry)
+        return step(key, obs, carry, params)
 
+    wrapped.system = step.system
     return wrapped, calls
 
 
@@ -56,9 +57,9 @@ def _check(actions, calls, rounds_of):
 
 def _wired(slow):
     (sa, pa), (sb, pb) = slow, cm.robot(2, 2)
-    inner, calls = _counted(agent_respond(sa, pa, selection="stochastic"))
-    mind_a = hold(sa, pa, inner)
-    mind_b = agent_respond(sb, pb, selection="stochastic")
+    inner, calls = _counted(agent_step(sa, selection="stochastic"))
+    mind_a = hold(inner)
+    mind_b = agent_step(sb, selection="stochastic")
     wiring = couple(
         minds={"a": (sa, pa, mind_a), "b": (sb, pb, mind_b)},
         processes={"world": cm.world((2, 2))},
@@ -87,10 +88,10 @@ def test_composite_form_redecides_only_at_option_boundaries(order):
     (sa, pa), (sb, pb) = _slow([4.0, 2.0, 4.0]), cm.robot(2, 2)
     comp, cp = merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(cm.LINKS))
     va, vb = subsystem(comp, cp, "a"), subsystem(comp, cp, "b")
-    inner, calls = _counted(agent_respond(*va, selection="stochastic"))
+    inner, calls = _counted(agent_step(va[0], selection="stochastic"))
     minds = {
-        "a": hold(*va, inner),
-        "b": agent_respond(*vb, selection="stochastic"),
+        "a": hold(inner),
+        "b": agent_step(vb[0], selection="stochastic"),
     }
     tr = run(comp, cp, minds, TICKS, KEY, tick_order=order)
     _check(tr.actions["a.move"], calls, {0: 4, 1: 2, 2: 4})
@@ -98,14 +99,15 @@ def test_composite_form_redecides_only_at_option_boundaries(order):
 
 def test_ticks_per_unit_converts_the_unit_to_rounds():
     system, params = _slow([1.5, 1.5, 1.5])
-    inner, calls = _counted(agent_respond(system, params, selection="stochastic"))
-    held = hold(system, params, inner, ticks_per_unit=2)
+    inner, calls = _counted(agent_step(system, selection="stochastic"))
+    held = hold(inner, ticks_per_unit=2)
     # drive the wrapper directly: it decides on rounds 0, 3, 6 and holds in between
     carry = MindCarry()
     obs = {m: jnp.zeros((), jnp.int32) for m in system.names.modalities}
     seen = []
     for t in range(9):
-        action, carry = held(jax.random.PRNGKey(t), obs, carry)
+        action, carry, given = held(jax.random.PRNGKey(t), obs, carry, params)
+        assert given is params
         seen.append((len(calls), int(action["move"])))
         assert isinstance(carry, HoldCarry)
     assert [n for n, _ in seen] == [1, 1, 1, 2, 2, 2, 3, 3, 3]
@@ -122,31 +124,34 @@ def test_a_carries_seed_decides_on_the_first_round():
 
 def test_a_duration_that_is_not_a_whole_number_of_rounds_is_refused():
     system, params = _slow([1.5, 1.5, 1.5])
-    held = hold(system, params, agent_respond(system, params))
+    held = hold(agent_step(system))
     obs = {m: jnp.zeros((), jnp.int32) for m in system.names.modalities}
     with pytest.raises(ValueError, match="not a whole number of rounds"):
-        held(KEY, obs, MindCarry())
+        held(KEY, obs, MindCarry(), params)
 
 
 def test_a_stochastic_actuator_on_the_durations_node_is_refused():
     system, params = _slow([2.0, 2.0, 2.0])
     kernel = jnp.asarray([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]])
     params = dataclasses.replace(params, actuator={"move": kernel})
+    held = hold(agent_step(system))
     with pytest.raises(ValueError, match="non-identity actuator.*T9"):
-        hold(system, params, agent_respond(system, params))
+        held(KEY, {}, MindCarry(), params)
 
 
 def test_a_permutation_actuator_is_refused_though_it_is_deterministic():
     system, params = _slow([2.0, 2.0, 2.0])
     params = dataclasses.replace(params, actuator={"move": jnp.asarray(np.eye(3)[[1, 2, 0]])})
+    held = hold(agent_step(system))
     with pytest.raises(ValueError, match="non-identity actuator"):
-        hold(system, params, agent_respond(system, params))
+        held(KEY, {}, MindCarry(), params)
 
 
 def test_a_system_with_no_durations_is_refused():
     system, params = cm.robot(2, 2)
+    held = hold(agent_step(system))
     with pytest.raises(ValueError, match="declares no params.durations"):
-        hold(system, params, agent_respond(system, params))
+        held(KEY, {}, MindCarry(), params)
 
 
 def test_elapsed_is_legal_under_jit_and_cond():

@@ -27,7 +27,7 @@ import pytest
 
 import hybrid_aif as H
 from hybrid_aif import description as D
-from hybrid_aif.composition.driver import agent_respond, ancestral_respond, run
+from hybrid_aif.composition.driver import agent_step, ancestral_step, run
 from hybrid_aif.composition.merge import subsystem
 from hybrid_aif.description import (
     Description,
@@ -307,8 +307,8 @@ def test_the_composite_record_is_reconstructed_so_run_routes_and_views_agree(mod
 
     def minds(composite, cp):
         return {
-            "agent": agent_respond(*subsystem(composite, cp, "agent")),
-            "world": ancestral_respond(*subsystem(composite, cp, "world")),
+            "agent": agent_step(subsystem(composite, cp, "agent")[0]),
+            "world": ancestral_step(subsystem(composite, cp, "world")[0]),
         }
 
     for name in ("agent", "world"):

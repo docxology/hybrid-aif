@@ -34,7 +34,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import Wire, agent_respond, couple, run
+from hybrid_aif.composition import Wire, agent_step, couple, run
 from hybrid_aif.system import System, SystemParams
 
 MOVES = ("stay", "north", "south", "east", "west")
@@ -211,8 +211,8 @@ def wiring(prey, predator, n: int = 4, slip: float = 0.2):
     both minds see both positions and the distance."""
     return couple(
         minds={
-            "prey": (*prey, agent_respond(*prey)),
-            "predator": (*predator, agent_respond(*predator)),
+            "prey": (*prey, agent_step(prey[0])),
+            "predator": (*predator, agent_step(predator[0])),
         },
         processes={"world": world(n, slip)},
         wires=list(WIRES),

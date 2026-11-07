@@ -30,7 +30,7 @@ from hybrid_aif.composition import (
     MindCarry,
     SharedParameter,
     SiblingRead,
-    agent_respond,
+    agent_step,
     merge,
     nested,
     run,
@@ -129,22 +129,22 @@ def _composite(
     )
 
 
-def _recorded(respond, log, mind: str):
-    def wrapped(key, obs, carry):
+def _recorded(step, log, mind: str):
+    def wrapped(key, obs, carry, params):
         log.append((mind, dict(obs), carry))
-        return respond(key, obs, carry)
+        return step(key, obs, carry, params)
 
     return wrapped
 
 
 def _run(composite, params, ticks: int, key=0):
-    """Run the two perceivers; the log holds ``(mind, obs seen, carry in)`` per respond."""
+    """Run the two perceivers; the log holds ``(mind, obs seen, carry in)`` per step."""
     log: list = []
     rover = subsystem(composite, params, "rover")
     mission = subsystem(composite, params, "mission")
     minds = {
-        "rover": _recorded(agent_respond(*rover), log, "rover"),
-        "mission": _recorded(agent_respond(*mission), log, "mission"),
+        "rover": _recorded(agent_step(rover[0]), log, "rover"),
+        "mission": _recorded(agent_step(mission[0]), log, "mission"),
     }
     trajectory = run(composite, params, minds, ticks, jax.random.PRNGKey(key))
     rounds = [
@@ -248,9 +248,9 @@ def test_stats_datum_is_the_cell_mass_and_the_posterior_is_the_soft_observation_
             np.asarray(got["mission.visit"].probs), np.asarray(want), rtol=1e-5, atol=1e-7
         )
     # the mind's own carry is what the recorded observations give, round by round
-    respond, carry = agent_respond(view, view_params), MindCarry()
+    step, carry = agent_step(view), MindCarry()
     for t, r in enumerate(rounds):
-        _, carry = respond(jax.random.PRNGKey(t), r["obs"], carry)
+        _, carry, _ = step(jax.random.PRNGKey(t), r["obs"], carry, view_params)
     np.testing.assert_allclose(
         np.asarray(carry.beliefs["mission.visit"].probs),
         np.asarray(trajectory.carries["mission"].beliefs["mission.visit"].probs),
@@ -264,8 +264,8 @@ def test_a_read_is_one_tick_behind_under_sequential_order_too():
     log: list = []
     rover, mission = subsystem(comp, params, "rover"), subsystem(comp, params, "mission")
     minds = {
-        "rover": _recorded(agent_respond(*rover), log, "rover"),
-        "mission": _recorded(agent_respond(*mission), log, "mission"),
+        "rover": _recorded(agent_step(rover[0]), log, "rover"),
+        "mission": _recorded(agent_step(mission[0]), log, "mission"),
     }
     run(comp, params, minds, 5, jax.random.PRNGKey(1), tick_order="sequential")
     for t in range(1, 5):
@@ -483,7 +483,7 @@ def test_a_components_own_lagged_pairs_are_supplied_from_its_own_posterior_under
     comp, cparams = merge({"a": system, "mission": other}, {"a": params, "mission": other_params})
     log: list = []
     minds = {
-        n: _recorded(agent_respond(*subsystem(comp, cparams, n)), log, n) for n in ("a", "mission")
+        n: _recorded(agent_step(subsystem(comp, cparams, n)[0]), log, n) for n in ("a", "mission")
     }
     run(comp, cparams, minds, 5, jax.random.PRNGKey(0))
     seen = _posteriors_seen(log, "a")
@@ -510,7 +510,7 @@ def test_a_sibling_read_inside_an_inner_composite_is_supplied_when_it_is_one_min
     assert table["tier.mission"].boundary == "blanket" and table["tier"].reads == ()
     log: list = []
     minds = {
-        n: _recorded(agent_respond(*subsystem(outer, params, n)), log, n) for n in ("tier", "other")
+        n: _recorded(agent_step(subsystem(outer, params, n)[0]), log, n) for n in ("tier", "other")
     }
     run(outer, params, minds, 6, jax.random.PRNGKey(0))
     seen = _posteriors_seen(log, "tier")

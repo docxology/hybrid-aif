@@ -46,7 +46,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import ObservationLink, Wire, agent_respond, couple, merge, run
+from hybrid_aif.composition import ObservationLink, Wire, agent_step, couple, merge, run
 from hybrid_aif.system import System, SystemParams
 
 N = 5  # corridor cells; the docks are the two ends
@@ -298,8 +298,8 @@ def coupled(start=SYMMETRIC, selection="deterministic", policy_len: int = 2):
     ra, rb = robot(a, b, policy_len), robot(b, a, policy_len)
     return couple(
         minds={
-            "a": (*ra, agent_respond(*ra, selection=selection)),
-            "b": (*rb, agent_respond(*rb, selection=selection)),
+            "a": (*ra, agent_step(ra[0], selection=selection)),
+            "b": (*rb, agent_step(rb[0], selection=selection)),
         },
         processes={"world": world(start)},
         wires=list(WIRES),

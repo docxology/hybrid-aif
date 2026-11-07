@@ -298,10 +298,10 @@ Design: `design/amortization.md`, FLAG (1)'s amendment of 2026-09-20.
 **Compiled cores.** `replay` and `rollout` check their arguments eagerly and
 then run a compiled core, so a second call with the same model, trace length
 and switches reuses the program; pass the same `policy_fn` object to `rollout`
-to share it. The composition driver's `agent_respond` compiles its tick once per
+to share it. The composition driver's `agent_step` compiles its tick once per
 System and belief layout (a mixture System's first tick pads its priors, so
 twice), with the parameters as an argument rather than a baked-in constant; an
-all-illegal `legal=` mask is still refused eagerly, when the responder is built.
+all-illegal `legal=` mask is refused on the step's first call, where the params are concrete.
 
 **The training side's episode format.** `train.buffers.Episode` carries the
 engine's columns — `obs`, `action`, `reward`, `cont` (one minus terminal, as
@@ -602,9 +602,9 @@ observation. `merge` carries the read into the composite's `System.lagged` as a
 component's modality an ordinary observation, and `run`'s composite form supplies every read
 of a minded component (its own pairs and reads inside it as well) each round, in place of the
 world's sample of that modality: a read of a state takes the source mind's
-`MindCarry.posterior` (the posterior of its last round, which `agent_respond` keeps beside the
+`MindCarry.posterior` (the posterior of its last round, which `agent_step` keeps beside the
 pushed prior), a draw keyed by the round's key, and `None` (absent) on the first round, before
-the source has a posterior. `agent_respond` treats a `None` observation as absent.
+the source has a posterior. `agent_step` treats a `None` observation as absent.
 
 ```python
 from hybrid_aif import Grid
@@ -647,7 +647,7 @@ a second clock inside the composite (`design/nesting-and-coupling.md` N4).
 **Legality across a merge.** A same-step binding leaves one choice point, the
 driver's, so a mask on the identified node is the driver's constraint: key it
 by the driver's node, where it applies as any node's mask does, on `act`,
-`infer_policies`, `replay` and `agent_respond`. A mask keyed by the driven node
+`infer_policies`, `replay` and `agent_step`. A mask keyed by the driven node
 is refused naming the driver's node, and one keyed by a relayed node is refused
 naming the relay.
 
@@ -661,40 +661,48 @@ with the view that chooses it. A view of a nested component is that component's 
 prior over the partner's node is the component's belief about its external world inside the
 particle (`design/nesting-and-coupling.md` N2).
 
-## One particle as one mind: `particle`
+## One step per component: `run` on a composite, and `particle`
 
-`particle(composite, params, minds)` makes a merged composite with one mind per component a
-single mind for `couple`: the composite's modalities are its in-ports, its action nodes its
-out-ports, and an outside world joins it by wires, so the two-tier rover is
+Every participant of a round is a `Step`, `step(key, obs, carry, params) -> (action, carry',
+params')`: it is handed its params each round and returns them, the very same object when it did
+not learn (an identity test, no tree comparison). `agent_step(system, planner=None, **act_kwargs)`
+infers, acts and carries the empirical prior; `ancestral_step(system)` draws from the declared
+habit; `hold(step, ticks_per_unit=1)` decides once per option (it reads the option's duration
+through `step.system`, which `agent_step` and `ancestral_step` set; a hand-written step sets that
+attribute, or `hold(step, system=...)` names the System). A step that returns params
+differing from those it was given is a learner. Under `couple` a mind is `(System, params,
+step)`: the params are the starting ones, `run` hands each mind its current params every round,
+and `rec[name].params` is what the step last returned (the starting object if it never learned).
+
+`run(composite, params, minds, ...)` over a merged composite (the composite's own model as the
+world) takes one step per component. `params` is the *parameter home*: each round every step is
+handed its component's view taken from the home as it stands, with each control node another
+component chooses that its view reads set to the level that component last intended (uniform
+before any choice). Under `"simultaneous"` those levels are the ones standing when the round
+began; under `"sequential"` and `"async"` they are as they stand at the step's turn. A view whose
+carried targets are conditional on the node has no view before any choice, so it needs the
+chooser to have chosen first in every round: `run` supports it under `"sequential"` with the
+chooser listed first and refuses it up front under the other orders, and a non-identity action
+kernel on a node another component's view reads is refused too (the level handed on is the
+intended one). The views are built once per level with `subsystem` and
+refreshed from the home with `retake`, so one compiled program serves every level. Params a step
+returns other than the ones it was given are written back to the home with `write_back`, the view
+it was given as `before`, so a stale `before` cannot happen and the next component to respond sees
+the learning. Only declared parameter variables are written back: a step whose returned params
+differ outside them is refused, so a learned table must be a `Parameter` variable. The world does
+not learn: it runs the starting `params` forward. `Trajectory.params` is the home after the last
+round, and every `SiblingRead` of a minded component is supplied from the carries as above.
+
+`particle(composite, params, minds)` is the same per-round body as one step for `couple`: the
+composite's modalities are its in-ports, its action nodes its out-ports, and an outside world
+joins it by wires, so the two-tier rover is
 `couple(minds={"agent": (cs, cp, particle(cs, cp, {"mission": slow, "rover": fast}))},
-processes={"world": ...})` under one `run`. Every component needs a mind, and every control node
-a mind that chooses it. Each round, in the order of `minds` (a mind listed later sees an earlier
-mind's decision of this round, which is how a slow tier's option reaches the fast tier in the
-round it is chosen):
-
-- every `SiblingRead` of a minded component is supplied from the carries, as `run`'s composite
-  form supplies it: the source's posterior of the round before through the read's kernel,
-  realised; absent (`None`) in round 0. A modality the particle supplies this way takes no wire.
-- a `ViewRespond` mind, `fn(key, obs, carry, params) -> (action, carry', params')`, is handed
-  its component's view taken from the *parameter home* (the composite's params as learned so
-  far) with each control node another component chooses that its view reads set to the level
-  that component last chose (uniform before any choice, which needs the chooser listed first
-  when the view's carried targets are conditional on the node; `particle` says so). The views
-  are built once per level with `subsystem` and refreshed from the home with `retake`, so one
-  compiled program serves every level. `view_respond(system, planner=None, **act_kwargs)` is
-  `agent_respond` in this shape and never learns; a learner is the caller's own `ViewRespond`.
-- params a `ViewRespond` returns other than the ones it was given are written back to the home
-  with `write_back`, the view it was given as `before`, so a stale `before` cannot happen and the
-  next mind to respond sees the learning. Only declared parameter variables are written back: a
-  mind whose returned params differ outside them is refused, so a learned table must be a
-  `Parameter` variable.
-- a plain `RespondFn` mind is called as always and is handed no params; `hold` wraps either
-  kind, and a held `ViewRespond` returns its params unchanged on held rounds.
-
-The final home is `particle_params(carry)` of the particle's final carry, and each inner mind's
-carry is `carry.minds[name]`. `run`'s composite form (the composite's own model as the world)
-does no write-back and routes no decision, and refuses a `ViewRespond`; so does `couple`, which
-points to `particle` (`design/nesting-and-coupling.md` N4, N9, A12).
+processes={"world": ...})` under one `run`. Every component needs a step. The steps run in the
+order of `minds` (a step listed later sees an earlier step's decision of this round, which is how
+a slow tier's option reaches the fast tier in the round it is chosen), a modality the particle
+supplies from a read takes no wire, and the home is the params the wiring hands the particle:
+`rec["agent"].params` is the composite's params after the last round, and each inner step's carry
+is `rec["agent"].carry.minds[name]` (`design/nesting-and-coupling.md` N4, N9, A12).
 
 ## The same model as a document
 

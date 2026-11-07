@@ -11,7 +11,7 @@ scheduler is the rover's slow tier: its cell reading is a sibling-belief read of
 position through the cell indicator (realised by ``mode``, the cell holding most of the position
 belief), its option is the rover's control node through ``ActionControl``, and the field is one
 table shared outright through ``SharedParameter``. One ``run`` call on a coupling of the particle
-and the world steps the rover every round and the scheduler's respond, wrapped in ``hold``, once
+and the world steps the rover every round and the scheduler's step, wrapped in ``hold``, once
 per option: every ``SLOW_TICKS`` rounds the scheduler infers, plans and chooses an option that the
 rover holds. The particle writes what the rover learns back into the composite's table each round,
 so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
@@ -50,7 +50,6 @@ from hybrid_aif.composition import (
     ActionControl,
     SharedParameter,
     SiblingRead,
-    ViewRespond,
     Wire,
     couple,
     hold,
@@ -175,17 +174,17 @@ def field_record(params, strength, home="field"):
     )
 
 
-def rover_respond(system, log, setting, steps, starts, pre="", decoder=None):
-    """The rover's response as a ``ViewRespond``: infer, plan, act, push the prior and learn the
-    field. ``params`` arrive as the argument, and the params that learned the field are returned
-    (the field is counted from the second round on); ``pre`` is the prefix of the view's names
+def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
+    """The rover's step: infer, plan, act, push the prior and learn the field. ``params`` arrive
+    as the argument, and the params that learned the field are returned (the field is counted
+    from the second round on); ``pre`` is the prefix of the view's names
     (``"rover."`` on a composite's view). Each round's record is appended to ``log``."""
     compiled = system.compiled()
     planner = make_gradient_planner(steps=steps, starts=starts)
     home = pre + "field"
     state = dict(prev=None)
 
-    def respond(key, obs, carry, params):
+    def step(key, obs, carry, params):
         del key
         t_start = time.time()
         beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
@@ -241,19 +240,7 @@ def rover_respond(system, log, setting, steps, starts, pre="", decoder=None):
         )
         return action, carry._replace(beliefs=pushed, posterior=beliefs), params
 
-    return ViewRespond(respond)
-
-
-def make_mind(system, params0, log, setting, steps, starts):
-    """The rover alone as a plain response: ``rover_respond`` with the params kept here."""
-    view = rover_respond(system, log, setting, steps, starts, decoder=params0.likelihood["img"])
-    state = dict(params=params0)
-
-    def respond(key, obs, carry):
-        action, carry, state["params"] = view(key, obs, carry, state["params"])
-        return action, carry
-
-    return respond
+    return step
 
 
 def tick_rows(rec, log, mind, pre, ticks, extra=None):
@@ -295,7 +282,7 @@ def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STA
         image_preference=setting["image_preference"],
     )
     log = []
-    mind = make_mind(system, params, log, setting, steps, starts)
+    mind = rover_step(system, log, setting, steps, starts, decoder=params.likelihood["img"])
     env, env_params = wd.world()
     wiring = couple(
         minds={"rover": (system, params, mind)},
@@ -386,13 +373,13 @@ def build_composite(decoder, setting):
     return cs, cp, mview, mparams, rview, grid
 
 
-def scheduler_respond(mview, slow_log):
-    """The scheduler's response as a ``ViewRespond``: infer from the cell reading (absent in round
-    0) and the gauge, plan over option sequences, choose the option. Wrapped in ``hold`` it runs
-    once per option; it never learns. Each decision's record is appended to ``slow_log``."""
+def scheduler_step(mview, slow_log):
+    """The scheduler's step: infer from the cell reading (absent in round 0) and the gauge, plan
+    over option sequences, choose the option. Wrapped in ``hold`` it runs once per option; it
+    never learns. Each decision's record is appended to ``slow_log``."""
     compiled = mview.compiled()
 
-    def respond(key, obs, carry, params):
+    def step(key, obs, carry, params):
         del key
         t_start = time.time()
         reading = obs["mission.cell_obs"]
@@ -451,17 +438,18 @@ def scheduler_respond(mview, slow_log):
         )
         return {"mission.option": action["mission.option"]}, carry._replace(beliefs=pushed), params
 
-    return ViewRespond(respond)
+    step.system = mview  # hold reads the option's duration through it
+    return step
 
 
 def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
     """A run of the particle coupled to the world: with ``tiers == 2`` one ``run`` call steps the
     rover every round and the scheduler, wrapped in ``hold``, once per option; with
     ``tiers == 1`` the option is pinned to ``PINNED_OPTION``."""
-    cs, cp, mview, mparams, rview, grid = build_composite(decoder, setting)
+    cs, cp, mview, _, rview, grid = build_composite(decoder, setting)
     two = setting["tiers"] == 2
     log, slow_log = [], []
-    fast = rover_respond(
+    fast = rover_step(
         rview, log, setting, steps, starts, "rover.", decoder=cp.likelihood["rover.img"]
     )
     wires = [
@@ -473,9 +461,9 @@ def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STAR
     every = setting["slow_ticks"]
     pinned = jnp.asarray(PINNED_OPTION, jnp.int32)
     slow = (
-        hold(mview, mparams, scheduler_respond(mview, slow_log), every / ss.SURVEY_TICKS)
+        hold(scheduler_step(mview, slow_log), every / ss.SURVEY_TICKS)
         if two
-        else lambda key, obs, carry: ({"mission.option": pinned}, carry)
+        else lambda key, obs, carry, params: ({"mission.option": pinned}, carry, params)
     )
     minds = {"mission": slow, "rover": fast}  # the scheduler first: its choice reaches the rover
     wires.append(Wire("world.gauge", "agent.mission.gauge"))

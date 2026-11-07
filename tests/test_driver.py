@@ -28,8 +28,8 @@ import pytest
 from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition.driver import (
     MindCarry,
-    agent_respond,
-    ancestral_respond,
+    agent_step,
+    ancestral_step,
     run,
 )
 from hybrid_aif.composition.merge import ActionControl, ObservationLink, merge, subsystem
@@ -62,8 +62,8 @@ def zoo_minds(composite, params, **kwargs):
     agent_view = subsystem(composite, params, "agent", **kwargs)
     world_view = subsystem(composite, params, "world", **kwargs)
     return {
-        "agent": agent_respond(*agent_view),
-        "world": ancestral_respond(*world_view),
+        "agent": agent_step(agent_view[0]),
+        "world": ancestral_step(world_view[0]),
     }
 
 
@@ -97,14 +97,14 @@ def test_the_acceptance_demo_runs_both_ways():
     for belief in traj.carries["agent"].beliefs.values():
         assert bool(jnp.all(jnp.isfinite(belief.probs)))
         assert np.isclose(float(belief.probs.sum()), 1.0, atol=1e-4)
-    assert traj.carries["world"].beliefs is None  # the ancestral responder carries nothing
+    assert traj.carries["world"].beliefs is None  # the ancestral step carries nothing
 
 
 def test_the_many_minds_path_still_solves_the_tmaze():
     """Sanity beyond well-formedness: the agent mind, planning on its own view with
     the world's move exogenous, still goes to the cue first."""
     composite, cp = merged(policy_len=3)
-    minds = {"agent": agent_respond(*subsystem(composite, cp, "agent"), selection="deterministic")}
+    minds = {"agent": agent_step(subsystem(composite, cp, "agent")[0], selection="deterministic")}
     traj = run(composite, cp, minds, ticks=2, key=KEY)
     assert int(traj.actions["agent.a_location"][0]) == CUE
 
@@ -117,8 +117,8 @@ def test_two_acting_minds_route_their_own_actions():
         {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
     )
     minds = {
-        "agent": agent_respond(*subsystem(composite, cp, "agent")),
-        "world": ancestral_respond(*subsystem(composite, cp, "world")),
+        "agent": agent_step(subsystem(composite, cp, "agent")[0]),
+        "world": ancestral_step(subsystem(composite, cp, "world")[0]),
     }
     traj = run(composite, cp, minds, ticks=4, key=KEY)
     actions = composite.to_positional("actions", traj.actions)
@@ -207,7 +207,7 @@ def _arena(policy_len=3):
 
 def arena_minds(composite, params):
     return {
-        name: agent_respond(*subsystem(composite, params, name), selection="deterministic")
+        name: agent_step(subsystem(composite, params, name)[0], selection="deterministic")
         for name in ("a", "b")
     }
 
@@ -300,10 +300,10 @@ def test_simultaneous_is_the_default():
     assert all(jnp.array_equal(default.states[k], named.states[k]) for k in named.states)
 
 
-# --------------------------------------------------------------- the two responders
+# --------------------------------------------------------------- the two steps
 
 
-def test_ancestral_respond_draws_from_the_declared_habit():
+def test_ancestral_step_draws_from_the_declared_habit():
     """The doc's ``planner: None`` case: a feedforward generative process over its
     own control nodes, its prior the declared ``policy_prior`` where there is one."""
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)
@@ -312,28 +312,30 @@ def test_ancestral_respond_draws_from_the_declared_habit():
     )
     view, vp = subsystem(composite, cp, "world")
     pinned = dataclasses.replace(vp, policy_prior=jnp.full(5, -1e9).at[CUE].set(0.0))
-    respond = ancestral_respond(view, pinned)
+    step = ancestral_step(view)
     for k in jax.random.split(KEY, 8):
-        action, carry = respond(k, {}, MindCarry())
+        action, carry, _ = step(k, {}, MindCarry(), pinned)
         assert int(action["world.a_location"]) == CUE
         assert carry == MindCarry()
 
 
-def test_ancestral_respond_is_uniform_without_a_habit():
+def test_ancestral_step_is_uniform_without_a_habit():
     composite, cp = merged()
     view, vp = subsystem(composite, cp, "world")  # its node was merged away: nothing to draw
-    respond = ancestral_respond(view, vp)
-    action, _ = respond(KEY, {}, MindCarry())
+    action, _, _ = ancestral_step(view)(KEY, {}, MindCarry(), vp)
     assert jnp.array_equal(view.to_positional("actions", action), jnp.zeros(0, jnp.int32))
 
 
-def test_agent_respond_threads_the_empirical_prior():
+def test_agent_step_threads_the_empirical_prior():
     composite, cp = merged()
     view, vp = subsystem(composite, cp, "agent")
-    respond = agent_respond(view, vp)
-    action, carry = respond(KEY, view.as_env(vp)[0].reset(KEY, view.as_env(vp)[1])[0], MindCarry())
+    step = agent_step(view)
+    obs = view.as_env(vp)[0].reset(KEY, view.as_env(vp)[1])[0]
+    action, carry, given = step(KEY, obs, MindCarry(), vp)
+    assert given is vp
     assert carry.beliefs is not None and carry.learn_state is None
-    _, carry2 = respond(KEY, {m: jnp.zeros((), jnp.int32) for m in view.modality_names}, carry)
+    zeros = {m: jnp.zeros((), jnp.int32) for m in view.modality_names}
+    _, carry2, _ = step(KEY, zeros, carry, vp)
     first = view.names.states[0]
     assert not jnp.array_equal(carry2.beliefs[first].probs, carry.beliefs[first].probs)
     assert view.to_positional("actions", action).shape == (1,)
@@ -344,7 +346,7 @@ def test_agent_respond_threads_the_empirical_prior():
 
 def test_an_unchosen_control_node_raises():
     composite, cp = _arena()
-    minds = {"a": agent_respond(*subsystem(composite, cp, "a"))}
+    minds = {"a": agent_step(subsystem(composite, cp, "a")[0])}
     with pytest.raises(ValueError, match=r"control node\(s\) \['b.u_hand'\] are chosen by no mind"):
         run(composite, cp, minds, ticks=1, key=KEY)
 
@@ -352,7 +354,7 @@ def test_an_unchosen_control_node_raises():
 def test_routing_errors_name_their_fix():
     composite, cp = merged()
     with pytest.raises(ValueError, match="not components of this composite"):
-        run(composite, cp, {"agnt": ancestral_respond(*subsystem(composite, cp, "world"))}, 1, KEY)
+        run(composite, cp, {"agnt": ancestral_step(subsystem(composite, cp, "world")[0])}, 1, KEY)
     with pytest.raises(ValueError, match="tick_order must be"):
         run(composite, cp, zoo_minds(composite, cp), 1, KEY, tick_order="round-robin")
     plain, pp = hand_flattened()
@@ -363,11 +365,11 @@ def test_routing_errors_name_their_fix():
 def test_a_mind_returning_the_wrong_action_keys_raises():
     composite, cp = merged()
 
-    def wrong(key, obs, carry):
-        return {"u_agent.context": jnp.zeros((), jnp.int32)}, carry
+    def wrong(key, obs, carry, params):
+        return {"u_agent.context": jnp.zeros((), jnp.int32)}, carry, params
 
-    def positional(key, obs, carry):
-        return jnp.zeros(1, jnp.int32), carry
+    def positional(key, obs, carry, params):
+        return jnp.zeros(1, jnp.int32), carry, params
 
     with pytest.raises(ValueError, match=r"its action nodes are \['agent.a_location'\]"):
         run(composite, cp, {"agent": wrong}, ticks=1, key=KEY)
@@ -402,3 +404,17 @@ def test_async_rejects_nothing_new_and_bad_order_names_all_three():
     minds = arena_minds(composite, params)
     with pytest.raises(ValueError, match="'simultaneous', 'sequential', or 'async'"):
         run(composite, params, minds, ticks=1, key=jax.random.PRNGKey(0), tick_order="rando")
+
+
+def test_ancestral_step_follows_the_habit_in_the_params_it_is_handed():
+    (agent, ap), (world, wp) = agent_and_world(policy_len=1)
+    composite, cp = merge(
+        {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
+    )
+    view, vp = subsystem(composite, cp, "world")
+    step = ancestral_step(view)
+    for level in (1, 3, 2):
+        pinned = dataclasses.replace(vp, policy_prior=jnp.full(5, -1e9).at[level].set(0.0))
+        for k in jax.random.split(KEY, 4):
+            action, _, given = step(k, {}, MindCarry(), pinned)
+            assert int(action["world.a_location"]) == level and given is pinned

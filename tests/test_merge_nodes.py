@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.driver import agent_respond
+from hybrid_aif.composition.driver import MindCarry, agent_step
 from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
@@ -265,8 +265,8 @@ def test_a_mask_on_a_bound_away_node_names_the_node_it_became():
     assert "key it by 'agent.u_location', the node it became" in str(err.value)
     with pytest.raises(ValueError, match="key it by 'agent.u_location'"):
         composite.infer_policies(cp, beliefs, legal={"world.u_location": mask})
-    with pytest.raises(ValueError, match="agent_respond: legal names 'world.u_location'"):
-        agent_respond(composite, cp, legal={"world.u_location": mask})
+    with pytest.raises(ValueError, match="agent_step: legal names 'world.u_location'"):
+        agent_step(composite, legal={"world.u_location": mask})(KEY, {}, MindCarry(), cp)
     with pytest.raises(ValueError, match="actions names 'world.a_location'"):
         composite.update_empirical_prior(
             cp, beliefs, {"agent.a_location": 0, "world.a_location": 0}
@@ -274,7 +274,7 @@ def test_a_mask_on_a_bound_away_node_names_the_node_it_became():
     #  the driven mind's view has no node to mask: the choice is the driver's
     world_view, wvp = subsystem(composite, cp, "world")
     with pytest.raises(ValueError, match="which another subsystem chooses"):
-        agent_respond(world_view, wvp, legal={"world.u_location": mask})
+        agent_step(world_view, legal={"world.u_location": mask})(KEY, {}, MindCarry(), wvp)
 
     #  a mask keyed by the driver's node applies as any node's mask does
     only = jnp.zeros(5, bool).at[2].set(True)
@@ -293,7 +293,9 @@ def test_a_mask_on_a_relayed_node_names_the_relay():
     assert "constrain the choice that moves 'agent.location'" in str(err.value)
     world_view, wvp = subsystem(composite, cp, "world")
     with pytest.raises(ValueError, match="identified with the state 'agent.location'"):
-        agent_respond(world_view, wvp, legal={"world.u_location": jnp.ones(5, bool)})
+        agent_step(world_view, legal={"world.u_location": jnp.ones(5, bool)})(
+            KEY, {}, MindCarry(), wvp
+        )
 
 
 def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
