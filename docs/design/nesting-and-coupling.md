@@ -1,9 +1,10 @@
 # Design: nesting and coupling. What crosses a blanket, and what does not
 
 *Status: ADOPTED 2026-11-06 (Alex), N1 to N10, walked Alex + Fable the same day, superseding an
-earlier draft of the same day. Nothing here is built yet; N10's audit precedes the build. Customer: the two-tier survey rover of the launch
-page (`terrain-field.md`, "The slow tier"), whose runner today does by hand what this note gives
-the library. Companions: `nesting-systems.md` principle 6 (no telepathy, no telekinesis),
+earlier draft of the same day. Built so far: the N10 audit, N3 (A11) and N4 with N9 (A12); N5 to
+N8 are not built. Customer: the two-tier survey rover of the launch page (`terrain-field.md`,
+"The slow tier"), whose runner is now one `run` call on the particle coupled to the world.
+Companions: `nesting-systems.md` principle 6 (no telepathy, no telekinesis),
 `control-states.md` C12 and C13 (the action node, coupling through blankets),
 `step-durations.md` T2 and T8 (two tiers are two Systems, the outer loop's clock),
 `structure-learning.md` S8 (the lagged modality), `action-node-modalities.md` S2 (nothing scored
@@ -477,3 +478,23 @@ records it). The driver finds cross reads from the composite's `lagged`, the sub
 being the record and not the source of truth; a `SiblingRead` of an action node is refused; the
 planner's scoring of a read is as N3 says, the hard-outcome estimate under `stats` documented as
 an upper bound and not otherwise built.
+
+**A12. N4 built as a particle respond, not as a change to `run`'s composite form (2026-11-06).**
+The survey runner is the wired form: the true world is a hand-written process under `couple`,
+and `run`'s composite form has no outside world, its world being the composite's own model run
+forward. So N4's bookkeeping lands where T9's `hold` did, in a respond wrapper:
+`particle(composite, params, minds)` makes a merged composite with per-view minds one participant
+of a coupling. Its carry holds the inner minds' carries, the standing routed levels and the
+parameter home; each round it supplies every read from the carries (N3), hands each view its
+params from the home at the routed levels, calls the inner minds in the order given (a mind
+listed later sees an earlier one's decision this round, which is how the option reaches the
+rover in the same round), writes a learner's params back with the stale rule by construction,
+and emits the composite's action nodes. `hold` wraps an inner mind as before. `run`'s composite
+form stays as it is. The level-1 ablation is the same composite with a mission mind that always
+returns the pinned option (`merge` refuses a `BoundaryPrior` on a node a carried target of the
+rover is conditional on), and it reproduces the one-level run of the runner's old loop exactly.
+The level-2 run differs from the old loop's in two things only, both by design: the read is one
+round late, and absent at round 0. The world's key stream is unchanged, since the particle is one
+mind of the wired form, so the two runs agree bitwise until the first option that flips. A mind
+whose returned params differ outside its parameter variables is refused: only declared variables
+are written back to the home.

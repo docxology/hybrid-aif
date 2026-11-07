@@ -1856,6 +1856,75 @@ def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
     return tuple(sorted(needed))
 
 
+def _view_nodes(
+    composite: System, meta: Subsystem, facs: tuple[int, ...]
+) -> tuple[list[int], tuple[str, ...], dict[str, int]]:
+    """A view's control nodes by composite index, by name, and the nodes another component chooses
+    that the view still reads (by name, to composite index): a factor's control parent or a carried
+    target's parent that the view does not hold."""
+    table = composite._table
+    c_mods, c_facs, c_nodes = composite.modality_names, table.state_names, table.control_names
+    chosen = set(meta.controls)
+    mods = meta.modalities
+    own = set(meta.factors)
+    #  a node a modality of the view observes joins the view as one of its own nodes, whoever
+    #  chose it in the composite: the observation reads the node's realised action, so the view
+    #  carries the node (a partner's, clamped per round by the caller's policy set)
+    n_cols = len(composite.B_deps)
+    sensed = {g - n_cols for m in mods for g in composite.A_deps[m] if g >= n_cols}
+    ours = [k for k, node in enumerate(c_nodes) if node in chosen or k in sensed]
+    #  another component's node a factor of the view reads, by node name
+    partner_nodes = {
+        c_nodes[k]: k for f in facs for k, _ in table.control_parents[f] if k not in ours
+    }
+    #  a partner's node a carried target is conditional on is terminated like a factor's axis
+    view_nodes = tuple(c_nodes[k] for k in ours)
+    targeted = {c_facs[f] for f in own} | set(view_nodes)
+    target_nodes = {
+        p: c_nodes.index(p)
+        for key, c_parents in composite.C_deps
+        if key in targeted or key in {c_mods[m] for m in mods}
+        for p in c_parents
+        if p in c_nodes and p not in view_nodes
+    }
+    return ours, view_nodes, {**partner_nodes, **target_nodes}
+
+
+def partner_controls(composite: System, name: str) -> tuple[str, ...]:
+    """The control nodes another component chooses that the view of ``name`` reads, by name: the
+    keys :func:`subsystem` accepts in ``partner_priors``. A driver's decision reaches the driven
+    view through these (``particle`` routes it). Design: nesting-and-coupling.md N4."""
+    meta = _subsystem_meta(composite, name)
+    return tuple(_view_nodes(composite, meta, subsystem_factors(composite, name))[2])
+
+
+def retake(
+    composite: System,
+    view: System,
+    view_params: SystemParams,
+    params: SystemParams,
+) -> SystemParams:
+    """``view_params`` with every parameter variable it holds taken again from ``params``, the
+    composite's current home, and every reading position refilled: what :func:`subsystem` would
+    return now for the same view, without rebuilding it. A view never slices a table that reads a
+    variable (:func:`subsystem` refuses the pair), so only these entries depend on the home.
+    Design: nesting-and-coupling.md N4."""
+    homes = composite._params_in(params, "retake").parameters
+    held = view._params_in(view_params, "retake")
+    unknown = sorted(set(held.parameters) - set(homes))
+    if unknown:
+        raise ValueError(
+            f"retake: the view holds parameter variable(s) {unknown}, which the composite does "
+            f"not declare; it declares {sorted(homes)}"
+        )
+    out = dataclasses.replace(held, parameters={v: homes[v] for v in held.parameters})
+    for slot, i, home in held.references:
+        container = list(getattr(out, slot))
+        container[i] = homes[home]
+        out = dataclasses.replace(out, **{slot: tuple(container)})
+    return view._params_out(out)
+
+
 def subsystem(
     composite: System,
     params: SystemParams,
@@ -1915,30 +1984,9 @@ def subsystem(
     mod_index = {m: i for i, m in enumerate(mods)}
     table = composite._table
     c_mods, c_facs, c_nodes = composite.modality_names, table.state_names, table.control_names
-    chosen = set(meta.controls)
-    #  a node a modality of the view observes joins the view as one of its own nodes, whoever
-    #  chose it in the composite: the observation reads the node's realised action, so the view
-    #  carries the node (a partner's, clamped per round by the caller's policy set)
+    ours, view_nodes, partner_nodes = _view_nodes(composite, meta, facs)
     n_cols = len(composite.B_deps)
-    sensed = {g - n_cols for m in mods for g in composite.A_deps[m] if g >= n_cols}
-    ours = [k for k, node in enumerate(c_nodes) if node in chosen or k in sensed]
-    #  another component's node a factor of the view reads, by node name
-    partner_nodes = {
-        c_nodes[k]: k for f in facs for k, _ in table.control_parents[f] if k not in ours
-    }
-
-    #  a partner's node a carried target is conditional on is terminated like a factor's axis
-    view_nodes = tuple(c_nodes[k] for k in ours)
     targeted = {c_facs[f] for f in own} | set(view_nodes)
-    target_nodes = {
-        p: c_nodes.index(p)
-        for key, c_parents in composite.C_deps
-        if key in targeted or key in {c_mods[m] for m in mods}
-        for p in c_parents
-        if p in c_nodes and p not in view_nodes
-    }
-    partner_nodes = {**partner_nodes, **target_nodes}
-
     priors = dict(partner_priors or {})
     unknown = sorted(set(priors) - set(partner_nodes))
     action_node = dict(zip(composite.action_names, c_nodes, strict=True))

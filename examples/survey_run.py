@@ -3,15 +3,21 @@ while keeping its energy up.
 
 The rover (``survey_model``) infers its state, plans a velocity command by gradient descent from
 several warm starts, acts, and learns the terrain field by counting each terrain it sees into the
-cells it was in. The true world (``survey_world``) is a separate process wired in with ``couple``.
-With ``--level 2`` the rover is the fast tier of a composite with a survey scheduler
-(``survey_scheduler``): every ``SLOW_TICKS`` fast ticks the scheduler infers, plans and chooses an
-option (survey a sector, or charge) that the rover holds; the ablation pins the option to one
-sector.
-The mission view decides every twelfth tick, the rover view runs between decisions with the
-option pinned, the rover's learned field is written back to the composite before each decision,
-and the scheduler never learns. The scheduler's cell reading is computed in the runner from the
-rover view's position belief, because ``couple`` wires process outputs only.
+cells it was in. The true world (``survey_world``) is a separate process joined to the rover with
+``couple``: the velocity command is an action, the fix, image and gauge are sensations. With
+``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are merged into one particle,
+with the field shared outright, and the particle is one participant of the coupling. The
+scheduler is the rover's slow tier: its cell reading is a sibling-belief read of the rover's
+position through the cell indicator (realised by ``mode``, the cell holding most of the position
+belief), its option is the rover's control node through ``ActionControl``, and the field is one
+table shared outright through ``SharedParameter``. One ``run`` call on a coupling of the particle
+and the world steps the rover every round and the scheduler's respond, wrapped in ``hold``, once
+per option: every ``SLOW_TICKS`` rounds the scheduler infers, plans and chooses an option that the
+rover holds. The particle writes what the rover learns back into the composite's table each round,
+so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
+ablation pins the option to one sector. The scheduler is listed first, so its choice reaches the
+rover in the round it is made. Its cell reading is the rover's posterior of the round before, and
+absent in round 0.
 A level-1 setting is the epistemic terms (the field's novelty, the position fix's information
 gain, both or neither) and whether the image preference is declared. The runs of a grid are
 written to one bundle for the launch page, and a REPORT.md summarises them.
@@ -23,7 +29,6 @@ written to one bundle for the launch page, and a REPORT.md summarises them.
 
 import argparse
 import dataclasses
-import inspect
 import json
 import sys
 import time
@@ -40,16 +45,19 @@ import survey_model as sm
 import survey_scheduler as ss
 import survey_world as wd
 
-from hybrid_aif import Parameter, __version__, cell_mass
+from hybrid_aif import Parameter, __version__
 from hybrid_aif.composition import (
     ActionControl,
     SharedParameter,
+    SiblingRead,
+    ViewRespond,
     Wire,
     couple,
+    hold,
     merge,
+    particle,
     run,
     subsystem,
-    write_back,
 )
 from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
@@ -167,45 +175,20 @@ def field_record(params, strength, home="field"):
     )
 
 
-def make_mind(
-    system,
-    params0,
-    log,
-    setting,
-    steps,
-    starts,
-    pre="",
-    level_params=None,
-    shared=None,
-    schedule=None,
-):
-    """The rover's response: infer, plan, act, push the prior and learn the field.
-
-    ``pre`` is the prefix of the view's names (``"rover."`` on a composite's view). With
-    ``level_params`` (the view's params for each option level) and ``shared`` (a dict holding the
-    option in force under ``"option"``), the params in force are the pinned level's, carrying the
-    field the rover has learned; the learned params are left in ``shared["rover_params"]``.
-    ``schedule(beliefs, obs)``, when given, is the slow tier's step: it runs after inference on
-    each round, may change ``shared["option"]``, and returns the slow record of the round."""
+def rover_respond(system, log, setting, steps, starts, pre="", decoder=None):
+    """The rover's response as a ``ViewRespond``: infer, plan, act, push the prior and learn the
+    field. ``params`` arrive as the argument, and the params that learned the field are returned
+    (the field is counted from the second round on); ``pre`` is the prefix of the view's names
+    (``"rover."`` on a composite's view). Each round's record is appended to ``log``."""
     compiled = system.compiled()
     planner = make_gradient_planner(steps=steps, starts=starts)
     home = pre + "field"
-    state = dict(params=params0, prev=None)
-    decoder = params0.likelihood[pre + "img"]
+    state = dict(prev=None)
 
-    def in_force():
-        if level_params is None:
-            return state["params"]
-        pinned = level_params[shared["option"]]
-        return dataclasses.replace(pinned, parameters=state["params"].parameters)
-
-    def respond(key, obs, carry):
+    def respond(key, obs, carry, params):
         del key
         t_start = time.time()
-        beliefs, detail = compiled.infer_states(in_force(), obs, priors=carry.beliefs, detail=True)
-        slow = None if schedule is None else schedule(beliefs, obs)
-        option = None if shared is None else shared["option"]
-        params = in_force()
+        beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
         if state["prev"] is not None:
             prev_beliefs, prev_action = state["prev"]
             params = compiled.learn(
@@ -216,9 +199,6 @@ def make_mind(
                 action=prev_action,
                 lr=setting["field_lr"],
             )
-            state["params"] = params
-            if shared is not None:
-                shared["rover_params"] = params
         q_pi, tree, policies = compiled.infer_policies(
             params, beliefs, planner=planner, metrics=True, return_policies=True
         )
@@ -243,26 +223,35 @@ def make_mind(
             for i in range(v_plans.shape[0])
         ]
         table, counts, coverage, seen = field_record(params, setting["field_strength"], home)
-        entry = dict(
-            seconds=time.time() - t_start,
-            belief=position_belief(beliefs, pre),
-            policies=records,
-            chosen=best,
-            approximate=approximate_record(tree),
-            camera=dict(log_evidence=float(detail.log_evidence[pre + "img"])),
-            free_energy=float(detail.free_energy),
-            recon=image_rows(recon),
-            map=table,
-            counts=counts,
-            coverage=coverage,
-            seen=seen,
+        log.append(
+            dict(
+                seconds=time.time() - t_start,
+                belief=position_belief(beliefs, pre),
+                policies=records,
+                chosen=best,
+                approximate=approximate_record(tree),
+                camera=dict(log_evidence=float(detail.log_evidence[pre + "img"])),
+                free_energy=float(detail.free_energy),
+                recon=image_rows(recon),
+                map=table,
+                counts=counts,
+                coverage=coverage,
+                seen=seen,
+            )
         )
-        if option is not None:
-            entry["option"] = option
-        if slow is not None:
-            entry["slow"] = slow
-        log.append(entry)
-        return action, carry._replace(beliefs=pushed)
+        return action, carry._replace(beliefs=pushed, posterior=beliefs), params
+
+    return ViewRespond(respond)
+
+
+def make_mind(system, params0, log, setting, steps, starts):
+    """The rover alone as a plain response: ``rover_respond`` with the params kept here."""
+    view = rover_respond(system, log, setting, steps, starts, decoder=params0.likelihood["img"])
+    state = dict(params=params0)
+
+    def respond(key, obs, carry):
+        action, carry, state["params"] = view(key, obs, carry, state["params"])
+        return action, carry
 
     return respond
 
@@ -357,9 +346,12 @@ def settings_grid_l2():
 
 
 def build_composite(decoder, setting):
-    """The merged composite, with the rover and scheduler's ``subsystem`` views: ``(composite,
-    composite params, mission view, mission params, rover views by option level, grid)``. The rover
-    views are one System with params that differ in the pinned option's stub only."""
+    """The merged composite and the views the minds are written on: ``(composite, composite params,
+    mission view, mission params, rover view, grid)``. With ``tiers == 2`` the composite is one
+    particle with the field shared outright, so the scheduler's boundary is shared: the cell
+    modality reads the rover's position through the cell indicator (``mode``), the option is
+    ``ActionControl`` and the field ``SharedParameter``. The pinned run (``tiers == 1``) is the
+    same composite, its scheduler replaced by a mind that always chooses ``PINNED_OPTION``."""
     rs, rp, grid, centres = sm.rover(
         decoder,
         epistemic=tuple(setting["epistemic"]),
@@ -376,7 +368,7 @@ def build_composite(decoder, setting):
         energy_target=tuple(setting.get("scheduler_logits") or setting["energy_logits"]),
         field_strength=setting["field_strength"],
         policy_len=rs.policy_len,
-        durations=setting.get("durations", False),
+        durations=True,  # hold reads the option's length off the scheduler's durations
         readings=setting.get("readings", False),
     )
     cs, cp = merge(
@@ -385,60 +377,38 @@ def build_composite(decoder, setting):
         [
             ActionControl("mission.u_option", "rover.u_opt"),
             SharedParameter("rover.field", "mission.field"),
+            SiblingRead("mission.cell_obs", "rover.x", grid, "mode"),
         ],
     )
     mview, mparams = subsystem(cs, cp, "mission")
     mview = dataclasses.replace(mview, policy_len=2)
-    levels = {}
-    for level in range(sm.N_OPTIONS):
-        rview, rparams = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": level})
-        levels[level] = (rview, rparams)
-    return cs, cp, mview, mparams, levels, grid
+    rview, _ = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": PINNED_OPTION})
+    return cs, cp, mview, mparams, rview, grid
 
 
-def write_back_gains(cs, composite, before, after):
-    """Return the rover view's learning since ``before`` to the composite's shared field."""
-    if len(inspect.signature(write_back).parameters) >= 5:
-        return write_back(cs, composite, "rover", before, after)
-    return write_back(cs, composite, "rover", after)
-
-
-def make_schedule(cs, cp, mview, mparams0, shared, setting, baseline, grid):
-    """The scheduler's step, called by the rover's mind on every round: every ``slow_ticks``
-    rounds it reads the rover's cell (the argmax of the position belief's cell mass) and the
-    gauge, infers, plans and chooses the option, which is left in ``shared["option"]`` for the
-    rover to hold. Before a decision the rover's learned field (its gain since the last
-    write-back) is written into the composite and the scheduler's params are rebuilt from it, so
-    its novelty reads the counts gathered so far. The scheduler never learns."""
+def scheduler_respond(mview, slow_log):
+    """The scheduler's response as a ``ViewRespond``: infer from the cell reading (absent in round
+    0) and the gauge, plan over option sequences, choose the option. Wrapped in ``hold`` it runs
+    once per option; it never learns. Each decision's record is appended to ``slow_log``."""
     compiled = mview.compiled()
-    state = dict(
-        t=0, params=mparams0, composite=cp, baseline=baseline, carry=mview.initial_priors(mparams0)
-    )
-    every = setting["slow_ticks"]
 
-    def step(beliefs_fast, obs):
-        decide = state["t"] % every == 0
-        state["t"] += 1
-        if not decide:
-            return dict(decision=False)
+    def respond(key, obs, carry, params):
+        del key
         t_start = time.time()
-        if "rover_params" in shared:
-            state["composite"] = write_back_gains(
-                cs, state["composite"], state["baseline"], shared["rover_params"]
-            )
-            state["baseline"] = shared["rover_params"]
-            state["params"] = subsystem(cs, state["composite"], "mission")[1]
-        params = state["params"]
-        cell = int(jnp.argmax(cell_mass(beliefs_fast["rover.x"], grid)))
-        slow_obs = {"mission.cell_obs": jnp.asarray(cell), "mission.gauge": obs["rover.gauge"]}
-        beliefs, _ = compiled.infer_states(params, slow_obs, priors=state["carry"])
-        key = jax.random.PRNGKey(0)  # unused by the deterministic selection
+        reading = obs["mission.cell_obs"]
+        absent = reading is None
+        slow_obs = {
+            "mission.cell_obs": jnp.zeros((), jnp.int32) if absent else reading,
+            "mission.gauge": obs["mission.gauge"],
+        }
+        beliefs, _ = compiled.infer_states(
+            params, slow_obs, priors=carry.beliefs, present={"mission.cell_obs": not absent}
+        )
         action, q_pi, tree = compiled.act(
-            key, params, beliefs, metrics=True, selection="deterministic"
+            jax.random.PRNGKey(0), params, beliefs, metrics=True, selection="deterministic"
         )
         option = int(action["mission.option"])
-        shared["option"] = option
-        state["carry"] = compiled.update_empirical_prior(params, beliefs, action)
+        pushed = compiled.update_empirical_prior(params, beliefs, action)
         sequences = np.asarray(mview.policies(params))
         g = total(tree)
         records = [
@@ -463,52 +433,68 @@ def make_schedule(cs, cp, mview, mparams0, shared, setting, baseline, grid):
         chosen = max(
             (i for i, f in enumerate(first) if f == option), key=lambda i: records[i]["q_pi"]
         )
-        return dict(
-            decision=True,
-            option=option,
-            cell=cell,
-            efe_by_option=efe,
-            q_by_option=q_option,
-            policies=records,
-            chosen=chosen,
-            belief=dict(
-                energy=[float(p) for p in np.asarray(beliefs["mission.energy"].probs)],
-                visit=[float(p) for p in np.asarray(beliefs["mission.visit"].probs)],
-            ),
-            seconds=time.time() - t_start,
+        slow_log.append(
+            dict(
+                decision=True,
+                option=option,
+                cell=None if absent else int(reading),
+                efe_by_option=efe,
+                q_by_option=q_option,
+                policies=records,
+                chosen=chosen,
+                belief=dict(
+                    energy=[float(p) for p in np.asarray(beliefs["mission.energy"].probs)],
+                    visit=[float(p) for p in np.asarray(beliefs["mission.visit"].probs)],
+                ),
+                seconds=time.time() - t_start,
+            )
         )
+        return {"mission.option": action["mission.option"]}, carry._replace(beliefs=pushed), params
 
-    return step
+    return ViewRespond(respond)
 
 
 def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
-    """A run on the composite's views: with ``tiers == 2`` the scheduler picks the option every
-    ``slow_ticks`` rounds; with ``tiers == 1`` the option is pinned to ``PINNED_OPTION``."""
-    cs, cp, mview, mparams, levels, grid = build_composite(decoder, setting)
+    """A run of the particle coupled to the world: with ``tiers == 2`` one ``run`` call steps the
+    rover every round and the scheduler, wrapped in ``hold``, once per option; with
+    ``tiers == 1`` the option is pinned to ``PINNED_OPTION``."""
+    cs, cp, mview, mparams, rview, grid = build_composite(decoder, setting)
     two = setting["tiers"] == 2
-    shared = dict(option=0 if two else PINNED_OPTION)
-    log = []
-    rview, rparams = levels[shared["option"]]
-    level_params = {k: v[1] for k, v in levels.items()}
-    schedule = (
-        make_schedule(cs, cp, mview, mparams, shared, setting, rparams, grid) if two else None
+    log, slow_log = [], []
+    fast = rover_respond(
+        rview, log, setting, steps, starts, "rover.", decoder=cp.likelihood["rover.img"]
     )
-    fast = make_mind(
-        rview, rparams, log, setting, steps, starts, "rover.", level_params, shared, schedule
+    wires = [
+        Wire("agent.rover.a_v", "world.a_v"),
+        Wire("world.fix", "agent.rover.fix"),
+        Wire("world.img", "agent.rover.img"),
+        Wire("world.gauge", "agent.rover.gauge"),
+    ]
+    every = setting["slow_ticks"]
+    pinned = jnp.asarray(PINNED_OPTION, jnp.int32)
+    slow = (
+        hold(mview, mparams, scheduler_respond(mview, slow_log), every / ss.SURVEY_TICKS)
+        if two
+        else lambda key, obs, carry: ({"mission.option": pinned}, carry)
     )
-    env, env_params = wd.world()
+    minds = {"mission": slow, "rover": fast}  # the scheduler first: its choice reaches the rover
+    wires.append(Wire("world.gauge", "agent.mission.gauge"))
     wiring = couple(
-        minds={"fast": (rview, rparams, fast)},
-        processes={"world": (env, env_params)},
-        wires=[
-            Wire("fast.rover.a_v", "world.a_v"),
-            Wire("world.fix", "fast.rover.fix"),
-            Wire("world.img", "fast.rover.img"),
-            Wire("world.gauge", "fast.rover.gauge"),
-        ],
+        minds={"agent": (cs, cp, particle(cs, cp, minds))},
+        processes={"world": wd.world()},
+        wires=wires,
     )
     rec = run(wiring, ticks=ticks, key=jax.random.PRNGKey(setting["seed"]))
-    rows = tick_rows(rec, log, "fast", "rover.", ticks)
+    options = rec["agent"].actions["mission.option"]
+    decisions = {every * i: r for i, r in enumerate(slow_log)} if two else {}
+
+    def extra(t):
+        out = dict(option=int(options[t]))
+        if two:
+            out["slow"] = decisions.get(t, dict(decision=False))
+        return out
+
+    rows = tick_rows(rec, log, "agent", "rover.", ticks, extra)
     return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
 
 
@@ -641,6 +627,12 @@ def report_text(settings, runs, marks=MARKS, mdl=None):
             cells = "".join(f" {summaries[s['id']]['coverage'][f't{k}']:.3f} |" for k in marks)
             lines.append(f"| {s['id']} |{cells}")
         lines.append("")
+    if any("tiers" in s for s in settings):
+        lines += [
+            "Two-tier runs are one particle coupled to the world; the scheduler's cell reading "
+            "is the rover's posterior of the round before and is absent in round 0.",
+            "",
+        ]
     for s in settings:
         r = summaries[s["id"]]
         cov = ", ".join(f"{k[1:]}: {v:.3f}" for k, v in r["coverage"].items())
@@ -889,13 +881,13 @@ def main():
     ap.add_argument("--level", type=int, default=1, choices=(1, 2), help="the settings grid")
     ap.add_argument("--slow-ticks", type=int, default=SLOW_TICKS, help="fast ticks per slow step")
     ap.add_argument("--scheduler-logits", default=None, help="the scheduler's own ladder")
-    ap.add_argument("--durations", action="store_true", help="declare 12-tick durations")
     ap.add_argument(
         "--readings",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="pool the scheduler's map reading over an option (default: on if available)",
     )
+    ap.add_argument("--seed", type=int, default=None, help="the world's key (default: 0)")
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
     out_dir = Path(args.out)
@@ -910,13 +902,13 @@ def main():
         settings = [s for s in settings if s["id"] in keep]
     for s in settings:
         s["field_lr"] = args.field_lr
+        if args.seed is not None:
+            s["seed"] = args.seed
         s["field_strength"] = args.field_strength
         s["planning_belief"] = args.planning_belief
         s["grid"] = args.grid
         if args.scheduler_logits:
             s["scheduler_logits"] = [float(v) for v in args.scheduler_logits.split(",")]
-        if args.durations:
-            s["durations"] = True
         if "tiers" in s:
             s["readings"] = READINGS_AVAILABLE if args.readings is None else args.readings
         if "slow_ticks" in s:

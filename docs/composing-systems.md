@@ -572,9 +572,9 @@ that read `right` reads it, and the two must be the same family with the same ta
 components of one particle; `write_back` is bookkeeping of that home between views, not a
 crossing. Nothing in one participant clamps another participant's parameters: separate minds
 exchange a parameter only as a report of counts through an action node
-(`design/nesting-and-coupling.md` N2, N6). Today the caller calls `write_back`; write-back inside `run`'s
-composite form, each round it learns, is the build, after which the caller no longer calls it
-(`design/nesting-and-coupling.md` N4). `subsystem` views carry the variables their readers read
+(`design/nesting-and-coupling.md` N2, N6). Under `particle` (below) the write-back happens each
+round a view learns and the caller never calls it; `write_back` is for a hand-written loop over
+views. `subsystem` views carry the variables their readers read
 under the composite's names (so a rate key is `"parameter:<component>.<name>"`, which `merge`
 namespaces as it does any key), and `write_back(composite, params, name, before, after)` sets the composite's
 variables to what a view learned: `before` is the view's params as `subsystem` returned them and
@@ -660,6 +660,41 @@ the driven mind reads it at the same step. Boxes and targets on a node travel
 with the view that chooses it. A view of a nested component is that component's own model; the
 prior over the partner's node is the component's belief about its external world inside the
 particle (`design/nesting-and-coupling.md` N2).
+
+## One particle as one mind: `particle`
+
+`particle(composite, params, minds)` makes a merged composite with one mind per component a
+single mind for `couple`: the composite's modalities are its in-ports, its action nodes its
+out-ports, and an outside world joins it by wires, so the two-tier rover is
+`couple(minds={"agent": (cs, cp, particle(cs, cp, {"mission": slow, "rover": fast}))},
+processes={"world": ...})` under one `run`. Every component needs a mind, and every control node
+a mind that chooses it. Each round, in the order of `minds` (a mind listed later sees an earlier
+mind's decision of this round, which is how a slow tier's option reaches the fast tier in the
+round it is chosen):
+
+- every `SiblingRead` of a minded component is supplied from the carries, as `run`'s composite
+  form supplies it: the source's posterior of the round before through the read's kernel,
+  realised; absent (`None`) in round 0. A modality the particle supplies this way takes no wire.
+- a `ViewRespond` mind, `fn(key, obs, carry, params) -> (action, carry', params')`, is handed
+  its component's view taken from the *parameter home* (the composite's params as learned so
+  far) with each control node another component chooses that its view reads set to the level
+  that component last chose (uniform before any choice, which needs the chooser listed first
+  when the view's carried targets are conditional on the node; `particle` says so). The views
+  are built once per level with `subsystem` and refreshed from the home with `retake`, so one
+  compiled program serves every level. `view_respond(system, planner=None, **act_kwargs)` is
+  `agent_respond` in this shape and never learns; a learner is the caller's own `ViewRespond`.
+- params a `ViewRespond` returns other than the ones it was given are written back to the home
+  with `write_back`, the view it was given as `before`, so a stale `before` cannot happen and the
+  next mind to respond sees the learning. Only declared parameter variables are written back: a
+  mind whose returned params differ outside them is refused, so a learned table must be a
+  `Parameter` variable.
+- a plain `RespondFn` mind is called as always and is handed no params; `hold` wraps either
+  kind, and a held `ViewRespond` returns its params unchanged on held rounds.
+
+The final home is `particle_params(carry)` of the particle's final carry, and each inner mind's
+carry is `carry.minds[name]`. `run`'s composite form (the composite's own model as the world)
+does no write-back and routes no decision, and refuses a `ViewRespond`; so does `couple`, which
+points to `particle` (`design/nesting-and-coupling.md` N4, N9, A12).
 
 ## The same model as a document
 

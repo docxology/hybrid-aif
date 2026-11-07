@@ -164,6 +164,12 @@ def _mind(name: str, entry: object) -> tuple[Mind, dict[str, PortType], dict[str
             f"couple(): minds[{name!r}] holds ({type(system).__name__}, "
             f"{type(params).__name__}, ...); a mind is (System, SystemParams, RespondFn)"
         )
+    if getattr(respond, "takes_params", False):
+        raise ValueError(
+            f"couple(): minds[{name!r}]'s respond is a ViewRespond, a mind for particle(); wrap "
+            "the composite in particle(composite, params, {...}) and couple that, or use "
+            "agent_respond(...) for a mind closed over its own view"
+        )
     if not callable(respond):
         raise TypeError(
             f"couple(): minds[{name!r}]'s third entry is a {type(respond).__name__}; pass its "
@@ -260,10 +266,11 @@ def couple(
 
     Refused, each with its fix named: an unknown participant or port; a wire against the
     allowed directions or between ports of two types; an in-port fed twice; a process input
-    neither wired nor in ``fixed``; a mind's modality fed by no wire; ``fixed`` naming anything
-    but a process input, or a value of another type; a process whose ``env_params.actuator`` is
-    non-empty (an actuator is the emitting mind's); a port whose participant gives it no level
-    count or width. An out-port read by nothing is ignored.
+    neither wired nor in ``fixed``; a mind's modality fed by no wire (one that
+    :func:`~hybrid_aif.composition.driver.particle` supplies from inside is exempt); ``fixed``
+    naming anything but a process input, or a value of another type; a process whose
+    ``env_params.actuator`` is non-empty (an actuator is the emitting mind's); a port whose
+    participant gives it no level count or width. An out-port read by nothing is ignored.
 
     Scope: a modality is typed by its likelihood, so a mind or a process couples when each of its
     modalities has a tabular, neural (``MLPConditional``) or linear-Gaussian likelihood; an
@@ -329,7 +336,13 @@ def couple(
                 f"couple(): wires holds a {type(wire).__name__}; pass Wire(source, target)"
             )
         _, s_role, _ = resolve(wire.source, "source")
-        _, t_role, _ = resolve(wire.target, "target")
+        t_who, t_role, t_port = resolve(wire.target, "target")
+        if t_role == "mind" and t_port in getattr(mind_table[t_who].respond, "supplied", ()):
+            raise ValueError(
+                f"couple(): Wire({wire.source!r}, {wire.target!r}) feeds modality {t_port!r}, a "
+                "read supplied inside the particle from a sibling's belief, so the wire would be "
+                "overridden; remove the wire"
+            )
         if s_role == "process" and t_role == "process":
             raise ValueError(
                 f"couple(): Wire({wire.source!r}, {wire.target!r}) runs from a process's "
@@ -372,6 +385,8 @@ def couple(
             port = f"{name}.{p}"
             if port in feeds:
                 continue
+            if role == "mind" and p in getattr(mind_table[name].respond, "supplied", ()):
+                continue  # a particle supplies this modality from inside (a sibling-belief read)
             if role == "process":
                 raise ValueError(
                     f"couple(): process input {port!r} is fed by no wire; wire an action node "

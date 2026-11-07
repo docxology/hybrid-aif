@@ -5,13 +5,15 @@ Factors, in declaration order: ``visit`` (the cell the rover is at, one level pe
 rover's grid, row-major over the grid shape, x first), ``energy`` (the four bands) and ``map`` (the
 terrain at the visited cell, three levels). The control node ``u_option`` has five levels: survey
 sector 1 to 4 (the field's quadrants, in ``survey_world.zone_of`` order) and charge. Two
-modalities: ``cell_obs`` (the cell the rover's position belief puts it in, read from the fast
-tier at each decision) and ``gauge`` (the energy band). The ``map`` factor reads the parameter
-variable ``field``, which a ``SharedParameter`` identifies with the rover's; the scheduler has no
-observation of ``map`` and never counts into the field, so its novelty term (``transition:map``,
-the expected information about the field from the cells its plan visits) is honoured by the rover
-counting on the fast clock. The ``map`` is read where the rover stood one slow step earlier, so
-the planner looks two options ahead (``policy_len=2``) and enumerates the option sequences.
+modalities: ``cell_obs`` (the cell the rover's position belief puts it in: in the merged
+composite, a sibling-belief read of the rover's position through the cell indicator, realised by
+``mode`` and taken at each decision) and ``gauge`` (the energy band). The ``map`` factor reads the
+parameter variable ``field``, which a ``SharedParameter`` identifies with the rover's; the
+scheduler has no observation of ``map`` and never counts into the field, so its novelty term
+(``transition:map``, the expected information about the field from the cells its plan visits) is
+honoured by the rover counting on the fast clock. The ``map`` is read where the rover stood one
+slow step earlier, so the planner looks two options ahead (``policy_len=2``) and enumerates the
+option sequences.
 
 Tables, all built here from the world's maps:
 

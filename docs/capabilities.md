@@ -410,7 +410,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   responds. A slow tier is a mind wrapped in `composition.hold`, which returns its stored action
   until the last action's `elapsed` duration has passed (below, v0.19.0); there is no second
   clock (`design/nesting-and-coupling.md` N4). `couple` joins separate particles into a `Wiring` that `run` takes, and what
-  crosses a wire is action or sensation (`design/nesting-and-coupling.md` N1, N2).
+  crosses a wire is action or sensation (`design/nesting-and-coupling.md` N1, N2); a merged
+  composite joins a coupling as one mind through `composition.particle`.
 - Dynamic action sets: the hard constraint is **`legal=`** (v0.8, below);
   `policy_prior = −inf` masking remains valid (leaf-swap, no re-jit — the
   mission executor's task-selection pattern) and E is the soft prior alone.
@@ -984,11 +985,15 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   held System must own no world process (documented, not checked); the wired form has no such
   restriction. `hold` is built and is the clock of a slow tier under a merge: wrap the slow
   component's respond in `hold` and the fast component runs every round, with the slow
-  component's option reaching it through `ActionControl`. The slow component's reading of the
-  fast one as a sibling-belief read, write-back inside `run`'s composite form (what a view
-  learns reaching the composite's parameters each round it learns, so a `SharedParameter`
-  needs no bookkeeping by the caller), re-taking views and routing a driving component's
-  decision into the driven view are the build (`design/nesting-and-coupling.md` N3, N4, N9). `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
+  component's option reaching it through `ActionControl`. The slow component reads the
+  fast one by a sibling-belief read (`SiblingRead`), and `composition.particle(composite,
+  params, minds)` makes the merged composite one mind for `couple`: each round it supplies the
+  reads from the carries, hands each `ViewRespond` mind (`fn(key, obs, carry, params)`) its view
+  from the parameter home at the levels the other components last chose, writes a learner's
+  params back (a view that learns outside its declared parameter variables is refused) and
+  emits the composite's action nodes, so a `SharedParameter` needs no bookkeeping by the caller
+  (`design/nesting-and-coupling.md` N3, N4, N9; `composing-systems.md`, "One particle as one
+  mind"). `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
   `params.durations` reads concrete values and skips traced ones. Nothing changes for a model
   that does not call `hold`. Design: `design/step-durations.md` T9.
   `examples/demo.ipynb` re-executes clean under this release.
