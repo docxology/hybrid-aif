@@ -25,14 +25,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.merge import (
-    ActionControl,
-    ObservationLink,
-    TargetEmission,
-    merge,
-    subsystem,
-    subsystem_factors,
-)
+from hybrid_aif.composition.merge import Link, merge, subsystem, subsystem_factors
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
 from tests.test_merge import (
@@ -178,7 +171,7 @@ def test_a_target_emission_parent_is_a_stub_in_the_low_minds_view():
     composite, cp = merge(
         {"agent": agent, "world": world},
         {"agent": ap, "world": wp},
-        [*OBSERVATION_BINDINGS, TargetEmission("world.context", ("agent.location",))],
+        [*OBSERVATION_BINDINGS, Link(("agent.location",), "terminal:world.context")],
     )
     view, vp = subsystem(composite, cp, "world")
     assert view.names.states == ("agent.location", "world.location", "world.context")
@@ -231,8 +224,8 @@ def test_the_stub_set_closes_over_what_the_stubs_own_dynamics_need():
         {"x": x, "y": y, "z": z},
         {"x": xp, "y": yp, "z": zp},
         [
-            ActionControl(driver="z.z", control="y.u_y"),
-            ObservationLink(modality="x.see", factors=("y.y",)),
+            Link("z.z", "y.u_y"),
+            Link(("y.y",), "x.see"),
         ],
     )
     assert subsystem_factors(composite, "x") == (0, 1, 2)  # own, direct, closure

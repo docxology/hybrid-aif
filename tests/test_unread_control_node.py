@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.merge import ActionControl, merge, subsystem
+from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box
 from hybrid_aif.description import build, describe
 from hybrid_aif.objectives import total
@@ -152,7 +152,7 @@ def test_identifying_an_unread_node_with_a_driver_keeps_the_target_on_the_driver
     cs, cp = merge(
         {"a": system, "b": driver},
         {"a": params, "b": driver_params},
-        [ActionControl("b.u_opt", "a.u_opt")],
+        [Link("b.a_opt", "a.u_opt")],
     )
     assert ("a.s", ("b.u_opt",)) in cs.C_deps
     assert cs._space(cp).sizes == (LEVELS,)

@@ -195,7 +195,7 @@ states its time structure itself.
 | `initial` | generative | a latent | the same step | the first step only (`"0"`) | the initial-state prior; its parents are the latents it is conditional on (earlier in variable order) |
 | `transition` | generative | a latent | the step before | every step after the first (`"1+"`) | the transition |
 | `likelihood` | generative | an observed variable | the same step | every step (`"all"`) | the observation model; parents are latents or action nodes |
-| `actuator` | generative | an action node | the same step | every step | the kernel `P(a \| u)` of a stochastic actuator; its one parent is the action node's control node. Omitted when the action realises the decision exactly |
+| `actuator` | generative | an action node, or an emission | the same step | every step | the kernel of an out-port. Under an action node: `P(a \| u)` of a stochastic actuator, its one parent the action node's control node, omitted when the action realises the decision exactly. Under an emission (a variable that is neither a latent, a control node, an action node nor observed, whose one record this is): a likelihood of any family from the menu, its parents latents and control nodes at the same step, `options.realise` (`sample`, `mode` or `stats`) when not the default draw, or a `parameter` reference to a named variable. Nothing may read an emission |
 | `prior` | generative | a parameter variable | — | — | the prior the parameter is learned under (section 4.2) |
 | `policy_prior` | generative | the first control node | — | plan time | E: one distribution over the joint policy set of every control node, across the horizon |
 | `target` | objective | a latent, an observation or a control node | the same step | every step of a plan | the preference the planner scores: C under an observation, the risk target under a latent, a cost under a control node; its parents, if any, are discrete control nodes or latents it is conditional on (a conditional family, one distribution per configuration) |
@@ -310,7 +310,7 @@ learned prior is written once, under that name.
 from an observation, carries it in `options.datum`. The pair form of `System.lagged` is the
 string `"<source>[t-1]"`, the source's belief at the previous tick: its probability vector for a
 categorical source, its location for a Gaussian one, the level for an action node. The form of a
-declared `Read` (and of a `SiblingRead`, whose source is a factor of another component, named
+declared `Read` (and of a belief `Link`, whose source is a factor of another component, named
 with its component prefix) is a record:
 
 ```json
@@ -334,8 +334,8 @@ pair: the kernel, the realisation and the source are not yet priced (open:
 when the format records it).
 
 *2026-11-06: planned, under the format's revision rule, and not yet written: a merged component
-is marked `nested` when every binding across its boundary is a sibling-belief read or an
-`ActionControl` (`Subsystem.nested` exists: `merge` sets it from its bindings, and `build` derives
+is marked `nested` when every binding across its boundary is a belief read or a `Link` from an
+action node into a control node (`Subsystem.nested` exists: `merge` sets it from its bindings, and `build` derives
 it from the edges the document shows between components, a parent, a parameter variable or a read);
 an action node of a state factor has a record beside the control nodes' action-node records,
 with its kernel and realisation; a control node supplied by another participant is marked `held`
@@ -467,8 +467,9 @@ each naming the field.
 | `observed` | `[observation, ...]` | the variables the System receives data for at every step; each has a likelihood record |
 | `external` | `[input, ...]` | vectors the System receives as data with no likelihood (domain `real` with `dim`), read only by recognition records |
 
-A variable plays at most one of these roles. Every per-step variable that is in none of them and
-has an initial and a transition record is a latent. A control node and its action node are named
+A variable plays at most one of these roles. A per-step variable that is in none of them and
+whose one record is an `actuator` is an emission. Every other per-step variable that is in none of
+them and has an initial and a transition record is a latent. A control node and its action node are named
 freely; `describe` writes `u_f` and `a_f` for the control node a latent `f` declares with the
 pymdp-style keywords. An action node's only record is its actuator: a variable with any other
 record cannot be the value of `controls`.
@@ -536,9 +537,9 @@ The bindings of the merge are already structure, and nothing records them:
 - a **relay** (a control node identified with another component's state, read a step later) is
   that state as a transition parent at the step before;
 - a **target emission** is a terminal target's parent under another prefix;
-- a **terminated** control node (fixed by a boundary prior) is simply absent, its readers' tables
+- a **terminated** control node (fixed by a ``Clamp``) is simply absent, its readers' tables
   averaged or sliced over its axis;
-- a **shared parameter** (`SharedParameter`) is one `parameters` entry under the first name, with
+- a **shared parameter** (`Identify`) is one `parameters` entry under the first name, with
   the second component's readers pointing at it.
 
 `build` reconstructs each component's record from the prefixes, in the document's variable

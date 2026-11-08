@@ -35,7 +35,7 @@ from hybrid_aif import (
     SystemParams,
     describe,
 )
-from hybrid_aif.composition import ActionControl, BoundaryPrior, merge
+from hybrid_aif.composition import Clamp, Link, merge
 from hybrid_aif.controls import ControlStep
 from hybrid_aif.description.mdl import description_length, resolution_term
 from hybrid_aif.learning.carry import learnable_blocks
@@ -716,7 +716,7 @@ def test_merge_carries_the_declaration_and_refuses_slicing_its_inputs():
     same, sp = merge(
         {"robot": robot, "twin": twin},
         {"robot": rp, "twin": tp},
-        [ActionControl("robot.u_pose", "twin.u_pose")],
+        [Link("robot.a_pose", "twin.u_pose")],
     )
     assert same.names.controls == ("robot.u_pose",)
     #  terminating the node f reads would slice its inputs
@@ -724,7 +724,7 @@ def test_merge_carries_the_declaration_and_refuses_slicing_its_inputs():
         merge(
             {"robot": robot, "twin": twin},
             {"robot": rp, "twin": tp},
-            [BoundaryPrior("twin.u_pose", 1)],
+            [Clamp("twin.u_pose", 1)],
         )
 
 

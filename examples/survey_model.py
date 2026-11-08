@@ -17,10 +17,10 @@ almost none when it is full, so that mapping is not coloured by a standing taste
     system, params, grid, centres = rover(decoder)
 
 With ``tiered`` the model has a fifth node, the option control ``u_opt`` (survey sector 1 to 4, or
-charge) that the scheduler supplies through ``ActionControl``: the rover plans no decision for it,
-and its factors read what is supplied as they read any control node. A position target sits at
-the sector's centre (no pull under charge) and the image preference is conditional on the energy
-band and the option (under charge the strongest scale at every band).
+charge) that the scheduler supplies by a ``Link`` from its option action node: the rover plans no
+decision for it, and its factors read what is supplied as they read any control node. A position
+target sits at the sector's centre (no pull under charge) and the image preference is conditional on
+the energy band and the option (under charge the strongest scale at every band).
 
 The objective has no uncertainty term on the position: the fix's information gain is the rover's
 localisation drive, and the field's novelty its mapping drive.
@@ -185,9 +185,9 @@ def rover(
     field's novelty and the fix by default; ``False`` for none); ``image_preference=False``
     leaves the image target out; ``camera=False`` leaves the image out of the model;
     ``planning_belief`` is the System's setting of that name; ``tiered`` adds the option control
-    node ``u_opt`` that the scheduler supplies through ``ActionControl`` (the rover plans no
-    decision for it, and its factors read what is supplied as they read any control node), with
-    the position target and the image preference conditional on it."""
+    node ``u_opt`` that the scheduler supplies by a ``Link`` from its option action node (the
+    rover plans no decision for it, and its factors read what is supplied as they read any
+    control node), with the position target and the image preference conditional on it."""
     grid, centres = field_grid(grid_shape)
     n_cells = grid.n_cells
     # factors: terrain 0, x 1, energy 2, v 3 (float control), u_opt 4 (the option, tiered only)

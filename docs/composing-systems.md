@@ -44,6 +44,7 @@ numeric leaf: it is hashable, closed over by `jit`, and patched with
 | `factor_names` | `tuple[str, ...]` | generated | One name per factor, in node order; the `epistemic`/`state_targets`/rate keys. `None` at construction fills in `factor_{i}`. No node may be named after a key's reserved first segment (`obs` or a slot word). |
 | `dims` | `tuple[tuple[str, tuple[str, ...]], ...]` | `()` | Names for a continuous state factor's dimensions, given as `{factor: (name, ...)}` and stored as pairs in factor order; `dict(system.dims)` to read. `epistemic` selects a dimension as `<factor>:<name>`; an undeclared factor's dimensions are `dim0`, `dim1`, … by position. One unique name per dimension, each a single key segment (no `:`, `.`, `*` or brackets); `dimN` may name position `N` only. |
 | `action_names` | `tuple[str, ...]` | from the sugar | One action node per control node, in `controls` order: the actuator channel, a child of its control node. A native declaration (`controls=`) names them, paired with the control nodes by position, both names free; the sugar names the pair `u_<f>` / `a_<f>`. A modality may observe an action node: `A_deps` names action node `k` as `len(B_deps) + k`. |
+| `emissions` | `tuple[tuple[str, Emit], ...]` | `()` | The outputs the System draws from its state factors, **by name**: `{"fix": ("x",), "img": Emit(("x", "terrain"), realise="mode")}` at construction (a tuple of parents is a draw), stored as `(name, Emit)` pairs in the order given. An emission is the action node of a state factor: its parents are state factors and control nodes (a control parent reads the node's realised level), its kernel is `SystemParams.emission[name]` (a likelihood of any family, in the parent order given) and its port type is read off that kernel as a modality's is. It has no node index: nothing in a model reads or scores it, so no `lagged` source, `C_deps` key or parent, `readings` entry, `branch_on` modality, target key or `epistemic` key may name it, and no inference, planning or learning face reads the field. `Emit.realise` is `"sample"` (a draw from the kernel), `"mode"` (its most probable level or mean) or `"stats"` (its probabilities, or its mean and covariance). `names.emissions` lists them; `emit` realises them. |
 | `recognition` | `tuple[Recognition, ...] \| None` | `None` | Which variables are inferred by an amortized module and what each conditions on. Parameters live in `SystemParams.recognition`. |
 | `terms` | `tuple[str, ...]` | `()` | Which estimator-registry rows G carries beyond the infogain rows. Grammar: `<row>`, `<row>:<slot>:<name>`, `<row>:obs:<modality>`. The row segment is always literal. |
 | `scoring` | `tuple[tuple[str, object], ...]` | `()` | Structural half of the scoring slot, keyed by row name. `dict(system.scoring)` to read. |
@@ -56,7 +57,7 @@ factor name), `likelihood` (keyed by modality name, default `{}`), `recognition`
 dicts), `policy_prior` (E, with a read-only `E` alias), `control` (each continuous control
 node's box, a `Box(low, high)` of finite per-dimension bounds with `low < high`, keyed by the
 node's name: a node with an entry is continuous, its readers read a float vector of the box's
-width, and the CEM and gradient planners search inside it), `actuator` (the kernel
+width, and the CEM and gradient planners search inside it), `emission` (the kernel of each emission, a likelihood of any family keyed by the emission's name; no inference, planning or learning face reads it: `emit`, `ports`, `sample_initial`/`sample_step`, `describe` and the description length do), `actuator` (the kernel
 `P(a | u)` of an action node that is not a delta, a `(levels, levels)` probability table keyed by
 the action node's name, column `u` the realised action's distribution: the environment draws the
 realised action from it, the control node stays clamped to the decision, and the planning
@@ -214,11 +215,37 @@ it. A positional carry raises, naming
 `dict(system.scoring)[row].from_positional("beliefs", ...)`; a row with no nested
 System takes its entry as given. Design: `design/control-states.md` C10.
 
+**Ports and emissions.** `system.ports(params)` returns `Ports(ins, outs)`, each a mapping
+from a port's name to its type, `(LEVEL, levels)` for a table and `(FLOAT, dimension)` for a
+linear-Gaussian or neural kernel. The in-ports are the modalities and the control nodes (each
+under its own name: a link into a control node drives it); the out-ports are the action nodes
+(typed as their control nodes) and the emissions (typed by their kernels). A port is its name:
+there is no node index. `system.emit(key, params, values)` realises every emission, each by its
+own `realise`, with `split(key, E)[e]` for emission `e`. `values` holds each parent by name: a
+state factor as a point (a level or a float vector, a world's state) or as a belief (an agent's
+posterior), a control node as a level. From points a `sample` conditions the kernel and draws,
+exactly the draw the forward process makes of an observation; from beliefs it draws the parents
+and then the kernel, an exact predictive draw, and `mode` and `stats` are those of the predictive
+distribution. A neural kernel is realised by a draw only.
+
+**The mirror.** `hybrid_aif.system.mirror.mirror(system, params)` returns the World a System
+models, as a System that acts: every modality becomes an emission of the same name over the same
+parents (an observed action node becoming the control node it realises), the state factors,
+transitions and priors are kept, and everything that belongs to the planner, the learner or the
+posterior is dropped. Parameter variables are kept as they are; `lower=True` replaces every
+learnable declaration with its posterior mean, or with one draw per slot under `param_key=`. A
+System that declares emissions has no mirror. `sample_initial` and `sample_step` run a System's
+emissions forward from a point state: a control node an input drives takes the input, and a free
+one is drawn from its habit with a key folded apart from the process's own (uniform without
+one; the mirror turns `policy_prior` into a distribution over the one-step level tuples it
+enumerates, each holding the mass of the first steps equal to it, and its `policy_len` is 1). Every
+emission is realised by its declared rule.
+
 **Environments.** `system.as_env(params)` returns `(env, env_params)`: a
 `hybrid_aif.envs.GenerativeEnv`, one public class for discrete and hybrid models,
 whose `reset`/`step` take and return observations, states (by factor name) and
-actions keyed as above, over the System's own positional process (discrete tables,
-or the hybrid declarations); `env_params` keys its containers by name. The env is
+actions keyed as above, over the System's mirror run forward by a positional process (discrete
+tables, or the hybrid declarations); `env_params` keys its containers by name. The env is
 the actuator: an action node with a kernel in `params.actuator` has the action it is
 given realised as a draw from that kernel, and the world moves on the realised
 action; `env.step_actuated(...)` returns it beside the observations and states.
@@ -502,39 +529,58 @@ would be asked to be about two different sets of variables. The `uncertainty` ro
 `merge({name: System}, {name: params}, bindings)` makes components one particle, one
 `(System, SystemParams)` with one blanket to the world, namespacing every node
 `"<component>.<name>"`, each binding rewritten as an ordinary edge. Bindings name nodes by
-their namespaced names. A binding is one of two shapes. A binding that identifies a latent
-outright (`SharedParameter`, the relay, a joint `ObservationLink`, which makes one modality
-read several components' factors) makes the components share that variable, with messages both
-ways and no blanket between them on it. A binding that is blanket-shaped (an `ActionControl`
-from a control node, or a `SiblingRead`, in which a modality of one component
-takes another component's belief as its datum, pushed through a kernel at the source and
-realised by `sample`, `mode` or `stats`) leaves its component *nested*: its beliefs are its own,
-the rest of the particle is its external world, and it reads that world only as sensing. Separate minds
-that exchange only action and sensation are joined by `couple`, not `merge`
+their namespaced names. There are three kinds: `Link`, an arc of the graphical model of the whole,
+`Identify`, two parameter variables made one, and `Clamp`, a control node held at a constant. A
+binding is one of two shapes. A binding that identifies a latent outright (`Identify`, a relay,
+a structural `Link` into a modality's parents, which makes one modality read several components'
+factors, a terminal link) makes the components share that variable, with messages both ways and
+no blanket between them on it. A binding that is blanket-shaped (a `Link` from an action node
+into a control node, or a belief read, a `Link` with a `realise`, in which a modality of one
+component takes another component's belief as its datum, pushed through a kernel at the source
+and realised by `sample`, `mode` or `stats`) leaves its component *nested*: its beliefs are its
+own, the rest of the particle is its external world, and it reads that world only as sensing.
+Separate minds that exchange only action and sensation are joined by `couple`, not `merge`
 (`design/nesting-and-coupling.md` N2, N3).
 
-**`ActionControl(driver, control)`.** `control` names a control node of one
-component (`"world.u_location"`), identified with the driven control node of
-another (same step) or with a state of it (relay). The driver's spelling decides
-when the driven factors read the decision:
+`Link(source, target, realise=None, kernel=None)` reads from its two ends and `realise`:
+
+| `source` | `target` | `realise` | meaning |
+|---|---|---|---|
+| an action node (`"agent.a_location"`) | a control node (`"world.u_location"`) | none | the driver's decision drives the node at the same step (below) |
+| a state factor (`"agent.location"`) | a control node | none | the relay: read a step later (below) |
+| state factors, one name or a tuple | a modality | none | structural: the modality's complete parent list, in its likelihood's axis order, one link per modality |
+| one state factor of another component | a modality | `"sample"`, `"mode"` or `"stats"` | a belief read (below); `kernel` is the identity when `None`, or a `Grid` |
+| state factors | `"terminal:<factor>"` | none | the factor's terminal target is conditioned on these factors (its `H_deps`) |
+
+A link from a realised port (an action node, an emission) takes no `realise`: the port is
+realised once, by its own kernel, and every link from it carries that value. A `kernel` without a
+`realise` is refused. A link from an action node or an emission into a modality is a coupling's
+(`couple` carries it); a `merge` refuses it, naming `couple`. A control node as a source is refused,
+naming its action node.
+
+**A link into a control node.** `Link(driver, node)` names a control node of one
+component (`"world.u_location"`), identified with the action node of another (same step) or
+with a state of it (relay). The driver's spelling decides when the driven factors read the
+decision:
 
 | `driver` | read | what the composite holds |
 |---|---|---|
-| a control node of the driving component (`"agent.u_location"`) | at the same step | one node: every factor that read the driven node reads the driver's, from t to t+1 on the call that chooses it; the driven node leaves `controls` and `names.controls`, and its action node goes with it |
+| an action node of the driving component (`"agent.a_location"`) | at the same step | one node: every factor that read the driven node reads the driver's, from t to t+1 on the call that chooses it; the driven node leaves `controls` and `names.controls`, and its action node goes with it |
 | a state factor of it (`"agent.location"`) | a step later | the one-tick relay: the state becomes a `B_deps` parent of the one factor reading the node, in its place, its control axis re-read as that parent and a no-op axis of size 1 appended |
 
 Level counts must agree (a 5-level node binds a 5-level node, or the state of a
 5-level factor), and a continuous pair must agree on width; the driver's box in
 `params.control` governs the identified node and the driven node's box is
-dropped. A relay from a continuous state is refused. A driver that is neither a
-control node nor a state factor is refused, naming both spellings. The factor
-spelling of the control node, `ActionControl(..., control="world.location")`, is
-refused naming its node: `control="world.u_location"` replaces it. Bindings compose in
+dropped. A relay from a continuous state is refused. A driver that is neither an
+action node nor a state factor is refused, naming both spellings, and a control node as the
+driver is refused naming its action node. The factor
+spelling of the control node, `Link(..., "world.location")`, is
+refused naming its node: `"world.u_location"` replaces it. Bindings compose in
 any order: a chain of same-step bindings is one node, a node identified with one
-a `BoundaryPrior` terminates is terminated with it, and a relay into a node that
+a `Clamp` terminates is terminated with it, and a relay into a node that
 more than one factor reads is refused whichever binding comes first. A lag on a same-step
 read is declared, not configured: an echo state whose table copies a control
-node is an ordinary state, and binding from it gives the relay. With a control node as the
+node is an ordinary state, and binding from it gives the relay. With an action node as the
 driver, the one node in the composite is the driving component's decision, which the driven
 component's factors read as a supplied level (a control node supplied by another participant,
 `design/nesting-and-coupling.md` N7); the driven component plans no decision for it. A decision is not a belief, so no
@@ -544,30 +590,30 @@ factor as the driver, the relay binds a state's belief into the factor's parent 
 later and is an identification.
 
 ```python
-from hybrid_aif.composition import ActionControl, BoundaryPrior, ObservationLink, merge
+from hybrid_aif.composition import Clamp, Link, merge
 
 composite, params = merge(
     {"agent": agent, "world": world},
     {"agent": agent_params, "world": world_params},
     [
-        ActionControl(driver="agent.u_location", control="world.u_location"),  # same step
-        ObservationLink(modality="agent.location", factors=("world.location",)),
+        Link("agent.a_location", "world.u_location"),  # same step
+        Link(("world.location",), "agent.location"),  # the modality's parents
     ],
 )
 composite.names.controls  # ("agent.u_location",)
 ```
 
-**`BoundaryPrior(control, prior)`** terminates a discrete control node, replacing
+**`Clamp(node, level)`** terminates a discrete control node, replacing
 its decision with a fixed prior: an `int` level slices the control axis of every
 factor that reads the node (a delta), and a `Categorical` or probability vector
 averages each reader's table over it (uniform: no one is steering). A reader of
 several nodes keeps its other control axes. Native control nodes merge like the
 sugar's, and a composite with native nodes is described like any other.
 
-**`SharedParameter(left, right)`** identifies two components' parameter variables (named
+**`Identify(a, b)`** identifies two components' parameter variables (named
 tables declared in `SystemParams.parameters`, read through `Parameter("<name>")`) as one:
-the composite keeps `left`'s declaration under its namespaced name, every factor or modality
-that read `right` reads it, and the two must be the same family with the same table shape
+the composite keeps `a`'s declaration under its namespaced name, every factor, modality or emission
+that read `b` reads it, and the two must be the same family with the same table shape
 (anything else raises naming both). The identification is one home shared outright by the
 components of one particle; `write_back` is bookkeeping of that home between views, not a
 crossing. Nothing in one participant clamps another participant's parameters: separate minds
@@ -582,16 +628,16 @@ variables to what a view learned: `before` is the view's params as `subsystem` r
 composite's current entry, and is then replaced by `after`'s, decay included. A stale `before`
 raises (take the view again from the composite after any write-back), because evidence from several
 views at once is accumulated by learning on the composite, not by writing views back. The counts the second
-name's component had learned are discarded: only `left`'s declaration survives the binding. A shared
+name's component had learned are discarded: only `a`'s declaration survives the binding. A shared
 variable's reader can be kept out of its updates with a static `0.0` on the reader's own rate key
 (`lr_by_slot={"transition:mission.map": 0.0}`), which is how a scheduler that never observes the
 table avoids adding its predictions to the counts.
-A binding that rewrites a reader's control axis (a `BoundaryPrior`, a relay) refuses a
+A binding that rewrites a reader's control axis (a `Clamp`, a relay) refuses a
 reader of a shared variable, since the table is not the reader's alone.
 
-**`SiblingRead(modality, source, kernel="identity", realise="sample")`** makes a modality of
+**A belief read, `Link(source, modality, realise=..., kernel=...)`,** makes a modality of
 one component take its datum from a state factor of another: sensing inside one particle, with
-no action node. The datum is the source's posterior of the previous round, pushed
+no action node. `realise` is required: a read has no default. The datum is the source's posterior of the previous round, pushed
 through `kernel` (the identity, or a `Grid`, the indicator of its cells over a continuous
 source) and realised by `realise` (`"sample"`, a draw; `"mode"`, the argmax of a categorical
 belief or the mean of a continuous one; `"stats"`, a categorical belief's probability vector, the
@@ -608,12 +654,12 @@ the source has a posterior. `agent_step` treats a `None` observation as absent.
 
 ```python
 from hybrid_aif import Grid
-from hybrid_aif.composition import SiblingRead, merge, nested
+from hybrid_aif.composition import Link, merge, nested
 
 composite, params = merge(
     {"rover": rover, "mission": scheduler},
     {"rover": rover_params, "mission": scheduler_params},
-    [SiblingRead("mission.cell_obs", "rover.x", Grid(shape=(3, 3), low=0.0, high=3.0), "mode")],
+    [Link("rover.x", "mission.cell_obs", realise="mode", kernel=Grid(shape=(3, 3), low=0.0, high=3.0))],
 )
 nested(composite, "mission")  # True: its only binding across the boundary is a sibling read
 ```
@@ -623,15 +669,15 @@ Refused: a modality and a source in one component (a read inside a component is
 nor the grid's cell count under an indicator; a categorical modality reading a continuous
 source with no grid; `"stats"` of a Gaussian source, which is deferred. `nested(composite, name)`
 (also `Subsystem.nested`) is true when at least one binding crosses the component's boundary
-and every one is a `SiblingRead` or a control-node `ActionControl`; a relay, an
-`ObservationLink`, a `TargetEmission` or a `SharedParameter` across it makes the component not
-nested (`design/nesting-and-coupling.md` N2, N3).
+and every one is a belief read or a link from an action node into a control node; a relay, a
+structural link into a modality or a terminal target, or an `Identify` across it makes the
+component not nested (`design/nesting-and-coupling.md` N2, N3).
 
 **Names a binding removed.** A node a binding removed is gone from the
 composite, and a mapping keyed by it or by its action node (an action, a node
 belief, `legal=`, a target) is refused with a sentence naming what it became:
 under a same-step binding, the driver's node; under the relay, the state it reads;
-under a boundary prior, nothing. A target on a removed node is refused at
+under a `Clamp`, nothing. A target on a removed node is refused at
 `merge()`. The `Subsystem` record names nodes: `controls` (still chosen here),
 `actions` (each named control node's action node), `identified` (`(node, driver)`
 for each same-step identification), `relayed` (`(node, state)`) and `terminated`.
@@ -691,7 +737,7 @@ it was given as `before`, so a stale `before` cannot happen and the next compone
 the learning. Only declared parameter variables are written back: a step whose returned params
 differ outside them is refused, so a learned table must be a `Parameter` variable. The world does
 not learn: it runs the starting `params` forward. `Trajectory.params` is the home after the last
-round, and every `SiblingRead` of a minded component is supplied from the carries as above.
+round, and every belief read of a minded component is supplied from the carries as above.
 
 `particle(composite, params, minds)` is the same per-round body as one step for `couple`: the
 composite's modalities are its in-ports, its action nodes its out-ports, and an outside world
@@ -700,7 +746,7 @@ joins it by wires, so the two-tier rover is
 processes={"world": ...})` under one `run`. Every component needs a step. The steps run in the
 order of `minds` (a step listed later sees an earlier step's decision of this round, which is how
 a slow tier's option reaches the fast tier in the round it is chosen), a modality the particle
-supplies from a read takes no wire, and the home is the params the wiring hands the particle:
+supplies from a read takes no link, and the home is the params the wiring hands the particle:
 `rec["agent"].params` is the composite's params after the last round, and each inner step's carry
 is `rec["agent"].carry.minds[name]` (`design/nesting-and-coupling.md` N4, N9, A12).
 

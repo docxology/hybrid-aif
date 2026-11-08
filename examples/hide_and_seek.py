@@ -34,7 +34,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import Wire, agent_step, couple, run
+from hybrid_aif.composition import Link, agent_step, couple, run
 from hybrid_aif.system import System, SystemParams
 
 MOVES = ("stay", "north", "south", "east", "west")
@@ -194,15 +194,15 @@ def world(n: int = 4, slip: float = 0.2):
     return env, dataclasses.replace(ep, actuator={})
 
 
-WIRES = (
-    Wire("prey.move", "world.prey_move"),
-    Wire("predator.move", "world.pred_move"),
-    Wire("world.prey_pos", "prey.me_obs"),
-    Wire("world.pred_pos", "prey.other_obs"),
-    Wire("world.distance", "prey.distance"),
-    Wire("world.pred_pos", "predator.me_obs"),
-    Wire("world.prey_pos", "predator.other_obs"),
-    Wire("world.distance", "predator.distance"),
+PORT_LINKS = (
+    Link("prey.move", "world.prey_move"),
+    Link("predator.move", "world.pred_move"),
+    Link("world.prey_pos", "prey.me_obs"),
+    Link("world.pred_pos", "prey.other_obs"),
+    Link("world.distance", "prey.distance"),
+    Link("world.pred_pos", "predator.me_obs"),
+    Link("world.prey_pos", "predator.other_obs"),
+    Link("world.distance", "predator.distance"),
 )
 
 
@@ -215,7 +215,7 @@ def wiring(prey, predator, n: int = 4, slip: float = 0.2):
             "predator": (*predator, agent_step(predator[0])),
         },
         processes={"world": world(n, slip)},
-        wires=list(WIRES),
+        links=list(PORT_LINKS),
     )
 
 

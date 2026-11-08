@@ -64,6 +64,13 @@ and says how the recorded survey runs are reproduced.
    state factor (nesting-and-coupling.md N5) is built as part of it.
 3. **Cleanup.** The vocabulary pass over the docs touched, and the deletions the build leaves.
 
+Queued, not in this arc: moving the positional core to keyed indexing. Even then `emissions`
+stays a field apart from `action_names`, for a reason that is not indexing: a control-parented
+action node is an intention made real (a policy posterior, a duration, an actuator kernel keyed
+by the chosen level, a place in the planner's control space), while an emission is the state
+showing itself with no choice behind it, which is why nothing is scored about one (S2). The two
+out-ports differ in what explains them (Alex, 2026-11-07).
+
 ## Step 1 in detail: params flow through the runner
 
 **The step.** `Step = Callable[[key, obs, carry, params], tuple[action, carry, params]]`. A
@@ -246,40 +253,56 @@ actor, not a perceiver: the whole model run forward, every control node free. No
 declare what a step realises, so no object is needed around a step function: a custom step is a
 plain callable.
 
-**The shortcut the code takes.** The identity inference is a slice, so the engine keeps computing
-a driven node's posterior by slicing (a level) or averaging (a vector) as it does now, with no
-inference machinery on the input modality; the equivalence above is what makes the shortcut
-exact, and it is stated where the slice is taken. The representation carries the scrupulous
-form: the mirror exposes each control node's input as a modality under the node's name (so
-`"world.a_v"` is a modality of the world's port list), descriptions and the link checks show it
-as one, and a non-identity input likelihood (actuator noise on the receiving side) is a later
-option that changes nothing here. Walked by Alex and Fable before this arc (the identity mapping
-into the state space) and re-derived on 2026-11-07; the shortcut is the new piece.
+**The shortcut the code takes.** The identity inference is a slice, so the engine keeps computing a
+driven node's posterior by slicing (a level) or averaging (a vector) as it does now, with no
+inference machinery on the input modality; the equivalence above is what makes the shortcut exact,
+and it is stated where the slice is taken. The representation carries the scrupulous form:
+`System.ports` lists each control node's input among the in-ports under the node's name (a port-list
+convention, not a modality the inference engine sees: `"world.v"` is an in-port of the world),
+descriptions and the link checks show it as one, and a non-identity input likelihood (actuator noise
+on the receiving side) is a later option that changes nothing here. Walked by Alex and Fable before
+this arc (the identity mapping into the state space) and re-derived on 2026-11-07; the shortcut is
+the new piece.
 
-**The action node of a state factor.** The keystone, N5 of `nesting-and-coupling.md`, decided
-and not built: an action node may be parented by state factors instead of a control node, with
-an emission kernel of any likelihood family (tabular, linear-Gaussian, neural), from which the
-driver realises it each round (`sample` by default) as it realises a control-parented node from
-its actuator kernel. Its port type comes from the kernel as a modality's does today. A System
-may have both kinds.
+**The action node of a state factor: an emission.** The keystone, N5 of `nesting-and-coupling.md`,
+decided and not built. Declared on `System` as `emissions`, a mapping from a name to its parents
+(state factors, and control nodes, which the mirror needs) or to `Emit(parents, realise="sample")`,
+a field of its own rather than an entry of `action_names`, which is paired by position with the
+control nodes in a dozen places. Its kernel, of any likelihood family, is `params.emission[name]`;
+its port type is read off the kernel as a modality's is; `System.emit(key, params, values)` realises
+it inside the step from a point state (a world) or a belief (an agent). It has no node index, so
+nothing in the model reads or scores it (S2): a planner's view carries it as an output only.
+`System.ports(params)` lists a System's in-ports (modalities, and control nodes under their own
+names: the driven regime's input) and out-ports (action nodes and emissions). Described as an
+actuator, the record widened to any out-port kernel with any parents (an emission is the paradigm
+case of one, Alex 2026-11-07), and priced as a kernel of its family, so emissions cost description
+length. Chunk A as built: `emissions-and-mirror.md` (2026-11-08).
 
-**The mirror.** `mirror(system, params) -> (System, SystemParams)` is the transform behind
-`as_env`: every modality becomes an action node parented by the modality's parents, with the
-likelihood as its emission kernel, and the control nodes stay, now the inputs. The result is a
-world that acts; sampling it forward is what `as_env(...).step` does today. `as_env` stays as a
-convenience over the mirror for callers that want the env faces.
+**The mirror.** `mirror(system, params) -> (System, SystemParams)` is the transform behind `as_env`:
+every modality becomes an emission parented by the modality's parents, with the likelihood as its
+kernel; factors, transitions, priors, control nodes, the habit and durations stay (control nodes now
+driven or free); targets, planner fields, reads and recognition are dropped; parameter variables are
+KEPT (a world learns if its step learns; a perceiver that learns without planning is `plan()` on a
+System with no free control nodes); a System that already has emissions is refused. `as_env` is the
+mirror, then the variables lowered to tables (the posterior mean, or a draw with `param_key`) as
+today, then the unchanged forward process, so it samples bitwise what it samples now.
 
 **The bindings.** Three kinds, replacing `ObservationLink`, `SiblingRead`, `Wire`,
 `ActionControl`, `SharedParameter` and `BoundaryPrior`:
 
 - `Link(source, target, realise=None, kernel=None)`: an arc of the graphical model of the whole.
-  With `realise=None` it is a structural arc, the source a parent of the target with messages
-  both ways (today's `ObservationLink`; the relay form of `ActionControl`, a state factor of the
-  driver parenting the driven control node's latent). With `realise` given it is a realised arc, one
-  way: the target's datum each round is a realisation of the source's current value, a belief
-  (today's `SiblingRead`, `source` a state factor) or a realised port (today's `Wire`, `source`
-  an action node), through `kernel` where the source's space is not the target's (the grid over
-  a continuous position read as a cell). `realise` is `sample`, `mode` or `stats` (N8).
+  `source` is a node or a tuple of nodes. From a *realised* port (an action node or an emission) it
+  carries that port's realised value to a modality or to a control node's input: today's `Wire`, and
+  `ActionControl`'s same-step form, with no `realise` of its own, since the port is realised once by
+  its kernel (C13) and every link from it carries that value. From a state factor to a modality with
+  `realise` given it is a belief read, one way: the target's datum each round is the source's
+  posterior realised (`sample`, `mode` or `stats`, N8), through `kernel` where the source's space is
+  not the target's (the grid over a continuous position read as a cell): today's `SiblingRead`. From
+  state factors to a modality with no `realise` it is a structural arc, the sources the modality's
+  parents with messages both ways: today's `ObservationLink`; a `kernel` without `realise` is
+  refused, so the two cannot be confused. From a state factor to a control node's latent it is the
+  relay form of `ActionControl`. From factors to `"terminal:<factor>"` it is today's
+  `TargetEmission`.
 - `Identify(a, b)`: two parameter variables become one, keeping `a`'s declaration (today's
   `SharedParameter`). Today's `ActionControl` is not an identification but a `Link` from the
   driver's action node to the driven control node's input modality; its relay form is a
@@ -289,17 +312,16 @@ convenience over the mirror for callers that want the env faces.
   `BoundaryPrior`, and `couple`'s `fixed`). A realised link from a constant, given its own name
   since a literal source reads differently from a node (Alex, 2026-11-07).
 
-`TargetEmission` (a component's terminal target conditioned on another component's factors, a
-structural arc whose target is a target node) folds into `Link` if target nodes are addressable
-in the build, else stays as the one binding of its own. Three times exist in the language: a
+`TargetEmission` folds into `Link` with the target spelled `"terminal:<factor>"` (chunk A design,
+2026-11-07). Three times exist in the language: a
 transition reads the previous round by definition, a read is one round late, everything else is
 same-round (a terminal target at the plan's horizon, not at a lag).
 
 **`merge` and `couple`.** `merge(subsystems, params, bindings) -> (System, SystemParams)` as
 today, taking the three kinds. `couple(components, links, fixed) -> (System, SystemParams)` is
-`merge` specialised to separate particles: every binding is a realised `Link` from an action
-node to a modality (`realise` defaults to `sample`), the modality being an observation or a
-control node's input; a structural link or an identification is refused, naming `merge`. Both
+`merge` specialised to separate particles: every binding is a `Link` from a realised port (an
+action node or an emission) to a modality or a control node's input; a belief read, a structural
+link or an identification is refused, naming `merge`. Both
 return a merged System with the `subsystems` metadata, so a coupling can be merged, coupled,
 described, priced and nested like any System. `Wiring` goes.
 
@@ -372,16 +394,16 @@ cs, cp = merge(
     subsystems={"mission": ms, "rover": rs},
     params={"mission": mp, "rover": rp},
     bindings=[
-        Link("mission.u_option", "rover.u_opt"),      # the option drives the rover's control
+        Link("mission.a_option", "rover.u_opt"),      # the option's action node drives u_opt
         Identify("rover.field", "mission.field"),
         Link(source="rover.x", target="mission.cell_obs", kernel=grid, realise="mode"),
     ],
 )
-ws, wp = wd.world_system()   # position, terrain, energy; a_v in; fix, img, gauge out
+ws, wp = wd.world_system()   # position, terrain, energy; v in; fix, img, gauge out
 system, params = couple(
     components={"agent": (cs, cp), "world": (ws, wp)},
     links=[
-        Link("agent.rover.a_v", "world.a_v"),
+        Link("agent.rover.a_v", "world.v"),
         Link("world.fix", "agent.rover.fix"),
         Link("world.img", "agent.rover.img"),
         Link("world.gauge", "agent.rover.gauge"),
@@ -420,12 +442,12 @@ def world_system():
     system = System(
         factor_names=("terrain", "x", "energy"),
         B_deps=((1,), (1,), (2, 0, 1)),               # terrain and x from x; energy from all
-        controls=(FLOAT,),                            # a_v: the velocity command, width 2
-        action_names=("a_v", "fix", "img", "gauge"),  # a_v from the control; the rest emitted
+        controls=(FLOAT,),                            # v: the velocity command, width 2
+        control_names=("v",), action_names=("a_v",),
         emissions={"fix": ("x",), "img": ("x", "terrain"), "gauge": ("energy",)},
     )
     params = SystemParams(
-        control={"a_v": Box(-jnp.ones(2), jnp.ones(2))},
+        control={"v": Box(-jnp.ones(2), jnp.ones(2))},
         emission={                                    # the kernels that type the out-ports
             "fix": LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2)),
             "img": LinearGaussianObservation(H=jnp.zeros((IMG_PIXELS, 4)), ...),
@@ -437,10 +459,10 @@ def world_system():
 
 
 def world_step(system, key, obs, carry, params):
-    """The true dynamics: the carry is the state; obs holds a_v; the emissions are returned."""
+    """The true dynamics: the carry is the state; obs holds v; the emissions are returned."""
     state = carry if carry is not None else reset_state()
     k_move, k_obs = jax.random.split(key)
-    x = move(state, obs["a_v"], k_move)                # F, G, walls, stall, as today's step
+    x = move(state, obs["v"], k_move)                  # F, G, walls, stall, as today's step
     new = {"terrain": terrain_of(x[:2]), "x": x, "energy": energy_after(state, x)}
     return observe(k_obs, new), new, params            # {"fix", "img", "gauge"}, the state, params
 ```

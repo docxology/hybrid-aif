@@ -32,7 +32,7 @@ from hybrid_aif import (
     System,
     SystemParams,
 )
-from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.controls import ControlStep
 from hybrid_aif.description import DescriptionError, build, describe
 from hybrid_aif.factors import GridNoiseMap
@@ -567,14 +567,12 @@ def _relay_pair():
 def test_merge_refuses_a_conditional_targets_control_parent_relayed_to_a_state():
     systems, params = _relay_pair()
     with pytest.raises(ValueError, match=r"relay.*reads the state a step later"):
-        merge(systems, params, [ActionControl("b.location", "a.u_location")])
+        merge(systems, params, [Link("b.location", "a.u_location")])
 
 
 def test_a_conditional_targets_control_parent_identified_with_a_driver_follows_it():
     systems, params = _relay_pair()
-    composite, composite_params = merge(
-        systems, params, [ActionControl("b.u_location", "a.u_location")]
-    )
+    composite, composite_params = merge(systems, params, [Link("b.a_location", "a.u_location")])
     assert composite.C_deps == (("a.reward", ("b.u_location",)),)
     doc, _ = describe(composite, composite_params, arrays="inline")
     assert doc["factors"]["a.reward"]["target"]["parents"] == ["b.u_location"]
@@ -601,8 +599,8 @@ def test_a_conditional_targets_control_parent_identified_with_a_driver_follows_i
 
 def test_merge_refuses_a_conditional_targets_parent_terminated_by_a_boundary_prior():
     systems, params = _relay_pair()
-    with pytest.raises(ValueError, match=r"conditional on the control node.*BoundaryPrior"):
-        merge(systems, params, [BoundaryPrior("a.u_location", 1)])
+    with pytest.raises(ValueError, match=r"conditional on the control node.*Clamp"):
+        merge(systems, params, [Clamp("a.u_location", 1)])
 
 
 # ------------------------------------------------------- acceptance 1: dwell equivalence

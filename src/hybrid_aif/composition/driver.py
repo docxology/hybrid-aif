@@ -470,7 +470,7 @@ class _Body:
                             f"tick_order={tick_order!r} does not guarantee that {chooser!r} "
                             f"has chosen before {name!r} responds; use tick_order='sequential' "
                             f"with {chooser!r} listed first, or fix the node with a "
-                            "BoundaryPrior, or make the targets not conditional on it"
+                            "Clamp, or make the targets not conditional on it"
                         )
                     raise ValueError(
                         f"{who}: component {name!r} reads the control node {node!r}, which "
@@ -588,7 +588,7 @@ def particle(
     - when a step returns params other than the ones it was given, they are written back to the
       home (:func:`~hybrid_aif.composition.merge.write_back`, with the view it was given as
       ``before``, so the stale-``before`` rule holds by construction); the next step to respond
-      is handed a view taken from the new home, so a ``SharedParameter`` needs no bookkeeping.
+      is handed a view taken from the new home, so an ``Identify`` needs no bookkeeping.
       The params returned may differ from the ones given in parameter variables only, else this
       raises. The particle returns the home, so the record of the coupling holds the learned
       composite params.
@@ -783,7 +783,7 @@ def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout
         raise ValueError(
             f"control node(s) {unclaimed} are chosen by no mind, so nothing would ever emit "
             "their action; give the owning component a step (ancestral_step(...) for an "
-            "env-like one), or fix the node with a BoundaryPrior naming it at merge time"
+            "env-like one), or fix the node with a Clamp naming it at merge time"
         )
     #  which composite factors step at which component's turn (sequential, async); the factors
     #  of the components with no mind step at the end of the tick
@@ -916,7 +916,7 @@ def run(
     home after the last round. :func:`particle` is the same per-round body as one step of a
     coupling. Every control node of the composite must be chosen by a named step, or this raises
     (give the component a step, or fix the node with a
-    :class:`~hybrid_aif.composition.merge.BoundaryPrior`); a component that chooses no control
+    :class:`~hybrid_aif.composition.merge.Clamp`); a component that chooses no control
     node needs none. ``state`` overrides the env's initial draw with a known point state keyed
     by composite factor name, ``carries`` seeds the minds' carries, and ``param_key`` draws
     ground-truth tables from learnable declarations, as in :meth:`System.as_env`. Under
@@ -932,7 +932,7 @@ def run(
     actuator mapping is empty, so the world draws nothing.
 
     Every read of a minded component (``System.lagged`` of the composite: a component's own pairs,
-    a :class:`~hybrid_aif.composition.merge.SiblingRead`, a read inside an inner composite that
+    a belief :class:`~hybrid_aif.composition.merge.Link`, a read inside an inner composite that
     is one mind) is supplied to its mind each round, as an ordinary observation, in place of the
     world's sample of that modality. A read of a state factor takes the source mind's posterior
     of the previous round (``MindCarry.posterior``, as it stood when the round began, so a read
@@ -988,7 +988,7 @@ def _run_composite(
 
     ``minds`` is keyed by subsystem name, in the order ``"sequential"`` follows. Every control
     node of the composite must be chosen by a named step, or this raises (give the component a
-    step, or fix the node with a :class:`~hybrid_aif.composition.merge.BoundaryPrior`); a
+    step, or fix the node with a :class:`~hybrid_aif.composition.merge.Clamp`); a
     component that chooses no control node needs none. ``state`` overrides the env's initial draw
     with a known point state keyed by composite factor name, ``carries`` seeds the minds'
     carries, and ``param_key`` draws ground-truth tables from learnable declarations, as in

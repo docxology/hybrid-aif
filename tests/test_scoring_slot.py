@@ -37,7 +37,8 @@ GROUPS: dict[str, frozenset[str]] = {
     #    (``control``: each continuous control node's support, the box its family lives on;
     #    ``actuator``: an action node's kernel P(a | u); ``durations``: a round's clock per
     #    level of one control node; ``parameters``: the named tables readers refer to, and
-    #    ``references``: the positional view's record of which readers do)
+    #    ``references``: the positional view's record of which readers do; ``emission``: the
+    #    kernels of the System's outputs)
     "declared_model": frozenset(
         {
             "transition",
@@ -49,6 +50,7 @@ GROUPS: dict[str, frozenset[str]] = {
             "parameters",
             "references",
             "readings",
+            "emission",
         }
     ),
     # 2: the closed-loop factors — these two and no others

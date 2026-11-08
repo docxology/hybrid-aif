@@ -63,7 +63,7 @@ def _wired(slow):
     wiring = couple(
         minds={"a": (sa, pa, mind_a), "b": (sb, pb, mind_b)},
         processes={"world": cm.world((2, 2))},
-        wires=list(cm.WIRES),
+        links=list(cm.PORT_LINKS),
     )
     return wiring, calls
 

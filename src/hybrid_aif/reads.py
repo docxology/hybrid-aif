@@ -1,10 +1,10 @@
-"""The declaration of a sibling-belief read and the function that turns a belief into its datum.
+"""The declaration of a belief read and the function that turns a belief into its datum.
 
 A modality may take its datum from a belief of the System: the source's posterior of the previous
 round, pushed through a kernel at the source and realised as a value. :class:`Read` declares
 one; :func:`read_datum` evaluates it as a pure function of the belief, the declaration and a key.
 ``System(lagged=...)`` holds reads, and a merge's
-:class:`~hybrid_aif.composition.merge.SiblingRead` makes one across components.
+:class:`~hybrid_aif.composition.merge.Link` with a ``realise`` makes one across components.
 
 Design: docs/design/nesting-and-coupling.md N3.
 """
@@ -81,6 +81,21 @@ class Read(_ReadFields):
                 f"{realise!r}"
             )
         return super().__new__(cls, modality, source, kernel, realise)
+
+
+class Emit(NamedTuple):
+    """The declaration of an emission: an output of a System drawn from its state factors.
+
+    ``parents`` names the state factors and control nodes the emission's kernel
+    (``SystemParams.emission``) is conditioned on, in the order of the kernel's parent axes. An
+    emission is realised once per round, by ``realise``: ``"sample"`` (a draw from the kernel),
+    ``"mode"`` (its most probable level, or its mean) or ``"stats"`` (its probability vector, or
+    its mean and covariance). Declared in ``System.emissions`` as ``name -> parents`` (a draw) or
+    ``name -> Emit(parents, realise)``. Design: docs/design/nesting-and-coupling.md N5.
+    """
+
+    parents: tuple[str, ...]
+    realise: str = "sample"
 
 
 def as_read(entry: "tuple | Read") -> Read:

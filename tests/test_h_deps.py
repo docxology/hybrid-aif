@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical, ConditionalDirichlet
-from hybrid_aif.composition.merge import TargetEmission, merge
+from hybrid_aif.composition.merge import Link, merge
 from hybrid_aif.objectives import total
 from hybrid_aif.system import System, SystemParams
 from tests.test_mixture_filtering import make_params as mixture_params
@@ -101,7 +101,7 @@ def two_level(mode_probs=(1.0, 0.0), flip=False):
     return merge(
         {"high": high_s, "low": low_s},
         {"high": high_p, "low": low_p},
-        [TargetEmission(target="low.pos", parents=("high.mode",))],
+        [Link(("high.mode",), "terminal:low.pos")],
     )
 
 
@@ -218,7 +218,7 @@ def hybrid_two_level(mode_probs=(1.0, 0.0)):
     return merge(
         {"high": high_s, "low": low_s},
         {"high": high_p, "low": low_p},
-        [TargetEmission(target="low.mode", parents=("high.mode",))],
+        [Link(("high.mode",), "terminal:low.mode")],
     )
 
 

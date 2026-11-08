@@ -657,7 +657,8 @@ def test_names_is_a_view_of_the_systems_name_tuples():
 
     system, _ = tmaze_system()
     names = system.names
-    assert names._fields == ("states", "controls", "modalities", "actions")
+    assert names._fields == ("states", "controls", "modalities", "actions", "emissions")
+    assert names.emissions == ()
     assert names.actions == system.action_names == ("a_location",)
     assert names.states + names.controls == system.factor_names
     assert names.modalities is system.modality_names

@@ -87,10 +87,12 @@ _KEY_KINDS = (
     "obs",
     "recognition",
     "scoring",
+    "terminal",
     "transition",
 )
-#   the reserved first segments of a qualified key: the five parameter slots plus the ``obs``
-#   prefix. Any other first segment is a continuous factor's name (``pose:b1``, one of its
+#   the reserved first segments of a qualified key: the five parameter slots, the ``obs``
+#   prefix and ``terminal`` (a state factor's terminal target, ``terminal:<factor>``). Any other
+#   first segment is a continuous factor's name (``pose:b1``, one of its
 #   dimensions), so no factor may be named after one of these. A bare (single-segment) key is a
 #   state variable.
 _DIM_NAME = re.compile(r"dim(0|[1-9][0-9]*)")

@@ -28,7 +28,7 @@ from hybrid_aif import (
     describe,
     discretise,
 )
-from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import DescriptionError
 from hybrid_aif.reference.raif.world import tiny_rssm
 from tests.test_action_nodes import SHIFT, pusher
@@ -249,20 +249,18 @@ def test_merge_refuses_two_components_that_both_declare_durations():
 def test_merge_refuses_a_binding_that_identifies_the_clock_node_with_a_driver():
     systems, params = _two_tmazes(second=TMAZE_DURATIONS)
     with pytest.raises(ValueError, match=r"removes control node 'b.u_location'.*durations"):
-        merge(systems, params, [ActionControl("a.u_location", "b.u_location")])
+        merge(systems, params, [Link("a.a_location", "b.u_location")])
 
 
 def test_merge_refuses_a_boundary_prior_that_terminates_the_clock_node():
     systems, params = _two_tmazes(second=TMAZE_DURATIONS)
     with pytest.raises(ValueError, match=r"removes control node 'b.u_location'.*durations"):
-        merge(systems, params, [BoundaryPrior("b.u_location", 1)])
+        merge(systems, params, [Clamp("b.u_location", 1)])
 
 
 def test_a_clock_node_that_is_the_driver_of_an_identification_carries_its_durations():
     systems, params = _two_tmazes(first=TMAZE_DURATIONS)
-    composite, composite_params = merge(
-        systems, params, [ActionControl("a.u_location", "b.u_location")]
-    )
+    composite, composite_params = merge(systems, params, [Link("a.a_location", "b.u_location")])
     assert list(composite_params.durations) == ["a.u_location"]
     assert float(composite.elapsed({"a.a_location": 2}, composite_params)) == 3.0
 

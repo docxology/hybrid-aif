@@ -65,11 +65,19 @@ def _lower_learnable(params: SystemParams, param_key: Array | None) -> SystemPar
     already a point-valued *function*, with no posterior over its weights to
     average or to draw from (A1). ``param_key`` therefore randomizes nothing
     on a neural slot — the env is the net itself, run forward. The readers of one named
-    parameter variable share its one draw."""
+    parameter variable share its one draw.
+
+    The slots are taken in the order likelihood, emission, transition, initial state prior; the
+    emission slot is read only when ``params.emission`` is the positional tuple a System builds
+    for it (kernels in declaration order, a parameter reference resolved and recorded in
+    ``references`` as ``("emission", i, name)``)."""
+    slots = ("likelihood", "emission", "transition", "initial_state_prior")
+    if not isinstance(getattr(params, "emission", None), tuple):
+        slots = tuple(slot for slot in slots if slot != "emission")
     reads = {(slot, i): ("parameter", home) for slot, i, home in params.references}
     learnable = [
         (slot, i)
-        for slot in ("likelihood", "transition", "initial_state_prior")
+        for slot in slots
         for i, decl in enumerate(getattr(params, slot))
         if _slot_learnable(decl) and not isinstance(decl, MLPConditional)
     ]
@@ -116,7 +124,7 @@ def _lower_learnable(params: SystemParams, param_key: Array | None) -> SystemPar
         params,
         **{
             slot: tuple(lower(slot, i, d) for i, d in enumerate(getattr(params, slot)))
-            for slot in ("likelihood", "transition", "initial_state_prior")
+            for slot in slots
         },
     )
 

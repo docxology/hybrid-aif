@@ -62,7 +62,7 @@ from hybrid_aif.distributions import (
 )
 from hybrid_aif.distributions.neural import LearnedVector, MLPCategorical, PredictorHead
 from hybrid_aif.envs._process import DiscreteProcess, HybridProcess
-from hybrid_aif.envs.generative import GenerativeEnv, GenerativeEnvParams
+from hybrid_aif.envs.generative import CONTROL_TAG, GenerativeEnv, GenerativeEnvParams
 from hybrid_aif.factors import (
     DerivedInitial,
     Deterministic,
@@ -99,8 +99,9 @@ from hybrid_aif.planning.enumerate import (
     action_marginals,
     enumerate_policies,
 )
-from hybrid_aif.reads import Read, as_read
+from hybrid_aif.reads import REALISATIONS, Emit, Read, as_read
 from hybrid_aif.reads import check_declaration as check_read_declaration
+from hybrid_aif.system import emissions as _emissions
 from hybrid_aif.system import keyed, selectors, validation
 from hybrid_aif.system.selectors import _KEY_KINDS, _EpistemicVar
 
@@ -171,7 +172,7 @@ def _refuse_aliases(values: Mapping[str, object]) -> None:
     update, each learning from its own evidence only. Two readers of one table name it, with
     ``Parameter(name)`` and an entry in ``SystemParams.parameters``."""
     seen: dict[int, str] = {}
-    for container in ("transition", "likelihood", "parameters"):
+    for container in ("transition", "likelihood", "emission", "parameters"):
         tree = values.get(container)
         if not isinstance(tree, Mapping):
             continue  # a positional view holds a variable's table at every reader, by design
@@ -224,6 +225,10 @@ class SystemParams(eqx.Module):
     ``actuator`` holds the kernel ``P(a | u)`` of each action node that is not a delta, keyed
     by the action node's name (``params.actuator["a_x"]``): a ``(levels, levels)`` probability
     table whose column ``u`` is the realised action's distribution given the decision ``u``.
+
+    ``emission`` holds the kernel of each emission, an output of the System drawn from its state
+    factors (:attr:`System.emissions`): any likelihood family, keyed by the emission's name. No
+    inference, planning or learning face reads it.
 
     ``durations`` holds a round's duration per level of one discrete control node, keyed by the
     node's name (``params.durations["u_option"]``): a positive float ``(levels,)`` array, or a
@@ -349,6 +354,12 @@ class SystemParams(eqx.Module):
     #   the positional view's record of which reader positions hold a resolved reference,
     #   ``(slot, index, parameter name)``; empty in the keyed form every face takes and returns,
     #   where the entries are the ``Parameter`` tokens themselves
+    emission: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
+    #   the kernel of each emission (``System.emissions``), by emission name: a likelihood of any
+    #   family (a table, a linear-Gaussian or neural conditional, a learnable form, or a
+    #   ``Parameter`` reference to a named parameter variable), over the emission's parents in
+    #   the order ``System.emissions`` lists them. Its type is the emitted port's type, read off
+    #   the kernel as a modality's is. Always keyed by name. Design: nesting-and-coupling.md N5
 
     def __init__(self, *args, **kwargs):
         fields = [f for f in dataclasses.fields(self) if f.init]
@@ -469,27 +480,30 @@ class Subsystem(NamedTuple):
     subsystem's declaration order (its block is contiguous, so local index ``i`` is
     ``factors[i]``). The control nodes, by composite name, as this merge left them:
 
-    - ``controls`` — the control nodes this subsystem still chooses (the composite plans them);
-    - ``actions`` — ``(control node, action node)`` for every control node this record names;
-    - ``relayed`` — ``(node, state)``: a control node identified with another subsystem's state,
-      which its reader reads a step later (an ``ActionControl`` from a state);
-    - ``terminated`` — control nodes a ``BoundaryPrior`` replaced with a prior;
-    - ``identified`` — ``(node, driver)``: a control node identified with another subsystem's
-      control node ``driver`` (an ``ActionControl`` from a control node, read at the same step),
+    - ``controls``: the control nodes this subsystem still chooses (the composite plans them);
+    - ``actions``: ``(control node, action node)`` for every control node this record names;
+    - ``relayed``: pairs ``(node, state)``, a control node identified with another subsystem's
+      state, which its reader reads a step later
+      (a ``Link`` from a state);
+    - ``terminated``: control nodes a ``Clamp`` replaced with a prior;
+    - ``identified``: pairs ``(node, driver)``, a control node identified with another subsystem's
+      control node ``driver`` (a ``Link`` from its action node, read at the same step),
       so every factor that read ``node`` reads ``driver``;
-    - ``free_modalities`` / ``bound_modalities`` — modalities reading only this subsystem's factors,
+    - ``free_modalities`` / ``bound_modalities``: modalities reading only this subsystem's factors,
       versus ``(modality, foreign parents)`` for those an observation binding pointed across the
       boundary;
-    - ``target_emissions`` — ``(factor, parents)`` whose ``H_deps`` parents lie outside this
+    - ``target_emissions``: ``(factor, parents)`` whose ``H_deps`` parents lie outside this
       subsystem;
     - ``reads``: ``(modality, source, kernel, realise)``, composite names, for every modality of
-      this subsystem that reads a state factor of another component (a ``SiblingRead``): the view
+      this subsystem that reads a state factor of another component (a belief ``Link``): the view
       leaves the modality an ordinary observation, and the driver supplies it each round from
       the source component's carry;
+    - ``emissions``: the composite names of the component's own emissions, its outputs drawn from
+      its state factors (:attr:`System.emissions`);
     - ``boundary``: what binds this subsystem to the others: ``"none"`` (no binding crosses
-      its boundary), ``"blanket"`` (every binding across it is a sibling-belief read or a
-      control-node ``ActionControl``), or ``"shared"`` (some binding identifies a latent
-      outright: a relay, an ``ObservationLink``, a ``TargetEmission``, a ``SharedParameter``).
+      its boundary), ``"blanket"`` (every binding across it is a belief read or a ``Link`` from
+      an action node into a control node), or ``"shared"`` (some binding identifies a latent
+      outright: a relay, a structural ``Link``, a terminal ``Link``, an ``Identify``).
       :attr:`nested` is the middle case: the subsystem keeps a blanket of its own inside the
       particle.
 
@@ -517,13 +531,22 @@ class Subsystem(NamedTuple):
     target_emissions: tuple[tuple[int, tuple[int, ...]], ...] = ()
     reads: tuple[tuple[str, str, "str | Grid", str], ...] = ()
     boundary: str = "none"
+    emissions: tuple[str, ...] = ()
 
     @property
     def nested(self) -> bool:
-        """Whether every binding across this component's boundary is a sibling-belief read or a
-        control-node ``ActionControl``, so the component keeps a blanket of its own inside the
-        particle (and at least one binding crosses it)."""
+        """Whether every binding across this component's boundary is a belief read or a
+        ``Link`` from an action node into a control node, so the component keeps a blanket of its
+        own inside the particle (and at least one binding crosses it)."""
         return self.boundary == "blanket"
+
+
+class Ports(NamedTuple):
+    """A System's ports and their types (:meth:`System.ports`): ``ins`` and ``outs`` map a port's
+    name to ``(LEVEL, levels)`` or ``(FLOAT, dimension)``."""
+
+    ins: dict[str, tuple[str, int]]
+    outs: dict[str, tuple[str, int]]
 
 
 class System(eqx.Module):
@@ -701,13 +724,25 @@ class System(eqx.Module):
     #   categorical modality reads over the grid's cells) and realised by ``sample`` (the default
     #   of a ``Read``), ``mode`` or ``stats``, rather than supplied. The source is a state factor
     #   or an action node (the level taken); a state factor of another component is the source
-    #   of a sibling-belief read, which a merge's ``SiblingRead`` declares and the driver
+    #   of a belief read, which a merge's ``Link`` with a ``realise`` declares and the driver
     #   supplies as the modality's observation. A pair is the identity kernel with ``stats`` for
     #   a categorical source, ``mode`` (the location) for a Gaussian one, and the level for an
     #   action node. The modality's own parents explain the datum, so a factor can emit what the
     #   model just believed. An explicit observation for the modality wins over the carry;
     #   without either (the first tick) the modality is absent. Design: structure-learning.md S8;
     #   nesting-and-coupling.md N3
+    emissions: tuple[tuple[str, Emit], ...] = eqx.field(static=True, default=())
+    #   the outputs the System draws from its state factors, **by name**: ``{"fix": ("x",),
+    #   "img": Emit(("x", "terrain"), realise="mode")}`` at construction (a tuple of parents is a
+    #   draw), stored as ``(name, Emit)`` pairs in the order given because static fields must
+    #   hash (``dict(system.emissions)`` reads it, and the order fixes the key each emission
+    #   draws with). An emission is the action node of a state factor: its parents are state
+    #   factors and control nodes (a control parent reads the node's realised level), its kernel
+    #   is ``SystemParams.emission[name]`` and its port type is read off that kernel. It has no
+    #   node index: nothing in the model reads or scores it, so no ``A_deps``, read, target,
+    #   ``C_deps``, ``H_deps``, ``epistemic`` key, ``branch_on`` or ``readings`` entry may name
+    #   it, and no inference, planning or learning face reads the field. Design:
+    #   nesting-and-coupling.md N5
     readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
     #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
     #   at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
@@ -790,6 +825,35 @@ class System(eqx.Module):
         self.dims = self._normalized_dims()
         self.C_deps = self._normalized_C_deps()
         self.cells = self._normalized_cells()
+        self.emissions = self._normalized_emissions()
+
+    def _normalized_emissions(self) -> tuple:
+        """``emissions`` as ``(name, Emit)`` pairs in the order given. A mapping, or pairs, of a
+        name to a tuple of parents (a draw) or an :class:`~hybrid_aif.reads.Emit`; a value of
+        another shape is passed through for :meth:`_check_emissions` to refuse."""
+        given = self.emissions
+        if not given:
+            return ()
+        if isinstance(given, Mapping):
+            items = tuple(given.items())
+        elif isinstance(given, tuple | list):
+            items = tuple(given)
+        else:
+            return given
+        out = []
+        for item in items:
+            if not (isinstance(item, tuple | list) and len(item) == 2):
+                return given
+            name, decl = item
+            if isinstance(decl, Emit):
+                decl = Emit(
+                    tuple(decl.parents) if isinstance(decl.parents, list) else decl.parents,
+                    decl.realise,
+                )
+            elif isinstance(decl, tuple | list):
+                decl = Emit(tuple(decl))
+            out.append((name, decl))
+        return tuple(out)
 
     def _normalized_cells(self) -> tuple:
         """``cells`` as ``(factor, Grid)`` pairs in factor order (a name that is not a node sorts
@@ -1000,6 +1064,7 @@ class System(eqx.Module):
                 f"{shared[0]!r}_obs)"
             )
         self._check_action_names()
+        self._check_emissions()
         last = len(self.B_deps) + len(self.controls)
         beyond = sorted({g for deps in self.A_deps for g in deps if not 0 <= g < last})
         if beyond:
@@ -1017,6 +1082,8 @@ class System(eqx.Module):
             isinstance(n, str) for n in self.branch_on
         ):
             raise ValueError(f"branch_on must be a tuple of modality names, got {self.branch_on!r}")
+        for name in self.branch_on:
+            self._refuse_emission(name, "branch_on")
         if self.branch_on and not planner_branches(self.planner):
             raise ValueError(
                 f"branch_on={self.branch_on!r} names modalities to branch on, which only a "
@@ -1103,6 +1170,9 @@ class System(eqx.Module):
             raise ValueError(f"C_deps names {repeated} twice: one tuple of parents per target")
         targetable = set(table.state_names) | set(self.modality_names)
         for key, parents in deps:
+            self._refuse_emission(key, "C_deps")
+            for p in parents:
+                self._refuse_emission(p, f"C_deps[{key!r}]")
             if key in table.control_names:
                 raise ValueError(
                     f"C_deps names the control node {key!r}; a control node's own target is its "
@@ -1176,6 +1246,88 @@ class System(eqx.Module):
         if empty:
             raise ValueError(f"action_names {empty} have an empty name: name every action node")
 
+    def _check_emissions(self) -> None:
+        """``emissions``: pairs of a name and an :class:`~hybrid_aif.reads.Emit`, each name
+        unique in the System's one namespace, each parent a state factor or a control node, each
+        realisation a declared one. The kernels are checked with the params."""
+        emissions = self.emissions
+        if not isinstance(emissions, tuple) or not all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and isinstance(entry[0], str)
+            and isinstance(entry[1], Emit)
+            and isinstance(entry[1].parents, tuple)
+            and all(isinstance(p, str) for p in entry[1].parents)
+            for entry in emissions
+        ):
+            raise TypeError(
+                "emissions must map an emission's name to a tuple of parent names or an Emit "
+                f"(parents, realise), got {emissions!r}"
+            )
+        if not emissions:
+            return
+        names = [name for name, _ in emissions]
+        repeated = sorted({n for n in names if names.count(n) > 1})
+        if repeated:
+            raise ValueError(f"emissions repeats {repeated}: every emission needs its own name")
+        table = self._table
+        taken = {
+            "a state factor or control node": set(self.factor_names),
+            "a modality": set(self.modality_names),
+            "an action node": set(self.action_names or ()),
+        }
+        for name in names:
+            for what, used in taken.items():
+                if name in used:
+                    raise ValueError(
+                        f"the emission {name!r} is also {what}'s name: a System has one "
+                        "namespace of variables, so name the emission apart"
+                    )
+            if not name.rpartition(keyed.NAMESPACE_SEPARATOR)[2]:
+                raise ValueError(f"the emission {name!r} has an empty name: name every emission")
+        for name, emit in emissions:
+            if emit.realise not in REALISATIONS:
+                raise ValueError(
+                    f"emission {name!r}: realise must be one of {list(REALISATIONS)}, got "
+                    f"{emit.realise!r}"
+                )
+            if not emit.parents:
+                raise ValueError(
+                    f"emission {name!r} names no parent: an emission is drawn from state "
+                    "factors (and control nodes), so name at least one"
+                )
+            dup = sorted({p for p in emit.parents if emit.parents.count(p) > 1})
+            if dup:
+                raise ValueError(f"emission {name!r} names {dup} twice among its parents")
+            for p in emit.parents:
+                if p in table.state_names or p in table.control_names:
+                    continue
+                if p in names:
+                    why = "an emission, an output that nothing reads"
+                elif p in self.modality_names:
+                    why = "a modality, an observation the System receives"
+                elif p in (self.action_names or ()):
+                    why = (
+                        "an action node; an emission reads the control node "
+                        f"{table.control_names[self.action_names.index(p)]!r} for the level taken"
+                    )
+                else:
+                    why = "not a node of this System"
+                raise ValueError(
+                    f"emission {name!r} names {p!r} as a parent, which is {why}; its parents are "
+                    f"state factors {list(table.state_names)} or control nodes "
+                    f"{list(table.control_names)}"
+                )
+
+    def _refuse_emission(self, name: str, where: str) -> None:
+        """Refuse ``name`` at ``where`` when it is an emission: nothing in the model reads or
+        scores an output."""
+        if name in dict(self.emissions):
+            raise ValueError(
+                f"{where} names {name!r}, an emission: an emission is an output of the System, "
+                "and nothing in the model reads or scores it"
+            )
+
     @property
     def _table(self) -> ControlTable:
         """The control table every consumer reads (derived, cached on the declaration)."""
@@ -1244,6 +1396,7 @@ class System(eqx.Module):
             targets=targets,
             observations=tuple(zip(mods, self.A_deps, params.likelihood, strict=True)),
             durations=params.durations,
+            emissions=self._emission_readers(params),
         )
 
     def _control_layout(self, params: SystemParams) -> ControlLayout | None:
@@ -1370,6 +1523,116 @@ class System(eqx.Module):
             for m, decl in zip(self.modality_names, params.likelihood, strict=True)
         }
 
+    # ----------------------------------------------------------------------- emissions
+
+    @property
+    def _emission_names(self) -> tuple[str, ...]:
+        """The emissions' names, in declaration order."""
+        return tuple(name for name, _ in self.emissions)
+
+    def _emission_decls(self, params: SystemParams) -> tuple:
+        """The emissions' kernels in declaration order, a ``Parameter`` reference replaced by the
+        parameter variable it names; a missing kernel, or a key that names no emission, raises."""
+        names = self._emission_names
+        kernels = params.emission
+        if set(kernels) != set(names):
+            raise ValueError(
+                f"params.emission holds kernels for {sorted(kernels)} and the System declares the "
+                f"emissions {list(names)}: give one kernel per emission, keyed by its name"
+            )
+        out = []
+        for name in names:
+            decl = kernels[name]
+            if isinstance(decl, Parameter):
+                decl = keyed._home(params, decl.name, "emission", name)
+            out.append(decl)
+        return tuple(out)
+
+    def _emission_readers(self, params: SystemParams) -> tuple:
+        """``(name, parents, kernel)`` per emission that reads a control node, the parents as
+        node indices with a control node ``k`` written ``len(B_deps) + k``, the convention of a
+        modality that observes an action node: what sizes a control node only an emission
+        reads."""
+        if not self.emissions or set(params.emission) != set(self._emission_names):
+            return ()
+        table = self._table
+        n = len(self.B_deps)
+        out = []
+        for (name, emit), decl in zip(self.emissions, self._emission_decls(params), strict=True):
+            if not any(p in table.control_names for p in emit.parents):
+                continue
+            deps = tuple(
+                n + table.control_names.index(p)
+                if p in table.control_names
+                else table.state_names.index(p)
+                for p in emit.parents
+            )
+            out.append((name, deps, decl))
+        return tuple(out)
+
+    @property
+    def _emission_columns(self) -> tuple[int, ...]:
+        """The control nodes (by position among them) some emission reads, ascending."""
+        table = self._table
+        return tuple(
+            sorted(
+                {
+                    table.control_names.index(p)
+                    for _, emit in self.emissions
+                    for p in emit.parents
+                    if p in table.control_names
+                }
+            )
+        )
+
+    @property
+    def _emission_engine_deps(self) -> tuple[tuple[int, ...], ...]:
+        """Each emission's parents at the forward process's positions: a state factor at its
+        index, a control node after the state factors in :attr:`_emission_columns` order."""
+        table = self._table
+        s = table.num_states
+        at = {k: s + i for i, k in enumerate(self._emission_columns)}
+        return tuple(
+            tuple(
+                at[table.control_names.index(p)]
+                if p in table.control_names
+                else table.state_names.index(p)
+                for p in emit.parents
+            )
+            for _, emit in self.emissions
+        )
+
+    def _emission_types(self, params: SystemParams) -> dict[str, tuple[str, int]]:
+        """Each emission's port type, by name, read off its kernel as a modality's is."""
+        params = self._p(params)
+        return {
+            name: _observation_type(decl, f"params.emission[{name!r}]")
+            for (name, _), decl in zip(self.emissions, self._emission_decls(params), strict=True)
+        }
+
+    def ports(self, params: SystemParams) -> "Ports":
+        """The System's ports with their types, by name.
+
+        ``ins`` are the in-ports: each modality, typed by its likelihood, and each control node
+        under its own name (a node the System chooses is listed as well, since a link into it
+        makes it driven), typed ``(LEVEL, levels)`` or ``(FLOAT, width)``. ``outs`` are the
+        out-ports: each action node, typed as its control node, and each emission, typed by its
+        kernel. A type is ``(LEVEL, levels)`` for a table and ``(FLOAT, dimension)`` for a
+        linear-Gaussian or neural kernel. There is no node index for a port: a port is its name.
+        """
+        params = self._params_in(params, "ports")
+        ins = dict(self._modality_types(params))
+        outs: dict[str, tuple[str, int]] = {}
+        if self._table.controls:
+            space = self._space(params)
+            for k, (u, a) in enumerate(
+                zip(self._table.control_names, self.action_names, strict=True)
+            ):
+                ins[u] = (space.kinds[k], int(space.sizes[k]))
+                outs[a] = (space.kinds[k], int(space.sizes[k]))
+        outs.update(self._emission_types(params))
+        return Ports(ins, outs)
+
     # ------------------------------------------------------------ names at the faces
 
     def _names(self, params: SystemParams | None = None) -> keyed.FaceNames:
@@ -1394,6 +1657,7 @@ class System(eqx.Module):
                 gone=gone,
                 actions=self.action_names,
                 sensed=self._sensed,
+                emissions=self._emission_names,
             )
         space = self._space(params)
         return keyed.FaceNames(
@@ -1407,6 +1671,7 @@ class System(eqx.Module):
             gone,
             self.action_names,
             self._sensed,
+            self._emission_names,
         )
 
     def _bound_away(self, prefix: str = "") -> tuple[tuple[str, str], ...]:
@@ -1787,85 +2052,296 @@ class System(eqx.Module):
         ``params.actuator``, from which the env realises each action it is given.
         Learnable slots are lowered to their posterior mean, or with ``param_key`` to one
         ``sample`` each, so the env is a draw from the model's own parameter prior. Raises on the
-        amortized path.
+        amortized path. It is :func:`~hybrid_aif.system.mirror.mirror` (each modality an
+        emission), lowered, run forward by the positional process, with the env's faces keyed by
+        this System's names; a System that declares emissions has no such mirror and is refused.
         """
-        params = self._params_in(params, "as_env")
-        if self.cells:
-            self._validate(params, "as_env")
-        if self._cell_parents():
-            raise NotImplementedError(
-                "as_env on a System with cells: the forward process reads a table's parents as "
-                "discrete levels and would mis-read the cell a continuous factor falls in; "
-                "simulate the world with your own process, or drop cells= for the simulation"
-            )
-        if self._is_amortized(params):
-            self._amortized_structure(params, "as_env")
-            raise NotImplementedError(
-                "as_env on an amortized (neural state-space) System: running these declarations "
-                "forward as an environment means sampling the code prior and decoding its heads "
-                "— which is imagination, not an environment (nothing in it emits a reward the "
-                "agent has not predicted, so it cannot score the agent, only agree with it — and "
-                "every as_env consumer, from test oracles to the composition driver's ground "
-                "truth, assumes scoring). The rollout face for it is "
-                "hybrid_aif.train.imagine.imagine over predict_beliefs (design: "
-                "amortization.md A6/A11); predict_beliefs itself is the open-loop "
-                "prediction, run against a concrete environment of the caller's. "
-                "The one coherent unfence, recorded for whoever wants "
-                "it: a FROZEN world model stipulated as a synthetic "
-                "environment is just a declared generative process, and could be admitted "
-                "here on that stipulation — the fence holds while the "
-                "model is learning."
-            )
-        lowered = self._lower_learnable(params, param_key)
-        if self._is_hybrid(params):
-            self._validate(params, "as_env")
-            space = self._space(params)
-            env = HybridProcess(
-                A_deps=self._engine_A_deps,
-                B_deps=self._B,
-                controlled=tuple(bool(p) for p in self._table.control_parents),
-                D_deps=self._effective_D_deps(),
-                controls=None if space.layout is None else space.layout.structure(),
-                B_control_deps=self._table,
-                kinds=space.kinds,
-                sizes=space.sizes,
-                sensed=self._sensed_columns,
-            )
-            return GenerativeEnv(env, self._names(params)), self._params_out(
-                GenerativeEnvParams(
-                    likelihood=lowered.likelihood,
-                    transition=lowered.transition,
-                    initial_state_prior=lowered.initial_state_prior,
-                    actuator=self._actuator(params, "as_env"),
-                )
-            )
-        validation._validate_table_arity(self, params, self._facs)
-        if not self._table.default_wiring:
-            self._validate(params, "as_env")
-        n, s = len(self.B_deps), self._table.num_states
-        at = {n + k: s + i for i, k in enumerate(self._sensed_columns)}
-        env = DiscreteProcess(
-            A_deps=tuple(tuple(at.get(g, g) for g in deps) for deps in self.A_deps),
-            B_deps=self._B,
-            D_deps=self._effective_D_deps(),
-            B_control_deps=self._table,
-            sensed=self._sensed_columns,
-        )
-        return GenerativeEnv(env, self._names(params)), self._params_out(
-            GenerativeEnvParams(
-                likelihood=tuple(jnp.exp(a.log_probs) for a in lowered.likelihood),
-                transition=tuple(jnp.exp(b.log_probs) for b in lowered.transition),
-                initial_state_prior=tuple(
-                    d.probs if isinstance(d, Categorical) else jnp.exp(d.log_probs)
-                    for d in lowered.initial_state_prior
-                ),
-                actuator=self._actuator(params, "as_env"),
-            )
+        from hybrid_aif.system.mirror import mirror
+
+        ms, mp = mirror(self, params, lower=True, param_key=param_key, face="as_env")
+        process, pp = ms._forward(mp)
+        return GenerativeEnv(process, self._names(params)), self._params_out(
+            dataclasses.replace(pp, actuator=self._actuator(params, "as_env"))
         )
 
+    def _forward(self, params: SystemParams) -> tuple:
+        """This System run forward as a positional process: ``(process, process params)``.
+
+        ``params`` are keyed and lowered (no learnable declaration, no parameter reference). The
+        process is the discrete one, over probability tables, when every transition, every
+        initial prior and every emission is tabular, else the hybrid one over the declarations
+        themselves. Its observation side is the emissions, in declaration order, a control parent
+        read as a sensed action column; its transitions, priors and wiring are the System's own.
+        """
+        p = self._p(params)
+        decls = self._emission_decls(p)
+        for what, entries in (
+            ("emission", decls),
+            ("transition", p.transition),
+            ("initial_state_prior", p.initial_state_prior),
+        ):
+            for decl in entries:
+                if _slot_learnable(decl) and not isinstance(decl, MLPConditional):
+                    raise ValueError(
+                        f"a forward process takes point declarations, and a {what} is a "
+                        f"{type(decl).__name__}: lower the learnable declarations first "
+                        "(mirror(..., lower=True))"
+                    )
+        table = self._table
+        if (
+            any(not isinstance(a, ConditionalCategorical) for a in decls)
+            or any(not isinstance(b, TabularTransition) for b in p.transition)
+            or any(not isinstance(d, TabularPrior) for d in p.initial_state_prior)
+        ):
+            space = self._space(p)
+            process = HybridProcess(
+                A_deps=self._emission_engine_deps,
+                B_deps=self._B,
+                controlled=tuple(bool(c) for c in table.control_parents),
+                D_deps=self._effective_D_deps(),
+                controls=None if space.layout is None else space.layout.structure(),
+                B_control_deps=table,
+                kinds=space.kinds,
+                sizes=space.sizes,
+                sensed=self._emission_columns,
+            )
+            return process, GenerativeEnvParams(
+                likelihood=decls,
+                transition=p.transition,
+                initial_state_prior=p.initial_state_prior,
+            )
+        process = DiscreteProcess(
+            A_deps=self._emission_engine_deps,
+            B_deps=self._B,
+            D_deps=self._effective_D_deps(),
+            B_control_deps=table,
+            sensed=self._emission_columns,
+        )
+        return process, GenerativeEnvParams(
+            likelihood=tuple(jnp.exp(a.log_probs) for a in decls),
+            transition=tuple(jnp.exp(b.log_probs) for b in p.transition),
+            initial_state_prior=tuple(
+                d.probs if isinstance(d, Categorical) else jnp.exp(d.log_probs)
+                for d in p.initial_state_prior
+            ),
+        )
+
+    def _forward_env(self, params: SystemParams) -> tuple[GenerativeEnv, GenerativeEnvParams]:
+        """This System's forward process behind name-keyed faces, observations being the
+        emissions: ``(env, env_params)`` over the learnable declarations at their posterior
+        mean, parameter variables dissolved into the tables their readers hold."""
+        params = self._params_in(params, "sample_step")
+        lowered = self._lower_learnable(params, None)
+        lowered = dataclasses.replace(lowered, parameters={}, references=())
+        process, pp = self._forward(lowered)
+        names = self._names(params)._replace(modalities=self._emission_names, sensed=())
+        return GenerativeEnv(process, names), keyed.params_keyed(names, pp)
+
+    def _free_controls(
+        self, key: Array, params: SystemParams, driven: Iterable[str]
+    ) -> dict[str, Array]:
+        """A value for every control node not in ``driven``, drawn from
+        ``fold_in(key, CONTROL_TAG)``. Without a habit a discrete node is uniform over its levels
+        and a continuous one uniform within its box. With ``policy_prior`` (a distribution over
+        this System's enumerated first-step level tuples) one tuple is drawn and the free nodes
+        take its entries; a habit that is a policy module, that meets continuous nodes or that
+        does not match the enumerated set is refused."""
+        table = self._table
+        free = [k for k, u in enumerate(table.control_names) if u not in set(driven)]
+        if not free:
+            return {}
+        space = self._space(params)
+        keys = jax.random.split(jax.random.fold_in(key, CONTROL_TAG), len(table.control_names))
+        habit = params.policy_prior
+        tuple_ = None
+        if habit is not None and any(space.kinds[k] == LEVEL for k in free):
+            if not (isinstance(habit, Categorical) or hasattr(habit, "shape")):
+                raise NotImplementedError(
+                    "a free control node's habit is a policy module, which reads beliefs a world "
+                    "does not hold; drive the node, or declare policy_prior as a distribution "
+                    "over the enumerated first-step level tuples"
+                )
+            if FLOAT in space.kinds:
+                raise NotImplementedError(
+                    "a free control node's habit is a distribution over enumerated level "
+                    "tuples, and this System has continuous control nodes, which have no "
+                    "enumerated set; drive the discrete nodes or drop the habit"
+                )
+            logits = habit.logits if isinstance(habit, Categorical) else habit
+            first = self.policies(params)[:, 0, :]
+            if jnp.shape(logits) != (first.shape[0],):
+                raise ValueError(
+                    f"a free control node's habit has shape {tuple(jnp.shape(logits))} and this "
+                    f"System enumerates {first.shape[0]} first-step level tuples; declare one "
+                    "entry per tuple"
+                )
+            tuple_ = first[jax.random.categorical(keys[0], logits)]
+        out = {}
+        for k in free:
+            if space.kinds[k] == FLOAT:
+                box = space.boxes[k]
+                unit = jax.random.uniform(keys[k], (space.sizes[k],))
+                out[table.control_names[k]] = box.low + (box.high - box.low) * unit
+            elif tuple_ is not None:
+                out[table.control_names[k]] = tuple_[k].astype(jnp.int32)
+            else:
+                levels = space.sizes[k]
+                out[table.control_names[k]] = jax.random.categorical(
+                    keys[k], jnp.log(jnp.full((levels,), 1.0 / levels))
+                ).astype(jnp.int32)
+        return out
+
+    def _unsampled(
+        self, key: Array, params: SystemParams, state: Mapping[str, Array], controls: Mapping
+    ) -> dict[str, object]:
+        """The emissions realised by ``mode`` or ``stats``, from ``state`` and the control nodes'
+        values: what the forward process, which draws, does not give."""
+        if all(e.realise == "sample" for _, e in self.emissions):
+            return {}
+        values = {**state, **controls}
+        emitted = self.emit(jax.random.fold_in(key, _emissions.PARENT_TAG), params, values)
+        return {n: emitted[n] for n, e in self.emissions if e.realise != "sample"}
+
+    def sample_initial(
+        self,
+        key: Array,
+        params: SystemParams,
+        state: Mapping[str, Array] | None = None,
+    ) -> tuple[dict[str, Array], dict[str, Array]]:
+        """Draw an initial state (or take ``state``, one point per factor) and the emissions of
+        it: ``(emitted, state)``, both keyed by name. The forward process's reset, over the
+        emissions in place of modalities, each emission realised by its declared rule; a control
+        node an emission reads is at level 0 (the zero vector when continuous)."""
+        env, ep = self._forward_env(params)
+        emitted, state = env.reset(key, ep, state)
+        space = self._space(self._params_in(params, "sample_initial"))
+        null = {
+            u: jnp.zeros((), jnp.int32) if space.kinds[k] == LEVEL else jnp.zeros(space.sizes[k])
+            for k, u in enumerate(self._table.control_names)
+        }
+        return {**emitted, **self._unsampled(key, params, state, null)}, state
+
+    def sample_step(
+        self,
+        key: Array,
+        params: SystemParams,
+        state: Mapping[str, Array],
+        inputs: Mapping[str, Array] | None = None,
+        factors: Iterable[str] | None = None,
+    ) -> tuple[dict[str, Array], dict[str, Array]]:
+        """One round forward from ``state``: ``(emitted, next state)``, keyed by name.
+
+        ``inputs`` gives the value of each control node an input drives (a level, or a float
+        vector); a control node it does not name is free and is drawn first with
+        ``fold_in(key, CONTROL_TAG)`` (:meth:`_free_controls`), so the key stream of the
+        process itself is the one it has when every node is driven. ``factors`` names the state
+        factors to step; the others keep their values. Every emission is realised by its declared
+        rule. For ``mirror(s, p)`` of a System ``s`` with no actuator kernel and every control node
+        driven, the emissions and the state equal ``s.as_env(p).step`` under the same key.
+        """
+        inputs = dict(inputs or {})
+        unknown = sorted(set(inputs) - set(self._table.control_names))
+        if unknown:
+            raise ValueError(
+                f"sample_step: inputs names {unknown}, which are not control nodes; the control "
+                f"nodes are {list(self._table.control_names)}"
+            )
+        env, ep = self._forward_env(params)
+        controls = {**inputs, **self._free_controls(key, params, inputs)}
+        action = {
+            a: controls[u]
+            for u, a in zip(self._table.control_names, self.action_names, strict=True)
+        }
+        emitted, nxt = env.step(key, state, action, ep, factors)
+        return {**emitted, **self._unsampled(key, params, nxt, controls)}, nxt
+
+    def _emission_observer(self, decls: tuple) -> tuple:
+        """A positional process whose observation side is the emissions over the distinct
+        parents in first-use order: ``(process, process params, parents)``. Observing it at a
+        tuple of parent values draws every emission with ``split(key, E)[e]``."""
+        parents = tuple(dict.fromkeys(p for _, e in self.emissions for p in e.parents))
+        deps = tuple(tuple(parents.index(p) for p in e.parents) for _, e in self.emissions)
+        if all(isinstance(a, ConditionalCategorical) for a in decls):
+            process = DiscreteProcess(A_deps=deps, B_deps=())
+            likelihood = tuple(jnp.exp(a.log_probs) for a in decls)
+        else:
+            process = HybridProcess(A_deps=deps, B_deps=(), controlled=())
+            likelihood = decls
+        return process, GenerativeEnvParams(likelihood, (), ()), parents
+
+    def emit(
+        self, key: Array, params: SystemParams, values: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Realise every emission from ``values``, keyed by emission name in declaration order.
+
+        ``values`` holds each parent of an emission by name: a state factor as a point (a level,
+        or a float vector: a world's state) or as a belief (an agent's posterior), a control node
+        as its realised level. Each emission is realised by its own rule (``Emit.realise``) with
+        ``jax.random.split(key, E)[e]`` for emission ``e``. From points, ``sample`` conditions
+        the kernel on the parents and draws (the draw the forward process makes of an
+        observation), ``mode`` is the most probable level or the mean, ``stats`` the probability
+        vector or the ``(mean, covariance)``. From beliefs, ``sample`` draws the parents and then
+        the kernel (an exact predictive draw), and ``mode`` and ``stats`` are those of the
+        predictive distribution (:mod:`hybrid_aif.system.emissions`). Learnable kernels act at
+        their posterior mean. Nothing in inference or planning reads an emission.
+        """
+        params = self._params_in(params, "emit")
+        if not self.emissions:
+            return {}
+        self._validate(params, "emit")
+        names = self._emission_names
+        parents = tuple(dict.fromkeys(p for _, e in self.emissions for p in e.parents))
+        absent = [p for p in parents if p not in values]
+        if absent:
+            raise ValueError(
+                f"emit: values has no entry for {absent}, which the emissions read; give each "
+                f"parent of {list(names)} by name ({list(parents)})"
+            )
+        lowered = self._lower_learnable(params, None)
+        decls = tuple(lowered.emission[n] for n in names)
+        out: dict[str, object] = {}
+        if any(e.realise == "sample" for _, e in self.emissions):
+            parent_keys = jax.random.split(
+                jax.random.fold_in(key, _emissions.PARENT_TAG), len(parents)
+            )
+            points = tuple(
+                _emissions.point_of(k, values[p]) for k, p in zip(parent_keys, parents, strict=True)
+            )
+            process, pp, _ = self._emission_observer(decls)
+            drawn = process._observe(key, points, pp)
+        for i, ((name, emit), decl) in enumerate(zip(self.emissions, decls, strict=True)):
+            if emit.realise == "sample":
+                out[name] = drawn[i]
+            else:
+                out[name] = _emissions.predictive(
+                    decl, tuple(values[p] for p in emit.parents), emit.realise, name
+                )
+        return out
+
     def _lower_learnable(self, params: SystemParams, param_key: Array | None) -> SystemParams:
+        """``params`` (positional view) with every learnable declaration at its point form or one
+        draw; the emissions' kernels join the lowering after the likelihood, a parameter variable
+        keeping one draw for all its readers, and come back keyed by name with the references
+        dissolved."""
         params = self._p(params)
-        return conjugate_stats._lower_learnable(params, param_key)
+        if not self.emissions:
+            return conjugate_stats._lower_learnable(params, param_key)
+        names = self._emission_names
+        decls = self._emission_decls(params)
+        read = tuple(
+            ("emission", i, params.emission[name].name)
+            for i, name in enumerate(names)
+            if isinstance(params.emission[name], Parameter)
+        )
+        staged = dataclasses.replace(
+            params, emission=decls, references=tuple(params.references) + read
+        )
+        lowered = conjugate_stats._lower_learnable(staged, param_key)
+        return dataclasses.replace(
+            lowered,
+            emission=dict(zip(names, lowered.emission, strict=True)),
+            references=tuple(r for r in lowered.references if r[0] != "emission"),
+        )
 
     # ------------------------------------------------------------- backward faces
 
@@ -2038,6 +2514,7 @@ class System(eqx.Module):
             if modality in seen:
                 raise ValueError(f"lagged names the modality {modality!r} twice")
             seen.add(modality)
+            self._refuse_emission(source, f"lagged: the read of {modality!r}")
             if source not in facs and source not in actions:
                 raise ValueError(
                     f"lagged: modality {modality!r} reads {source!r} at the previous tick, which "
@@ -2067,6 +2544,7 @@ class System(eqx.Module):
                     f"got {pair!r}"
                 )
             name, node = pair
+            self._refuse_emission(name, "readings")
             if name in facs and name in mods:
                 raise ValueError(
                     f"readings names {name!r}, which is both a factor and a modality; rename one"
@@ -3102,7 +3580,7 @@ def _bound_away(
             gone(
                 node,
                 f"a control node merge() identified with {q(driver)!r} (a same-step "
-                f"ActionControl): key it by {q(driver)!r}, the node it became, whose choice "
+                f"Link): key it by {q(driver)!r}, the node it became, whose choice "
                 "it constrains",
                 f"the action node of a control node merge() identified with {q(driver)!r}: "
                 f"key it by {q(live_action[driver])!r}",
@@ -3110,16 +3588,16 @@ def _bound_away(
         elif driver in ended:
             gone(
                 node,
-                f"a control node merge() made one with {q(driver)!r}, which a BoundaryPrior "
+                f"a control node merge() made one with {q(driver)!r}, which a Clamp "
                 f"terminated, so no node {q(node)!r} exists here: drop the key",
                 f"the action node of a control node merge() made one with {q(driver)!r}, "
-                "which a BoundaryPrior terminated: drop the key",
+                "which a Clamp terminated: drop the key",
             )
         else:
             gone(
                 node,
                 f"a control node merge() identified with {q(driver)!r} (a same-step "
-                f"ActionControl), which another subsystem chooses: key it by {q(driver)!r} "
+                f"Link), which another subsystem chooses: key it by {q(driver)!r} "
                 "in that subsystem's view",
                 f"the action node of a control node merge() identified with {q(driver)!r}, "
                 "which another subsystem chooses: key the action in that subsystem's view",
@@ -3140,10 +3618,9 @@ def _bound_away(
             continue
         gone(
             node,
-            "a control node merge() terminated with a BoundaryPrior, so no node "
+            "a control node merge() terminated with a Clamp, so no node "
             f"{q(node)!r} exists here: drop the key",
-            "the action node of a control node merge() terminated with a BoundaryPrior: "
-            "drop the key",
+            "the action node of a control node merge() terminated with a Clamp: drop the key",
         )
     return tuple(out.items())
 

@@ -17,8 +17,8 @@ The two robots' models are composed two ways:
   one mind plans over both robots' moves jointly, acting on a whole joint policy
   (``act(..., mode="policy")``; on each node's own marginal, ``act``'s default, the two
   dock assignments tie node by node and the one mind behaves as the coupled pair does); the
-  joint ObservationLinks identify the robots' position factors outright, so the two components
-  share them with messages both ways;
+  structural ``Link`` bindings into the modalities' parents identify the robots' position factors
+  outright, so the two components share them with messages both ways;
 - **coupled** (:func:`coupled_episode`): each robot is a mind of its own, its model as
   declared, wired to a world process through ``couple()``, as ``hide_and_seek.py`` does.
 
@@ -46,7 +46,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import ObservationLink, Wire, agent_step, couple, merge, run
+from hybrid_aif.composition import Link, agent_step, couple, merge, run
 from hybrid_aif.system import System, SystemParams
 
 N = 5  # corridor cells; the docks are the two ends
@@ -137,10 +137,10 @@ def robot(me: int, other: int, policy_len: int = 2) -> tuple[System, SystemParam
 # ------------------------------------------------------------------ merged: one mind
 
 LINKS = (
-    ObservationLink(modality="a.other_obs", factors=("b.me",)),
-    ObservationLink(modality="a.status", factors=("a.me", "b.me")),
-    ObservationLink(modality="b.other_obs", factors=("a.me",)),
-    ObservationLink(modality="b.status", factors=("b.me", "a.me")),
+    Link(("b.me",), "a.other_obs"),
+    Link(("a.me", "b.me"), "a.status"),
+    Link(("a.me",), "b.other_obs"),
+    Link(("b.me", "a.me"), "b.status"),
 )
 
 
@@ -280,15 +280,15 @@ def world(start=SYMMETRIC):
     return env, dataclasses.replace(env_params, actuator={})
 
 
-WIRES = (
-    Wire("a.move", "world.a_move"),
-    Wire("b.move", "world.b_move"),
-    Wire("world.a_pos", "a.me_obs"),
-    Wire("world.b_pos", "a.other_obs"),
-    Wire("world.status", "a.status"),
-    Wire("world.b_pos", "b.me_obs"),
-    Wire("world.a_pos", "b.other_obs"),
-    Wire("world.status", "b.status"),
+PORT_LINKS = (
+    Link("a.move", "world.a_move"),
+    Link("b.move", "world.b_move"),
+    Link("world.a_pos", "a.me_obs"),
+    Link("world.b_pos", "a.other_obs"),
+    Link("world.status", "a.status"),
+    Link("world.b_pos", "b.me_obs"),
+    Link("world.a_pos", "b.other_obs"),
+    Link("world.status", "b.status"),
 )
 
 
@@ -302,7 +302,7 @@ def coupled(start=SYMMETRIC, selection="deterministic", policy_len: int = 2):
             "b": (*rb, agent_step(rb[0], selection=selection)),
         },
         processes={"world": world(start)},
-        wires=list(WIRES),
+        links=list(PORT_LINKS),
     )
 
 

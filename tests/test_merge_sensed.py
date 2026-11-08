@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.replay import replay
 from tests.test_action_node_modalities import LEVEL_SD, PROCESS_SD, scalar_model
 from tests.test_merge_gaussian_control import mission
@@ -113,7 +113,7 @@ def test_an_identified_node_is_read_at_the_drivers_action_and_carried_by_the_vie
     system, params = merge(
         {"slow": slow, "fast": fast},
         {"slow": slow_p, "fast": fast_p},
-        [ActionControl("slow.u_option", "fast.u")],
+        [Link("slow.option", "fast.u")],
     )
     assert system.action_names == ("slow.option",)
     assert system._sensed == ("slow.option",)
@@ -156,7 +156,7 @@ def test_a_boundary_prior_on_a_node_a_modality_observes_is_refused_naming_the_mo
         merge(
             {"slow": slow, "fast": fast},
             {"slow": slow_p, "fast": fast_p},
-            [BoundaryPrior("fast.u", 1)],
+            [Clamp("fast.u", 1)],
         )
 
 
@@ -198,5 +198,5 @@ def test_a_modality_observing_one_action_node_twice_after_identification_is_refu
         merge(
             {"slow": slow, "fast": fast},
             {"slow": slow_p, "fast": fast_p},
-            [ActionControl("slow.u_option", "fast.u"), ActionControl("slow.u_option", "fast.v")],
+            [Link("slow.option", "fast.u"), Link("slow.option", "fast.v")],
         )

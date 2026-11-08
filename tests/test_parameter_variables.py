@@ -4,7 +4,7 @@ Pinned by: the explicit form with one reader against the implicit form (inferenc
 learning), the resolved positional view and the keyed params every face returns, learning that sums
 the readers' statistics into the one table, the rate keys, novelty on a referencing reader, the
 description length (a variable priced once under ``parameter:<name>``), the description document and
-its round trip, ``merge`` with ``SharedParameter`` and the views' write-back, and the refusals.
+its round trip, ``merge`` with ``Identify`` and the views' write-back, and the refusals.
 
 Design: docs/design/shared-parameters.md (the 2026-11-05 amendment); the first customer is the
 two-tier field in docs/design/terrain-field.md.
@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Parameter
-from hybrid_aif.composition import SharedParameter, merge, subsystem, write_back
+from hybrid_aif.composition import Identify, merge, subsystem, write_back
 from hybrid_aif.description import build, describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.distributions import (
@@ -552,7 +552,7 @@ def _field_composite():
     return merge(
         {"rover": rover, "mission": mission},
         {"rover": rover_params, "mission": mission_params},
-        [SharedParameter("rover.field", "mission.field")],
+        [Identify("rover.field", "mission.field")],
     )
 
 
@@ -636,7 +636,7 @@ def test_the_composites_novelty_on_the_scheduler_reader_reads_the_shared_field()
     composite, params = merge(
         {"rover": rover, "mission": mission},
         {"rover": rover_params, "mission": mission_params},
-        [SharedParameter("rover.field", "mission.field")],
+        [Identify("rover.field", "mission.field")],
     )
     obs = {
         "rover.tex": OBS["tex"],
@@ -807,7 +807,7 @@ def test_identifying_variables_of_different_shape_or_family_refuses_naming_both(
         merge(
             {"rover": rover, "mission": mission},
             {"rover": rover_params, "mission": bad},
-            [SharedParameter("rover.field", "mission.field")],
+            [Identify("rover.field", "mission.field")],
         )
     point = ConditionalCategorical(log_table=jnp.zeros((3, 9)), parent_ndims=1)
     other = dataclasses.replace(mission_params, parameters={"field": point})
@@ -815,13 +815,13 @@ def test_identifying_variables_of_different_shape_or_family_refuses_naming_both(
         merge(
             {"rover": rover, "mission": mission},
             {"rover": rover_params, "mission": other},
-            [SharedParameter("rover.field", "mission.field")],
+            [Identify("rover.field", "mission.field")],
         )
     with pytest.raises(ValueError, match=r"'mission\.nothing'.*not a parameter variable"):
         merge(
             {"rover": rover, "mission": mission},
             {"rover": rover_params, "mission": mission_params},
-            [SharedParameter("rover.field", "mission.nothing")],
+            [Identify("rover.field", "mission.nothing")],
         )
 
 
@@ -903,7 +903,7 @@ def test_a_growable_factor_cannot_read_a_variable():
 
 
 def test_a_binding_that_rewrites_a_readers_control_axis_is_refused_not_applied():
-    from hybrid_aif.composition import BoundaryPrior
+    from hybrid_aif.composition import Clamp
 
     system = System(
         A_deps=((0,),),
@@ -921,7 +921,7 @@ def test_a_binding_that_rewrites_a_readers_control_axis_is_refused_not_applied()
         parameters={"T": table},
     )
     with pytest.raises(NotImplementedError, match=r"control axis of factor 'm.s'.*'m.T'"):
-        merge({"m": system}, {"m": params}, [BoundaryPrior("m.u_s", 0)])
+        merge({"m": system}, {"m": params}, [Clamp("m.u_s", 0)])
 
 
 # ------------------------------------------------------------------- the fix-pass defects
@@ -968,7 +968,7 @@ def _shared_across_kinds(order=("u", "v")):
     return merge(
         {k: v[0] for k, v in ordered.items()},
         {k: v[1] for k, v in ordered.items()},
-        [SharedParameter(f"{order[0]}.H", f"{order[1]}.H")],
+        [Identify(f"{order[0]}.H", f"{order[1]}.H")],
     )
 
 

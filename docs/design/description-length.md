@@ -136,6 +136,12 @@ factor and modality, a control count. Its code:
   source is a parent choice and is priced as one; the kernel and realisation are choices this code
   does not yet price, to be settled when the format records them. The `nested` mark is derived from
   the bindings and costs nothing, like a role label.*
+  *2026-11-08: an emission (an action node of a state factor, `engine-consolidation.md`) is
+  counted in the graph code as `log*(E + 1)` for `E` emissions, so every model moved by
+  `log*(1)`, about 1.05 nats, when the count was added; its kernel is priced as a likelihood
+  of its family (its menu, its parents, its parameters) while the document records it under the
+  actuator label. The two agree only while an actuator kernel itself is unpriced; when actuators
+  are priced, the record's label and its price must be settled together.*
 
 Alternatives considered: a per-candidate-parent bit (a Bernoulli edge prior; costs `P log 2`
 regardless of sparsity, so a sparse graph is overpriced); a fixed-width code for every count

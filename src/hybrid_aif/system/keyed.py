@@ -80,7 +80,9 @@ class Names(NamedTuple):
     ``states`` are the state factors' names and ``controls`` the control nodes', both from
     ``System.factor_names`` (declared, or the generated ``factor_{i}`` / ``u_factor_{i}``);
     ``modalities`` is ``System.modality_names``; ``actions`` the action nodes' (the action
-    keys), one per control node in the same order, from ``System.action_names``. Node-index
+    keys), one per control node in the same order, from ``System.action_names``;
+    ``emissions`` the outputs drawn from the state factors (``System.emissions``), in declaration
+    order, which no face takes or returns as an action. Node-index
     order is the order of every positional structure (tables, policy columns, the converters'
     tuples); iterating a mapping gives no such guarantee, so take order from here.
     """
@@ -89,6 +91,7 @@ class Names(NamedTuple):
     controls: tuple[str, ...]
     modalities: tuple[str, ...]
     actions: tuple[str, ...] = ()
+    emissions: tuple[str, ...] = ()
 
 
 class FaceNames(NamedTuple):
@@ -105,6 +108,7 @@ class FaceNames(NamedTuple):
     may also carry a discrete control node's entry (``node_beliefs``) and the entry of an action
     node a modality observes (``sensed``). ``gone`` pairs each control
     or action node a ``merge()`` binding removed with the sentence that refuses a key naming it.
+    ``emissions`` lists the System's emission names.
     """
 
     factors: tuple[str, ...]
@@ -117,6 +121,7 @@ class FaceNames(NamedTuple):
     gone: tuple[tuple[str, str], ...] = ()
     actions: tuple[str, ...] = ()
     sensed: tuple[str, ...] = ()
+    emissions: tuple[str, ...] = ()
 
     def kind(self, k: int) -> str:
         """Node ``k``'s kind (discrete when the params were not read)."""
@@ -134,7 +139,7 @@ class FaceNames(NamedTuple):
 
     @property
     def public(self) -> Names:
-        return Names(self.factors, self.controls, self.modalities, self.actions)
+        return Names(self.factors, self.controls, self.modalities, self.actions, self.emissions)
 
     def expected(self, kind: str) -> tuple[str, ...]:
         """The keys a mapping of ``kind`` carries (``"beliefs"``, ``"observations"``,
@@ -611,7 +616,7 @@ READER_SLOTS = ("transition", "likelihood")
 def _home(params: Any, name: str, slot: str, reader: str) -> Any:
     """The declaration a reference names, or the refusal that says why it names none."""
     homes = getattr(params, "parameters", {})
-    noun = "modality" if slot == "likelihood" else "factor"
+    noun = {"likelihood": "modality", "emission": "emission"}.get(slot, "factor")
     if name not in homes:
         raise ValueError(
             f"{noun} {reader!r} reads parameter variable {name!r} (params.{slot}[{reader!r}] is "

@@ -9,7 +9,7 @@ is that check; the rest of the file pins the pieces it is made of:
 
 - the namespacing surface (names, designation keys, the ``epistemic`` selector
   including wildcards, ``learn``'s rate keys);
-- the three binding kinds plus boundary-prior termination, with their node typing;
+- the three binding kinds plus ``Clamp`` termination, with their node typing;
 - ``policy_prior`` composition over the joint policy set;
 - the ``subsystems`` metadata (what ``subsystem()`` will consume in chunk 2), and
   its closure under a second merge;
@@ -31,15 +31,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.merge import (
-    ActionControl,
-    BoundaryPrior,
-    ObservationLink,
-    TargetEmission,
-    merge,
-    namespaced_key,
-    resolved_epistemic,
-)
+from hybrid_aif.composition.merge import Clamp, Link, merge, namespaced_key, resolved_epistemic
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
 from tests.test_h_deps import _high, _low
@@ -56,11 +48,11 @@ def _obs(system, obs=OBS):
 
 
 OBSERVATION_BINDINGS = [
-    ObservationLink(modality="agent.location_obs", factors=("world.location",)),
-    ObservationLink(modality="agent.reward", factors=("world.location", "world.context")),
-    ObservationLink(modality="agent.cue", factors=("world.location", "world.context")),
+    Link(("world.location",), "agent.location_obs"),
+    Link(("world.location", "world.context"), "agent.reward"),
+    Link(("world.location", "world.context"), "agent.cue"),
 ]
-DRIVE = ActionControl(driver="agent.location", control="world.u_location")
+DRIVE = Link("agent.location", "world.u_location")
 
 
 def agent_and_world(policy_len=2, **agent_kwargs):
@@ -236,7 +228,7 @@ def test_target_emission_declares_H_deps_across_the_boundary():
         {"agent": ap, "world": wp},
         [
             *OBSERVATION_BINDINGS,
-            TargetEmission(target="world.context", parents=("agent.location",)),
+            Link(("agent.location",), "terminal:world.context"),
         ],
     )
     #  the state factors' entries, then the two (free) control nodes'
@@ -253,9 +245,7 @@ def test_target_emission_declares_H_deps_across_the_boundary():
 def test_boundary_prior_terminates_a_control_node(prior):
     """Requirement 4: a delta *pins* the dynamics, a uniform *marginalizes* over
     them — different composites, both runnable with no external feed."""
-    composite, cp = merged(
-        bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", prior)]
-    )
+    composite, cp = merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.u_location", prior)])
     assert composite.controlled == (True, False, False, False)
     assert composite.names.controls == ("agent.u_location",)  # the terminated node is gone
     assert cp.transition["world.location"].parent_ndims == 2  # control axis retired, not re-read
@@ -273,10 +263,8 @@ def test_boundary_prior_terminates_a_control_node(prior):
 
 
 def test_delta_and_uniform_boundary_priors_differ():
-    delta, dp = merged(bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", CUE)])
-    flat, fp = merged(
-        bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", jnp.full(5, 0.2))]
-    )
+    delta, dp = merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.u_location", CUE)])
+    flat, fp = merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.u_location", jnp.full(5, 0.2))])
     beliefs_d, _ = delta.infer_states(dp, _obs(delta))
     beliefs_f, _ = flat.infer_states(fp, _obs(flat))
     q_d, _ = delta.infer_policies(dp, beliefs_d)
@@ -336,7 +324,7 @@ def test_default_positional_names_are_namespaced_too():
     composite, _ = merge(
         {"a": anonymous, "world": world},
         {"a": anon_params, "world": wp},
-        [ActionControl(driver="a.factor_0", control="world.u_location")],
+        [Link("a.factor_0", "world.u_location")],
     )
     assert composite.factor_names[:2] == ("a.factor_0", "a.factor_1")
     assert composite.modality_names[:1] == ("a.modality_0",)
@@ -581,7 +569,7 @@ def test_subsystems_metadata_records_the_control_nodes():
 
 
 def test_boundary_prior_is_recorded_as_a_terminated_control_node():
-    composite, _ = merged(bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", CUE)])
+    composite, _ = merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.u_location", CUE)])
     assert dict(composite.subsystems)["world"].terminated == ("world.u_location",)
 
 
@@ -610,12 +598,15 @@ def test_merge_is_closed_and_qualifies_nested_metadata():
 def test_unknown_binding_names_list_the_candidates():
     (agent, ap), (world, wp) = agent_and_world()
     subs, ps = {"agent": agent, "world": world}, {"agent": ap, "world": wp}
-    with pytest.raises(ValueError, match="'agent.locaiton' is neither a control node nor a state"):
-        merge(subs, ps, [ActionControl(driver="agent.locaiton", control="world.u_location")])
-    with pytest.raises(ValueError, match="unknown modality"):
-        merge(subs, ps, [ObservationLink(modality="agent.vision", factors=("world.location",))])
+    with pytest.raises(
+        ValueError,
+        match="the source is unknown; a link into a control node comes from an action node",
+    ):
+        merge(subs, ps, [Link("agent.locaiton", "world.u_location")])
+    with pytest.raises(ValueError, match="the target 'agent.vision' is unknown"):
+        merge(subs, ps, [Link(("world.location",), "agent.vision")])
     with pytest.raises(ValueError, match="world.u_location"):  # candidates are listed
-        merge(subs, ps, [ActionControl(driver="agent.location", control="world.loc")])
+        merge(subs, ps, [Link("agent.location", "world.loc")])
     with pytest.raises(TypeError, match="unknown binding"):
         merge(subs, ps, ["agent.location -> world.location"])
 
@@ -628,31 +619,31 @@ def test_node_typing_errors():
         merge(
             {"low": low, "world": world},
             {"low": lp, "world": wp},
-            [ActionControl(driver="low.pos", control="world.u_location")],
+            [Link("low.pos", "world.u_location")],
         )
     with pytest.raises(ValueError, match=r"already merged \(with \['agent.location'\]\)"):
         merge(
             subs,
             ps,
             [
-                ActionControl(driver="agent.location", control="world.u_location"),
-                ActionControl(driver="world.context", control="world.u_location"),
+                Link("agent.location", "world.u_location"),
+                Link("world.context", "world.u_location"),
             ],
         )
     with pytest.raises(ValueError, match="a state factor, where a binding names a control node"):
-        merge(subs, ps, [ActionControl(driver="agent.location", control="world.context")])
+        merge(subs, ps, [Link("agent.location", "world.context")])
     with pytest.raises(ValueError, match="already merged"):
         merge(subs, ps, [DRIVE, DRIVE])
     with pytest.raises(ValueError, match="support mismatch"):
-        merge(subs, ps, [ObservationLink(modality="agent.reward", factors=("world.context",) * 2)])
+        merge(subs, ps, [Link(("world.context",) * 2, "agent.reward")])
     with pytest.raises(ValueError, match="parent axis"):
-        merge(subs, ps, [ObservationLink(modality="agent.reward", factors=("world.location",))])
+        merge(subs, ps, [Link(("world.location",), "agent.reward")])
     with pytest.raises(ValueError, match="a state factor, where a binding names a control node"):
-        merge(subs, ps, [BoundaryPrior("world.context", 0)])
+        merge(subs, ps, [Clamp("world.context", 0)])
     with pytest.raises(ValueError, match="one probability per level"):
-        merge(subs, ps, [BoundaryPrior("world.u_location", jnp.zeros(3))])
+        merge(subs, ps, [Clamp("world.u_location", jnp.zeros(3))])
     with pytest.raises(ValueError, match="not one of its 5 control level"):
-        merge(subs, ps, [BoundaryPrior("world.u_location", 9)])
+        merge(subs, ps, [Clamp("world.u_location", 9)])
 
 
 def test_inference_config_disagreement_raises():
@@ -680,7 +671,7 @@ def test_structural_errors_and_bad_keys_raise_at_build_time():
         merge(
             {"agent": agent, "world": world},
             {"agent": ap, "world": wp_bad},
-            [*OBSERVATION_BINDINGS, TargetEmission("world.context", ("agent.location",))],
+            [*OBSERVATION_BINDINGS, Link(("agent.location",), "terminal:world.context")],
         )
 
 
@@ -696,5 +687,5 @@ def test_target_emission_does_not_override_a_components_own_H_deps():
         merge(
             {"agent": agent, "world": own},
             {"agent": ap, "world": wp},
-            [*OBSERVATION_BINDINGS, TargetEmission("world.context", ("agent.location",))],
+            [*OBSERVATION_BINDINGS, Link(("agent.location",), "terminal:world.context")],
         )

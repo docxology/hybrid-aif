@@ -20,7 +20,13 @@ import jax.numpy as jnp
 from jax import Array
 
 from hybrid_aif.cells import Grid
-from hybrid_aif.controls import FLOAT, LEVEL, declared_parents, effective_control_deps
+from hybrid_aif.controls import (
+    FLOAT,
+    LEVEL,
+    _observation_axes,
+    declared_parents,
+    effective_control_deps,
+)
 from hybrid_aif.distributions import (
     ConditionalCategorical,
     ConditionalDirichlet,
@@ -231,6 +237,8 @@ def _validate(
     ]
     for what, got, allowed in checks:
         unknown = got - allowed
+        for name in sorted(unknown):
+            system._refuse_emission(name, what)
         if unknown:
             raise ValueError(
                 f"{what}: unknown block name(s) {sorted(unknown)}; "
@@ -282,6 +290,7 @@ def _validate(
     _validate_cells(system, params, facs)
     _validate_table_arity(system, params, facs)
     _validate_likelihood_parents(system, params, facs)
+    _validate_emissions(system, params, facs)
     _validate_readings(system, params)
     system._row_mounts(params)  # raises on a non-amortized System that declares rows
     space = system._space(params)  # node kinds and sizes; readers that disagree raise
@@ -472,6 +481,54 @@ def _validate_likelihood_parents(
                     f"modality {name!r}: its likelihood table's parent axis {pos} has "
                     f"{a.parent_shape[pos]} entries, but its parent {facs[g]!r} has {size} "
                     "levels; give the table one entry per level of each parent"
+                )
+
+
+def _validate_emissions(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
+    """The emission kernels against the declaration: one per emission, each a likelihood of a
+    family (a table, a linear-Gaussian or neural conditional, in point or learnable form), typed
+    as a port, with one parent axis per parent and one entry per level of a discrete parent (a
+    grid parent: one per cell)."""
+    if not system.emissions and not params.emission:
+        return
+    decls = system._emission_decls(params)
+    table = system._table
+    grids = system._cell_grids
+    space = system._space(params) if table.controls else None
+    for (name, emit), decl in zip(system.emissions, decls, strict=True):
+        where = f"emission {name!r}"
+        if not isinstance(
+            decl, ConditionalCategorical | ConditionalDirichlet | LGObservation | MLPConditional
+        ):
+            raise ValueError(
+                f"{where}: its kernel params.emission[{name!r}] is a {type(decl).__name__}, which "
+                "is no likelihood family; declare a table (ConditionalCategorical, or "
+                "ConditionalDirichlet), a linear-Gaussian observation or a neural conditional"
+            )
+        system._emission_types(params)  # a kernel that gives no port type raises, naming it
+        if isinstance(
+            decl, ConditionalCategorical | ConditionalDirichlet
+        ) and decl.parent_ndims != len(emit.parents):
+            raise ValueError(
+                f"{where}: its table has {decl.parent_ndims} parent axis/es and the emission "
+                f"names {len(emit.parents)} parent(s) {list(emit.parents)}; give the table one "
+                "axis per parent, in that order"
+            )
+        axes = _observation_axes(decl, len(emit.parents))
+        for pos, (parent, axis) in enumerate(zip(emit.parents, axes or (), strict=False)):
+            if axis is None:
+                continue
+            if parent in table.control_names:
+                k = table.control_names.index(parent)
+                size = space.sizes[k] if space.kinds[k] == LEVEL else None
+            else:
+                f = table.state_names.index(parent)
+                size = grids[f].n_cells if f in grids else _factor_levels(params, f)
+            if size is not None and axis != size:
+                raise ValueError(
+                    f"{where}: its kernel's parent axis {pos} has {axis} entries, but its parent "
+                    f"{parent!r} has {size} levels; give the kernel one entry per level of each "
+                    "discrete parent"
                 )
 
 
@@ -1068,6 +1125,8 @@ def _check_epistemic_key(
     """
     if key in variables:
         return
+    for segment in key.split(":"):
+        system._refuse_emission(segment, "epistemic")
     if key in system._table.control_names:
         raise ValueError(
             f"epistemic: {key!r} is a control node, which the System chooses rather than infers, "
@@ -1175,7 +1234,7 @@ def _check_pattern(
         if facs.index(kind) not in _dim_names(system, params):
             _check_dim_key(system, pattern, params)
         return
-    allowed = list(_KEY_KINDS) if epistemic else sorted(_SLOT_WORDS)
+    allowed = [k for k in _KEY_KINDS if k != "terminal"] if epistemic else sorted(_SLOT_WORDS)
     if kind != "*" and kind not in allowed:
         raise ValueError(
             f"{what}: unknown first segment {kind!r} in {pattern!r}; the legal first "

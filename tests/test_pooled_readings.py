@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Parameter
-from hybrid_aif.composition import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.distributions import Categorical, ConditionalCategorical, ConditionalDirichlet
 from hybrid_aif.system import System, SystemParams
@@ -214,21 +214,19 @@ def test_merge_namespaces_the_declaration_and_a_view_carries_its_own_tables_entr
 
 def test_merge_follows_a_same_step_identification_to_the_drivers_node():
     a, pa, b, pb = _two()
-    composite, _ = merge({"a": a, "b": b}, {"a": pa, "b": pb}, [ActionControl("a.u_s", "b.u_s")])
+    composite, _ = merge({"a": a, "b": b}, {"a": pa, "b": pb}, [Link("a.a_s", "b.u_s")])
     assert composite.readings == (("b.s", "a.u_s"),)
 
 
 def test_a_view_whose_node_is_another_components_refuses_and_a_removed_node_refuses_at_merge():
     a, pa, b, pb = _two()
-    composite, params = merge(
-        {"a": a, "b": b}, {"a": pa, "b": pb}, [ActionControl("a.u_s", "b.u_s")]
-    )
+    composite, params = merge({"a": a, "b": b}, {"a": pa, "b": pb}, [Link("a.a_s", "b.u_s")])
     with pytest.raises(
         NotImplementedError, match="another component chooses|terminating a \\*learnable\\*"
     ):
         subsystem(composite, params, "b")
     with pytest.raises(ValueError, match="binding removed"):
-        merge({"a": a, "b": b}, {"a": pa, "b": pb}, [BoundaryPrior("b.u_s", 0)])
+        merge({"a": a, "b": b}, {"a": pa, "b": pb}, [Clamp("b.u_s", 0)])
 
 
 # ----------------------------------------------------------------------- the document

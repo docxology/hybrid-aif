@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical, ConditionalDirichlet
-from hybrid_aif.composition.merge import BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.merge import Clamp, merge, subsystem
 from hybrid_aif.description import DescriptionError, build, describe
 from hybrid_aif.objectives import compiled, total
 from hybrid_aif.objectives import hybrid as _hybrid
@@ -398,7 +398,7 @@ def test_a_boundary_prior_terminates_every_reader_of_a_shared_node(prior):
     composite, cp = merge(
         {"maze": plain, "team": system},
         {"maze": plain_params, "team": params},
-        [BoundaryPrior("team.u_help", prior)],
+        [Clamp("team.u_help", prior)],
     )
     assert composite.names.controls == ("maze.u_location",)
     assert dict(composite.subsystems)["team"].terminated == ("team.u_help",)
@@ -413,7 +413,7 @@ def test_a_boundary_prior_terminates_every_reader_of_a_shared_node(prior):
     composite, cp = merge(
         {"maze": plain, "team": system},
         {"maze": plain_params, "team": params},
-        [BoundaryPrior("team.u_help", prior)],
+        [Clamp("team.u_help", prior)],
     )
     assert composite.names.controls == ("maze.u_location", "team.u_mode")
     assert composite.B_control_deps == ((0,), (), (), (3,), (3,))

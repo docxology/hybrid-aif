@@ -9,8 +9,9 @@ moves on the realised action. Under ``run`` and ``couple`` the draw is made once
 the driver, and the world steps on the realised value with no kernel of its own. Design:
 control-states.md C13; nesting-and-coupling.md N1. Underneath, a positional process samples in
 node order:
-:meth:`System.as_env <hybrid_aif.system.System.as_env>` builds one from the System's own
-declarations (the discrete or the hybrid process, chosen by the declarations), and
+:meth:`System.as_env <hybrid_aif.system.System.as_env>` builds one by running the System's
+mirror (:func:`~hybrid_aif.system.mirror.mirror`) forward (the discrete or the hybrid process,
+chosen by the declarations), and
 :meth:`GenerativeEnv.wrap` adopts an outside positional (pymdp-style) environment given the
 System whose names it speaks.
 """
@@ -33,6 +34,11 @@ __all__ = ["GenerativeEnv", "GenerativeEnvParams", "broadcast_params", "make"]
 #: The tag the actuator folds into a step's key ("actu"): no index the processes split a key
 #: into reaches it, so the realised action is drawn independently of the world's step.
 ACTUATOR_TAG = 0x61637475
+
+#: The tag the draw of a free control node folds into a step's key ("cont"): a node no input
+#: drives is drawn from ``fold_in(key, CONTROL_TAG)``, so the key stream of the process itself
+#: is the one it has when every node is driven.
+CONTROL_TAG = 0x636F6E74
 
 KeyedObs = dict[str, Array]
 KeyedState = dict[str, Array]

@@ -23,14 +23,8 @@ import pytest
 from scipy.stats import chi2
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.driver import (
-    MindCarry,
-    _check_action,
-    agent_step,
-    ancestral_step,
-    run,
-)
-from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.driver import MindCarry, _check_action, agent_step, ancestral_step, run
+from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.envs import GenerativeEnv
 from hybrid_aif.envs._process import DiscreteProcess
@@ -329,9 +323,7 @@ def test_a_merge_identifies_a_control_node_with_any_state():
     """The relay from a state of no controlled factor: the reader's control axis is re-read as
     that state, a step later, against the hand computation."""
     (src, sp), (w, wp) = _source(), pusher()
-    composite, cp = merge(
-        {"src": src, "w": w}, {"src": sp, "w": wp}, [ActionControl("src.s", "w.u_push")]
-    )
+    composite, cp = merge({"src": src, "w": w}, {"src": sp, "w": wp}, [Link("src.s", "w.u_push")])
     assert composite.names.controls == () and composite.names.actions == ()
     record = dict(composite.subsystems)["w"]
     assert record.relayed == (("w.u_push", "src.s"),)
@@ -347,9 +339,7 @@ def test_a_merge_identifies_a_control_node_with_any_state():
 
 def test_a_merge_binds_native_control_nodes():
     (a, ap), (b, bp) = pusher(), pusher()
-    composite, cp = merge(
-        {"a": a, "b": b}, {"a": ap, "b": bp}, [ActionControl("a.u_push", "b.u_push")]
-    )
+    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.push", "b.u_push")])
     assert composite.names.controls == ("a.u_push",) and composite.names.actions == ("a.push",)
     assert dict(composite.subsystems)["b"].identified == (("b.u_push", "a.u_push"),)
     beliefs = composite.initial_priors(cp)
@@ -365,7 +355,7 @@ def test_a_merge_binds_native_control_nodes():
     traj = run(composite, cp, {"a": ancestral_step(view)}, ticks=3, key=KEY)
     assert list(traj.actions) == ["a.push"]
     #  a terminated native node, and a kernel that moves with its node
-    one, op = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [BoundaryPrior("b.u_push", 1)])
+    one, op = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Clamp("b.u_push", 1)])
     assert dict(one.subsystems)["b"].terminated == ("b.u_push",)
     (k, kp) = pusher(kernel=KERNEL)
     kept, kpp = merge({"k": k}, {"k": kp})
@@ -388,7 +378,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     ended, ep = merge(
         {"agent": agent_s, "world": world_s},
         {"agent": ap, "world": wp},
-        [*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", 1)],
+        [*OBSERVATION_BINDINGS, Clamp("world.u_location", 1)],
     )
     document, arrays = describe(ended, ep)
     assert "world.u_location" not in document["variables"]
@@ -618,7 +608,7 @@ def test_predict_beliefs_carries_the_observed_action_nodes_prediction():
 
 def test_a_binding_that_would_drop_a_kernel_is_refused():
     (a, ap), (b, bp) = pusher(kernel=KERNEL), pusher()
-    same = ActionControl("a.u_push", "b.u_push")
+    same = Link("a.push", "b.u_push")
     with pytest.raises(ValueError, match="kernels params.actuator holds .* differ"):
         merge({"a": a, "b": b}, {"a": ap, "b": bp}, [same])
     with pytest.raises(ValueError, match="kernels params.actuator holds .* differ"):
@@ -627,9 +617,9 @@ def test_a_binding_that_would_drop_a_kernel_is_refused():
     assert set(cp.actuator) == {"a.push"}
     (src, sp) = _source()
     with pytest.raises(ValueError, match="kernel for its action node 'w.push' that would be"):
-        merge({"src": src, "w": a}, {"src": sp, "w": ap}, [ActionControl("src.s", "w.u_push")])
+        merge({"src": src, "w": a}, {"src": sp, "w": ap}, [Link("src.s", "w.u_push")])
     with pytest.raises(ValueError, match="kernel for its action node 'w.push' that would be"):
-        merge({"w": a}, {"w": ap}, [BoundaryPrior("w.u_push", 0)])
+        merge({"w": a}, {"w": ap}, [Clamp("w.u_push", 0)])
 
 
 def test_partner_priors_keyed_by_an_action_node_name_the_control_node():
@@ -637,7 +627,7 @@ def test_partner_priors_keyed_by_an_action_node_name_the_control_node():
     composite, cp = merge(
         {"agent": agent, "world": world},
         {"agent": ap, "world": wp},
-        [ActionControl("agent.u_location", "world.u_location"), *OBSERVATION_BINDINGS],
+        [Link("agent.a_location", "world.u_location"), *OBSERVATION_BINDINGS],
     )
     with pytest.raises(ValueError, match="the action node of control node 'agent.u_location'"):
         subsystem(composite, cp, "world", partner_priors={"agent.a_location": 0})

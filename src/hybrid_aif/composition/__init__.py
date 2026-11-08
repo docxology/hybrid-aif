@@ -1,15 +1,16 @@
 """Compositional active inference: Systems merged into one particle, Systems coupled as separate
-particles by wires, and the clock that runs them.
+particles by links, and the clock that runs them.
 
 - :mod:`~hybrid_aif.composition.merge` — :func:`merge` makes several Systems one particle: a
-  namespaced composite whose components share latents through bindings (control-node
-  identification or relay, a modality's parents, target emission, boundary prior, a shared
-  parameter variable, a modality's datum read from another component's state); a component bound
-  only by blanket-shaped bindings, sibling-belief reads and control-node acts, is nested;
-  :func:`subsystem` derives one mind's System from the composite and :func:`write_back` returns
-  a view's learned parameter variables to it.
+  namespaced composite whose components share latents through bindings, of three kinds: a
+  :class:`Link` (a driver's action node into a control node, a relayed state, a modality's
+  parents, a belief read, a terminal target), an :class:`Identify` (two parameter variables made
+  one) and a :class:`Clamp` (a control node held at a constant); a component bound only by
+  blanket-shaped bindings, belief reads and action-node links, is nested; :func:`subsystem`
+  derives one mind's System from the composite and :func:`write_back` returns a view's learned
+  parameter variables to it.
 - :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins separate particles, minds and
-  processes, through their blankets: a :class:`Wire` from an action node to a process input or a
+  processes, through their blankets: a :class:`Link` from an action node to a process input or a
   mind's modality, or from a process observation to a mind's modality, typed and checked into a
   :class:`Wiring`.
 - :mod:`~hybrid_aif.composition.driver` — :func:`run` closes the loop under a declared tick
@@ -20,7 +21,7 @@ particles by wires, and the clock that runs them.
 Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
 """
 
-from hybrid_aif.composition.couple import Wire, Wiring, couple
+from hybrid_aif.composition.couple import Wiring, couple
 from hybrid_aif.composition.driver import (
     HoldCarry,
     MindCarry,
@@ -36,12 +37,9 @@ from hybrid_aif.composition.driver import (
     run,
 )
 from hybrid_aif.composition.merge import (
-    ActionControl,
-    BoundaryPrior,
-    ObservationLink,
-    SharedParameter,
-    SiblingRead,
-    TargetEmission,
+    Clamp,
+    Identify,
+    Link,
     merge,
     namespaced_key,
     nested,
@@ -52,20 +50,16 @@ from hybrid_aif.composition.merge import (
 )
 
 __all__ = [
-    "ActionControl",
-    "BoundaryPrior",
+    "Clamp",
     "HoldCarry",
+    "Identify",
+    "Link",
     "MindCarry",
     "MindRecord",
-    "ObservationLink",
     "ParticleCarry",
     "ProcessRecord",
-    "SharedParameter",
-    "SiblingRead",
     "Step",
-    "TargetEmission",
     "Trajectory",
-    "Wire",
     "Wiring",
     "agent_step",
     "ancestral_step",

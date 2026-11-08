@@ -18,10 +18,10 @@ import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition import (
+    Link,
     MindCarry,
     MindRecord,
     ProcessRecord,
-    Wire,
     Wiring,
     agent_step,
     ancestral_step,
@@ -107,13 +107,13 @@ def _two_minds(kernel):
 
 
 def _sugar(composite, cp, views, responds):
-    """The composite as one process, the minds on their views, the wires by name."""
-    wires = []
+    """The composite as one process, the minds on their views, the links by name."""
+    links = []
     for name, (view, _) in views.items():
-        wires += [Wire(f"{name}.{a}", f"env.{a}") for a in view.names.actions]
-        wires += [Wire(f"env.{m}", f"{name}.{m}") for m in view.names.modalities]
+        links += [Link(f"{name}.{a}", f"env.{a}") for a in view.names.actions]
+        links += [Link(f"env.{m}", f"{name}.{m}") for m in view.names.modalities]
     minds = {name: (view, vp, responds[name]) for name, (view, vp) in views.items()}
-    return couple(minds=minds, processes={"env": process(composite, cp)}, wires=wires)
+    return couple(minds=minds, processes={"env": process(composite, cp)}, links=links)
 
 
 @pytest.mark.parametrize("kernel", [False, True], ids=["delta", "kernel"])
@@ -195,12 +195,12 @@ def test_two_minds_on_two_processes_record_by_participant_and_match_a_hand_loop(
             "B": (b_sys, b_par, ancestral_step(b_sys)),
         },
         processes={"P1": process(*pusher()), "P2": process(*pusher())},
-        wires=[
-            Wire("A.push", "P1.push"),
-            Wire("P1.see", "A.see"),
-            Wire("P1.see", "B.see"),
-            Wire("B.push", "P2.push"),
-            Wire("P2.see", "B.see2"),
+        links=[
+            Link("A.push", "P1.push"),
+            Link("P1.see", "A.see"),
+            Link("P1.see", "B.see"),
+            Link("B.push", "P2.push"),
+            Link("P2.see", "B.see2"),
         ],
     )
     ticks = 5
@@ -251,10 +251,10 @@ def _direct(tick_order, kernel=None):
             "B": (b_sys, b_par, ancestral_step(b_sys)),
         },
         processes={"P1": process(*pusher(noise=0.0))},
-        wires=[
-            Wire("A.push", "P1.push"),
-            Wire("A.push", "B.see"),
-            Wire("B.push", "A.see"),
+        links=[
+            Link("A.push", "P1.push"),
+            Link("A.push", "B.see"),
+            Link("B.push", "A.see"),
         ],
     )
     return run(wiring, ticks=12, key=KEY, tick_order=tick_order)
@@ -361,7 +361,7 @@ def test_a_fixed_input_advances_the_process_as_an_emitted_one_would():
         couple(
             minds={"M": (m_sys, m_par, constant(1))},
             processes={"P": process(*pusher(noise=0.0))},
-            wires=[Wire("M.push", "P.push"), Wire("P.see", "M.see")],
+            links=[Link("M.push", "P.push"), Link("P.see", "M.see")],
         ),
         ticks=ticks,
         key=KEY,
@@ -413,7 +413,7 @@ def test_a_continuous_action_node_drives_a_continuous_input_of_its_width():
     wiring = couple(
         minds={"M": (m_sys, m_par, push)},
         processes={"P": process(*_continuous(1))},
-        wires=[Wire("M.u", "P.u"), Wire("P.pos", "M.pos")],
+        links=[Link("M.u", "P.u"), Link("P.pos", "M.pos")],
     )
     assert wiring.types["M.u"] == wiring.types["P.u"] == ("float", 1)
     assert wiring.types["P.pos"] == wiring.types["M.pos"] == ("float", 2)
@@ -430,7 +430,7 @@ def test_a_continuous_action_node_drives_a_continuous_input_of_its_width():
         couple(
             minds={"M": (w_sys, w_par, push)},
             processes={"P": process(*_continuous(1))},
-            wires=[Wire("M.u", "P.u"), Wire("P.pos", "M.pos")],
+            links=[Link("M.u", "P.u"), Link("P.pos", "M.pos")],
         )
 
 
@@ -442,19 +442,19 @@ def _parts():
     return {"M": (m_sys, m_par, constant(1))}, {"P": process(*pusher())}
 
 
-GOOD = [Wire("M.push", "P.push"), Wire("P.see", "M.see")]
+GOOD = [Link("M.push", "P.push"), Link("P.see", "M.see")]
 
 
 def test_an_unknown_participant_or_port_is_refused_with_the_candidates():
     minds, procs = _parts()
     with pytest.raises(ValueError, match=r"names participant 'Q'.*participants are \['M', 'P'\]"):
-        couple(minds=minds, processes=procs, wires=[Wire("M.push", "Q.push"), GOOD[1]])
+        couple(minds=minds, processes=procs, links=[Link("M.push", "Q.push"), GOOD[1]])
     with pytest.raises(ValueError, match=r"'P.shove' is not an in-port.*in-ports are \['P.push'\]"):
-        couple(minds=minds, processes=procs, wires=[Wire("M.push", "P.shove"), GOOD[1]])
-    with pytest.raises(ValueError, match=r"'M.see' is not an out-port.*a wire's target"):
-        couple(minds=minds, processes=procs, wires=[Wire("M.see", "P.push"), GOOD[1]])
+        couple(minds=minds, processes=procs, links=[Link("M.push", "P.shove"), GOOD[1]])
+    with pytest.raises(ValueError, match=r"'M.see' is not an out-port.*a link's target"):
+        couple(minds=minds, processes=procs, links=[Link("M.see", "P.push"), GOOD[1]])
     with pytest.raises(ValueError, match="write a port as 'participant.port'"):
-        couple(minds=minds, processes=procs, wires=[Wire("push", "P.push"), GOOD[1]])
+        couple(minds=minds, processes=procs, links=[Link("push", "P.push"), GOOD[1]])
 
 
 def test_a_type_mismatch_is_refused_with_both_types():
@@ -464,7 +464,7 @@ def test_a_type_mismatch_is_refused_with_both_types():
         couple(
             minds={**minds, "F": (s_sys, s_par, constant(0))},
             processes=procs,
-            wires=[*GOOD, Wire("F.push", "M.see")],
+            links=[*GOOD, Link("F.push", "M.see")],
         )
 
 
@@ -490,29 +490,29 @@ def _five():
 def test_two_wires_into_one_in_port_are_refused():
     minds, procs = _parts()
     procs["Q"] = process(*pusher())
-    with pytest.raises(ValueError, match=r"'M.see' is the target of two wires.*takes one wire"):
+    with pytest.raises(ValueError, match=r"'M.see' is the target of two links.*takes one link"):
         couple(
             minds=minds,
             processes=procs,
-            wires=[*GOOD, Wire("Q.see", "M.see")],
+            links=[*GOOD, Link("Q.see", "M.see")],
             fixed={"Q.push": 0},
         )
-    with pytest.raises(ValueError, match="both wired .* and in fixed="):
-        couple(minds=minds, processes=procs, wires=GOOD, fixed={"P.push": 0, "Q.push": 0})
+    with pytest.raises(ValueError, match="both linked .* and in fixed="):
+        couple(minds=minds, processes=procs, links=GOOD, fixed={"P.push": 0, "Q.push": 0})
 
 
 def test_an_unfed_in_port_is_refused_naming_its_fix():
     minds, procs = _parts()
-    with pytest.raises(ValueError, match=r"process input 'P.push' is fed by no wire.*fixed="):
-        couple(minds=minds, processes=procs, wires=[GOOD[1]])
-    with pytest.raises(ValueError, match=r"mind modality 'M.see' is fed by no wire.*drop the"):
-        couple(minds=minds, processes=procs, wires=[GOOD[0]])
+    with pytest.raises(ValueError, match=r"process input 'P.push' is fed by no link.*fixed="):
+        couple(minds=minds, processes=procs, links=[GOOD[1]])
+    with pytest.raises(ValueError, match=r"mind modality 'M.see' is fed by no link.*drop the"):
+        couple(minds=minds, processes=procs, links=[GOOD[0]])
 
 
 def test_fixed_holds_only_a_process_input_of_its_type():
     minds, procs = _parts()
     with pytest.raises(ValueError, match=r"fixed= names 'M.see', which is not a process input"):
-        couple(minds=minds, processes=procs, wires=GOOD, fixed={"M.see": 0})
+        couple(minds=minds, processes=procs, links=GOOD, fixed={"M.see": 0})
     with pytest.raises(ValueError, match=r"fixed= names 'M.push', which is not a process input"):
         couple(processes=procs, fixed={"M.push": 0})
     with pytest.raises(ValueError, match=r"process input 'P.push' is discrete, 3 levels"):
@@ -525,27 +525,27 @@ def test_an_actuator_on_a_process_is_refused_naming_the_mind():
     minds, _ = _parts()
     env, ep = pusher(kernel=KERNEL)[0].as_env(pusher(kernel=KERNEL)[1])
     with pytest.raises(ValueError, match=r"actuator belongs to the mind that emits the action"):
-        couple(minds=minds, processes={"P": (env, ep)}, wires=GOOD)
+        couple(minds=minds, processes={"P": (env, ep)}, links=GOOD)
 
 
 def test_a_bare_positional_env_is_refused_naming_wrap():
     minds, _ = _parts()
     bare = DiscreteProcess(A_deps=((0,),), B_deps=((0,),))
     with pytest.raises(TypeError, match=r"GenerativeEnv.wrap"):
-        couple(minds=minds, processes={"P": bare}, wires=GOOD)
+        couple(minds=minds, processes={"P": bare}, links=GOOD)
     with pytest.raises(TypeError, match=r"GenerativeEnv.wrap"):
-        couple(minds=minds, processes={"P": (bare, None)}, wires=GOOD)
+        couple(minds=minds, processes={"P": (bare, None)}, links=GOOD)
 
 
 def test_a_wire_between_two_processes_and_bad_names_are_refused():
     minds, procs = _parts()
     procs["Q"] = process(*pusher())
     with pytest.raises(ValueError, match=r"from a process's observation to a process's input"):
-        couple(minds=minds, processes=procs, wires=[*GOOD, Wire("P.see", "Q.push")])
+        couple(minds=minds, processes=procs, links=[*GOOD, Link("P.see", "Q.push")])
     with pytest.raises(ValueError, match=r"a non-empty string without a dot"):
-        couple(minds={"M.1": minds["M"]}, processes=procs, wires=GOOD)
+        couple(minds={"M.1": minds["M"]}, processes=procs, links=GOOD)
     with pytest.raises(ValueError, match=r"two participants are named 'M'"):
-        couple(minds=minds, processes={"M": procs["P"]}, wires=GOOD)
+        couple(minds=minds, processes={"M": procs["P"]}, links=GOOD)
 
 
 # ----------------------------------------------------------------------------- 7. run's forms
@@ -553,7 +553,7 @@ def test_a_wire_between_two_processes_and_bad_names_are_refused():
 
 def test_run_on_a_wiring_refuses_the_composite_arguments():
     minds, procs = _parts()
-    wiring = couple(minds=minds, processes=procs, wires=GOOD)
+    wiring = couple(minds=minds, processes=procs, links=GOOD)
     assert isinstance(wiring, Wiring)
     _, cp = pusher()
     sentence = r"run\(wiring, ticks=\.\.\., key=\.\.\.\) takes ticks and key by keyword"
@@ -637,26 +637,26 @@ def test_a_port_with_no_level_count_or_a_shapeless_vector_is_refused():
     #  wrapped without params, the inputs have no level count
     bare = GenerativeEnv.wrap(env.inner, system)
     with pytest.raises(ValueError, match=r"GenerativeEnv.wrap\(env, system, params\)"):
-        couple(minds=minds, processes={"P": (bare, ep)}, wires=GOOD)
+        couple(minds=minds, processes={"P": (bare, ep)}, links=GOOD)
     #  with params, they do, and an outside env typed by GenerativeEnvParams couples
     typed = GenerativeEnv.wrap(env.inner, system, params)
-    assert couple(minds=minds, processes={"P": (typed, ep)}, wires=GOOD).types["P.push"] == (
+    assert couple(minds=minds, processes={"P": (typed, ep)}, links=GOOD).types["P.push"] == (
         "level",
         3,
     )
     #  an outside env's own params: a level with no level count is refused
     outside = _outside(lambda obs: obs)
     with pytest.raises(ValueError, match=r"emits 'see' as a level, and its params give no level"):
-        couple(minds=minds, processes={"P": outside}, wires=GOOD)
+        couple(minds=minds, processes={"P": outside}, links=GOOD)
     #  a float observation of no vector shape is refused with its shape
     scalar = _outside(lambda obs: tuple(o.astype(jnp.float32) for o in obs))
     with pytest.raises(ValueError, match=r"emits 'see' with shape \(\); a continuous port"):
-        couple(minds=minds, processes={"P": scalar}, wires=GOOD)
+        couple(minds=minds, processes={"P": scalar}, links=GOOD)
 
 
 def test_a_wired_mind_emitting_a_level_out_of_range_is_refused():
     minds, procs = _parts()
     minds["M"] = (*minds["M"][:2], constant(7))
-    wiring = couple(minds=minds, processes=procs, wires=GOOD)
+    wiring = couple(minds=minds, processes=procs, links=GOOD)
     with pytest.raises(ValueError, match=r"actions\['push'\] = 7; action node 'push' has 3 levels"):
         run(wiring, ticks=1, key=KEY)

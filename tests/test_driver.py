@@ -26,13 +26,8 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition.driver import (
-    MindCarry,
-    agent_step,
-    ancestral_step,
-    run,
-)
-from hybrid_aif.composition.merge import ActionControl, ObservationLink, merge, subsystem
+from hybrid_aif.composition.driver import MindCarry, agent_step, ancestral_step, run
+from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.reference.envs.tmaze import CUE
 from hybrid_aif.system import System, SystemParams
 from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world, hand_flattened, merged
@@ -193,14 +188,14 @@ def _arena(policy_len=3):
         {"a": a, "b": b, "arena": arena},
         {"a": apar, "b": bpar, "arena": arena_params},
         [
-            ActionControl(driver="a.hand", control="arena.u_token_a"),
-            ActionControl(driver="b.hand", control="arena.u_lock_b"),
-            ActionControl(driver="b.hand", control="arena.u_token_b"),
-            ActionControl(driver="a.hand", control="arena.u_lock_a"),
-            ObservationLink(modality="a.see", factors=("arena.token_a",)),
-            ObservationLink(modality="b.see", factors=("arena.token_b",)),
-            ObservationLink(modality="a.watch", factors=("b.hand",)),
-            ObservationLink(modality="b.watch", factors=("a.hand",)),
+            Link("a.hand", "arena.u_token_a"),
+            Link("b.hand", "arena.u_lock_b"),
+            Link("b.hand", "arena.u_token_b"),
+            Link("a.hand", "arena.u_lock_a"),
+            Link(("arena.token_a",), "a.see"),
+            Link(("arena.token_b",), "b.see"),
+            Link(("b.hand",), "a.watch"),
+            Link(("a.hand",), "b.watch"),
         ],
     )
 

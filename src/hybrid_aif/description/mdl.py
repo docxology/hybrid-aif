@@ -429,6 +429,7 @@ class _Walk:
         self.states = tuple(table.state_names)
         self.controls = tuple(table.control_names)
         self.mods = tuple(system.modality_names)
+        self.emissions = system._emission_names
         if prior is not None:
             now = {(slot, i): home for slot, i, home in params.references}
             then = {(slot, i): home for slot, i, home in prior.references}
@@ -461,6 +462,27 @@ class _Walk:
             noun = tuple(system.modality_names) if slot == "likelihood" else tuple(self.states)
             self.reading[(slot, i)] = home
             self.readers.setdefault(home, []).append(f"{slot}:{noun[i]}")
+        for i, e in enumerate(self.emissions):
+            if isinstance(params.emission[e], _factors.Parameter):
+                self.reading[("emission", i)] = params.emission[e].name
+                self.readers.setdefault(params.emission[e].name, []).append(f"emission:{e}")
+        if prior is not None:
+            for i, e in enumerate(self.emissions):
+                was = (
+                    prior.emission[e].name
+                    if isinstance(prior.emission[e], _factors.Parameter)
+                    else None
+                )
+                now = self.reading.get(("emission", i))
+                if was != now:
+                    raise ValueError(
+                        f"description_length: emission:{e} reads "
+                        + (f"parameter variable {now!r}" if now else "its own table")
+                        + " in the model and "
+                        + (f"parameter variable {was!r}" if was else "its own table")
+                        + " in the prior, and a posterior is priced against a prior of the same "
+                        "form only; declare both alike"
+                    )
         self.live = {
             f: _live_levels(params.initial_state_prior[f], params.transition[f])
             for f in range(len(self.states))
@@ -493,14 +515,21 @@ class _Walk:
 
     def run(self) -> DescriptionLength:
         f_count, m_count, u_count = len(self.states), len(self.mods), len(self.controls)
+        e_count = len(self.emissions)
         self.out["graph"] = Links(
-            graph=log_star(f_count) + log_star(m_count + 1) + log_star(u_count + 1),
+            graph=(
+                log_star(f_count)
+                + log_star(m_count + 1)
+                + log_star(u_count + 1)
+                + log_star(e_count + 1)
+            ),
             family=None,
             prior=None,
             posterior=None,
             exact=True,
             n=None,
-            note=f"{f_count} state factors, {m_count} modalities, {u_count} control nodes",
+            note=f"{f_count} state factors, {m_count} modalities, {u_count} control nodes"
+            + (f", {e_count} emissions" if e_count else ""),
         )
         space = self.system._space(self.params) if self.controls else None
         for k, u in enumerate(self.controls):
@@ -562,6 +591,24 @@ class _Walk:
                 mode_masks=self.mode_masks(deps),
                 home=self.reading.get(("likelihood", m)),
             )
+        emission_decls = self.system._emission_decls(self.params) if self.emissions else ()
+        for i, (e, decl) in enumerate(zip(self.emissions, emission_decls, strict=True)):
+            deps = self.emission_deps(i)
+            prior_e = None
+            if self.prior is not None:
+                prior_e = self.prior.emission[e]
+            self.address(
+                f"emission:{e}",
+                "likelihood",
+                decl,
+                prior_e,
+                (len(deps), f_count + u_count),
+                self.axis_masks(deps, used=True),
+                None,
+                size_code=_size_code(_description._observation_domain(decl, f"emission:{e}")),
+                mode_masks=self.mode_masks(deps),
+                home=self.reading.get(("emission", i)),
+            )
         self.homes()
         ordered = [self.out[key] for key in sorted(self.out)]
         structure = math.fsum(link.structure for link in ordered)
@@ -583,6 +630,15 @@ class _Walk:
             unscored=unscored,
         )
 
+    def emission_deps(self, i: int) -> tuple[int, ...]:
+        """Emission ``i``'s parents as node indices: a state factor at its index, a control node
+        after the state factors."""
+        n = len(self.states)
+        return tuple(
+            self.states.index(p) if p in self.states else n + self.controls.index(p)
+            for p in self.system.emissions[i][1].parents
+        )
+
     def mode_masks(self, deps: tuple[int, ...]) -> tuple:
         """The live levels of the discrete parents a likelihood's per-mode family is batched
         over."""
@@ -602,6 +658,11 @@ class _Walk:
             if slot == "transition":
                 deps = self.system.B_deps[i]
                 seen.setdefault(home, []).append((self.axis_masks(deps), self.live[i], None))
+            elif slot == "emission":
+                deps = self.emission_deps(i)
+                seen.setdefault(home, []).append(
+                    (self.axis_masks(deps, used=True), None, self.mode_masks(deps))
+                )
             else:
                 deps = self.system.A_deps[i]
                 seen.setdefault(home, []).append(

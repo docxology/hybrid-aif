@@ -39,7 +39,7 @@ def _wiring(first_step, first_params, second_step, second_params, system_a, syst
             "b": (system_b, second_params, second_step),
         },
         processes={"world": cm.world((2, 2))},
-        wires=list(cm.WIRES),
+        links=list(cm.PORT_LINKS),
     )
 
 

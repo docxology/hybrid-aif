@@ -60,11 +60,13 @@ def test_the_description_lengths_of_the_structure_learning_section():
     t = g.description_lengths(points, labels)
     grown, four, five = t["growing"], t["fixed, 4 levels"], t["fixed, 5 levels"]
     assert all(x.total.learned for x in (grown, four, five))  # every slot learns along the stream
-    # the model parts: 64, 168 and 207 nats; the growing model's prior link is its five levels'
-    assert [round(x.total.model) for x in (grown, four, five)] == [64, 168, 207]
+    # the model parts: 65, 169 and 208 nats, each the graph code (factors, modalities, control
+    # nodes and emissions, counted prefix-free) and the parameter links; the growing model's
+    # prior link is its five levels'
+    assert [round(x.total.model) for x in (grown, four, five)] == [65, 169, 208]
     assert [round(x.total.parameters) for x in (grown, four, five)] == [47, 151, 190]
-    # the totals: 1,732, 1,864 and 1,810; the five-level model codes the data best
-    assert [round(x.total.total) for x in (grown, four, five)] == [1732, 1864, 1810]
+    # the totals: 1,733, 1,865 and 1,811; the five-level model codes the data best
+    assert [round(x.total.total) for x in (grown, four, five)] == [1733, 1865, 1811]
     assert five.total.data < grown.total.data < four.total.data
     # the growing model's running total is the lowest at every tick; the five-level model is
     # behind the four-level one through the four-cluster phase and ahead by the end

@@ -4,7 +4,7 @@
 across:
 
 - :mod:`~hybrid_aif.system.core` — :class:`System`, :class:`SystemParams`, :class:`LearnState`,
-  :class:`Subsystem`, and the faces;
+  :class:`Subsystem`, :class:`Ports`, and the faces;
 - :mod:`~hybrid_aif.system.faces` — the engines behind the inference, learning and planning faces,
   one function per face, each taking the System as its first argument;
 - :mod:`~hybrid_aif.system.selectors` — the key grammar and its resolution against a System;
@@ -20,6 +20,7 @@ from hybrid_aif.system.core import (
     AmortizedScoring,
     Belief,
     LearnState,
+    Ports,
     Subsystem,
     System,
     SystemParams,
@@ -37,6 +38,7 @@ __all__ = [
     "AmortizedScoring",
     "Belief",
     "LearnState",
+    "Ports",
     "Subsystem",
     "System",
     "SystemParams",

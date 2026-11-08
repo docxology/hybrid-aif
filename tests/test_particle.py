@@ -15,13 +15,11 @@ import pytest
 
 from hybrid_aif import ConditionalDirichlet
 from hybrid_aif.composition import (
-    ActionControl,
     HoldCarry,
+    Identify,
+    Link,
     MindCarry,
     ParticleCarry,
-    SharedParameter,
-    SiblingRead,
-    Wire,
     agent_step,
     couple,
     hold,
@@ -39,7 +37,7 @@ from tests.test_subsystem_conditional_target import _rover as _target_rover
 
 KEY = jax.random.PRNGKey(0)
 NODE = "agent.u_location"
-SAME_STEP = ActionControl(driver=NODE, control="world.u_location")
+SAME_STEP = Link("agent.a_location", "world.u_location")
 
 _PATH = pathlib.Path(__file__).resolve().parents[1] / "examples" / "compose_minds.py"
 _SPEC = importlib.util.spec_from_file_location("compose_minds", _PATH)
@@ -139,7 +137,7 @@ def _bump(view, params):
 
 
 def _shared():
-    comp, cp = _composite(shared=True, bindings=[SharedParameter("rover.field", "mission.field")])
+    comp, cp = _composite(shared=True, bindings=[Identify("rover.field", "mission.field")])
     rover, mission = subsystem(comp, cp, "rover")[0], subsystem(comp, cp, "mission")[0]
     return comp, cp, rover, mission
 
@@ -332,19 +330,19 @@ def test_run_and_particle_share_one_round_body_on_the_same_learners():
 def _one_component():
     sa, pa = cm.robot(2, 2)
     comp, cp = merge({"a": sa}, {"a": pa}, [])
-    wires = [
-        Wire("m.a.move", "world.a_move"),
-        Wire("world.a_pos", "m.a.me_obs"),
-        Wire("world.b_pos", "m.a.other_obs"),
-        Wire("world.status", "m.a.status"),
+    links = [
+        Link("m.a.move", "world.a_move"),
+        Link("world.a_pos", "m.a.me_obs"),
+        Link("world.b_pos", "m.a.other_obs"),
+        Link("world.status", "m.a.status"),
     ]
-    return comp, cp, wires
+    return comp, cp, links
 
 
 def test_a_one_mind_particle_coupled_to_a_world_equals_the_plain_wired_run_bitwise():
-    comp, cp, wires = _one_component()
+    comp, cp, links = _one_component()
     view, vp = subsystem(comp, cp, "a")
-    kwargs = dict(processes={"world": cm.world((2, 2))}, wires=wires, fixed={"world.b_move": 0})
+    kwargs = dict(processes={"world": cm.world((2, 2))}, links=links, fixed={"world.b_move": 0})
     plain = couple(minds={"m": (view, vp, agent_step(view, selection="stochastic"))}, **kwargs)
     inner = agent_step(view, selection="stochastic")
     pooled = couple(minds={"m": (comp, cp, particle(comp, cp, {"a": inner}))}, **kwargs)
@@ -360,16 +358,16 @@ def test_a_modality_the_particle_supplies_needs_no_wire_and_any_other_mind_does(
     comp, cp = _composite()
     rs, rp = _rover()
     world = rs.as_env(rp)
-    wires = [Wire("w.obs", "m.rover.obs")]
+    links = [Link("w.obs", "m.rover.obs")]
     rover, mission = subsystem(comp, cp, "rover"), subsystem(comp, cp, "mission")
     minds = {"rover": agent_step(rover[0]), "mission": agent_step(mission[0])}
     wiring = couple(
-        minds={"m": (comp, cp, particle(comp, cp, minds))}, processes={"w": world}, wires=wires
+        minds={"m": (comp, cp, particle(comp, cp, minds))}, processes={"w": world}, links=links
     )
     rec = run(wiring, ticks=3, key=KEY)
     assert set(rec["m"].observations) == {"rover.obs"}
-    with pytest.raises(ValueError, match="fed by no wire"):
-        couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, wires=wires)
+    with pytest.raises(ValueError, match="fed by no link"):
+        couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=links)
 
 
 def test_hold_inside_a_particle_under_the_wired_run():
@@ -388,21 +386,21 @@ def test_hold_inside_a_particle_under_the_wired_run():
         "a": hold(counted, system=va[0]),
         "b": agent_step(vb[0], selection="stochastic"),
     }
-    wires = [
-        Wire(f"m.{s}", t) for s, t in ((("a.move", "world.a_move")), ("b.move", "world.b_move"))
+    links = [
+        Link(f"m.{s}", t) for s, t in ((("a.move", "world.a_move")), ("b.move", "world.b_move"))
     ]
-    wires += [
-        Wire("world.a_pos", "m.a.me_obs"),
-        Wire("world.b_pos", "m.a.other_obs"),
-        Wire("world.status", "m.a.status"),
-        Wire("world.b_pos", "m.b.me_obs"),
-        Wire("world.a_pos", "m.b.other_obs"),
-        Wire("world.status", "m.b.status"),
+    links += [
+        Link("world.a_pos", "m.a.me_obs"),
+        Link("world.b_pos", "m.a.other_obs"),
+        Link("world.status", "m.a.status"),
+        Link("world.b_pos", "m.b.me_obs"),
+        Link("world.a_pos", "m.b.other_obs"),
+        Link("world.status", "m.b.status"),
     ]
     wiring = couple(
         minds={"m": (comp, cp, particle(comp, cp, minds))},
         processes={"world": cm.world((2, 2))},
-        wires=wires,
+        links=links,
     )
     rec = run(wiring, ticks=20, key=KEY)
     moves = np.asarray(rec["m"].actions["a.move"])
@@ -456,12 +454,12 @@ def test_a_wire_into_a_modality_the_particle_supplies_is_refused():
     rs, rp = _rover()
     rover, mission = subsystem(comp, cp, "rover"), subsystem(comp, cp, "mission")
     minds = {"rover": agent_step(rover[0]), "mission": agent_step(mission[0])}
-    wires = [Wire("w.obs", "m.rover.obs"), Wire("src.mission.cell_obs", "m.mission.cell_obs")]
+    links = [Link("w.obs", "m.rover.obs"), Link("src.mission.cell_obs", "m.mission.cell_obs")]
     with pytest.raises(ValueError, match="mission.cell_obs.*supplied inside the particle"):
         couple(
             minds={"m": (comp, cp, particle(comp, cp, minds))},
             processes={"w": rs.as_env(rp), "src": mission[0].as_env(mission[1])},
-            wires=wires,
+            links=links,
         )
 
 
@@ -596,9 +594,9 @@ def test_a_slow_mind_under_hold_and_a_fast_learner_sharing_a_parameter():
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
         [
-            ActionControl("mission.u_option", "rover.u_opt"),
-            SharedParameter("rover.field", "mission.field"),
-            SiblingRead("mission.cell_obs", "rover.x", grid, "mode"),
+            Link("mission.option", "rover.u_opt"),
+            Identify("rover.field", "mission.field"),
+            Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
         ],
     )
     mview = subsystem(comp, cp, "mission")[0]

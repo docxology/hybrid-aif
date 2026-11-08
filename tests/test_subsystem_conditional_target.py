@@ -20,7 +20,7 @@ from hybrid_aif import (
     Gaussian,
     LinearGaussianObservation,
 )
-from hybrid_aif.composition.merge import ActionControl, merge, subsystem
+from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box, ControlStep
 from hybrid_aif.distributions import MixtureGaussian
 from hybrid_aif.factors import LinearGaussianTransition
@@ -103,7 +103,7 @@ def _two_tier(rover_system, rover_params):
     return merge(
         {"mission": ms, "rover": rover_system},
         {"mission": mp, "rover": rover_params},
-        [ActionControl("mission.u_option", "rover.u_opt")],
+        [Link("mission.option", "rover.u_opt")],
     )
 
 
@@ -176,7 +176,7 @@ def _tabular_pair(parents=("u_s",), table=None):
     return merge(
         {"lead": lead, "follow": follow},
         {"lead": lp, "follow": fp},
-        [ActionControl("lead.u_d", "follow.u_s")],
+        [Link("lead.pick", "follow.u_s")],
     ), table
 
 

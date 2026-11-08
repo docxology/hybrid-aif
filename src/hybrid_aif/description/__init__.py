@@ -48,7 +48,7 @@ from hybrid_aif.objectives import registry as _registry
 from hybrid_aif.objectives.base import INFOGAIN
 from hybrid_aif.objectives.closed_loop import FEEDBACK
 from hybrid_aif.planning.base import planner_branches
-from hybrid_aif.reads import LEGACY, REALISATIONS, Read, as_read
+from hybrid_aif.reads import LEGACY, REALISATIONS, Emit, Read, as_read
 from hybrid_aif.system import _KEY_KINDS, System, SystemParams
 from hybrid_aif.system.core import Subsystem
 from hybrid_aif.system.validation import _check_dim_names
@@ -251,7 +251,7 @@ FAMILIES: dict[str, _Family] = {
     "LinearGaussianObservation": _Family(
         _factors.LinearGaussianObservation,
         ("head", "noise"),
-        labels=("likelihood",),
+        labels=("likelihood", "actuator"),
         options={"noise_map": None},
         mapped={"noise": ("values",)},
     ),
@@ -260,7 +260,7 @@ FAMILIES: dict[str, _Family] = {
         ("layers",),
         network="layers",
         options=_MLP_OPTIONS,
-        labels=("transition", "likelihood", "recognition"),
+        labels=("transition", "likelihood", "actuator", "recognition"),
         reads_self=True,
     ),
     "MLPPredictor": _Family(
@@ -1185,6 +1185,8 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     table = system._table
     states, nodes = table.state_names, table.control_names
     actions, mods = tuple(system.action_names), tuple(system.modality_names)
+    emitted = system._emission_names
+    emission_decls = system._emission_decls(params) if emitted else ()
     recognition = tuple(system.recognition or ())
     aux = [r.variable for r in recognition if r.variable not in states]
     externals = [name for name, _ in system.external_inputs]
@@ -1193,6 +1195,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         ("a state", states),
         ("a control node", nodes),
         ("an action node", actions),
+        ("an emission", emitted),
         ("an observation", mods),
         ("a recognition variable", aux),
         ("an external input", externals),
@@ -1238,6 +1241,8 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         w.variables[a] = (
             _real(space.sizes[k]) if space.kinds[k] == FLOAT else _categorical(space.sizes[k])
         )
+    for e, decl in zip(emitted, emission_decls, strict=True):
+        w.variables[e] = _observation_domain(decl, f"{where}emission:{e}")
     for m, o in enumerate(mods):
         w.variables[o] = _observation_domain(params.likelihood[m], f"{where}likelihood:{o}")
     for v in aux:
@@ -1246,7 +1251,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         w.variables[name] = _real(width)
 
     # ------------------------------------------------------------- the factor blocks
-    order = [*states, *nodes, *actions, *mods, *aux]
+    order = [*states, *nodes, *actions, *emitted, *mods, *aux]
     children = [r.variable for r in recognition]
     needs = {
         r.variable: [p.partition(":")[2] for p in r.parents if p.startswith("recognition:")]
@@ -1266,6 +1271,9 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         return states[g] if g < len(states) else actions[g - n_nodes]
 
     reading = {(slot, i): home for slot, i, home in params.references}
+    for i, e in enumerate(emitted):
+        if isinstance(params.emission[e], _factors.Parameter):
+            reading[("emission", i)] = params.emission[e].name
     homes: dict[str, dict[str, Any]] = {}
     for name, home in params.parameters.items():
         homes[name] = _encode(
@@ -1348,6 +1356,22 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         var = w.param(_letter("K", a_name), log_kernel, "log_simplex", f"{where}actuator:{a_name}")
         record = _record("ConditionalCategorical", [nodes[k]], {"log_table": var})
         w.record(a_name, "actuator", record)
+
+    for i, ((e, emit), decl) in enumerate(zip(system.emissions, emission_decls, strict=True)):
+        if ("emission", i) in reading:
+            record = reference("emission", i, e)
+        else:
+            record = _encode(
+                w,
+                decl,
+                _base(e, "actuator"),
+                _letter("K", e) if _is_tabular(decl) else None,
+                f"{where}emission:{e}",
+                ("emission", e),
+            )
+        if emit.realise != "sample":
+            record = {**record, "options": {**record.get("options", {}), "realise": emit.realise}}
+        w.record(e, "actuator", _with_parents(record, list(emit.parents)))
 
     for r in recognition:
         module = params.recognition[r.variable]
@@ -2469,6 +2493,7 @@ class _Model:
         factors = self._section("factors", {})
         self.factors: list[_Factor] = []
         self.reads: dict[tuple[str, str], str] = {}
+        self.realised: dict[str, str] = {}
         self.pooled: dict[str, tuple[str, list]] = {}
         for child, block in factors.items():
             with self.noting():
@@ -2520,10 +2545,10 @@ class _Model:
             self.pooled[child] = (pooled["control"], pooled["counts"])
         named = record.get("parameter")
         if named is not None:
-            if label not in ("transition", "likelihood"):
+            if label not in ("transition", "likelihood", "actuator"):
                 raise self.fail(
-                    f"{address}: only a transition or likelihood record reads a parameter "
-                    f"variable, and this one is under {label!r}"
+                    f"{address}: only a transition, likelihood or emission record reads a "
+                    f"parameter variable, and this one is under {label!r}"
                 )
             if named not in self.homes:
                 raise self.fail(
@@ -2612,6 +2637,9 @@ class _Model:
             if not isinstance(record.get(part, {}), Mapping):
                 raise self.fail(f"{address}.{part} must be an object")
         options = dict(record.get("options", {}))
+        if label == "actuator" and "realise" in options:
+            #  how an emission is realised each round (an emission's record only: _slots)
+            self.realised[child] = options.pop("realise")
         if label == "likelihood" and "datum" in options:
             #  the datum read from a source's belief in the carry, through a kernel, realised
             #  (design: nesting-and-coupling.md N3, The format)
@@ -2980,7 +3008,18 @@ class _Model:
             for v in self.per_step
             if v not in roles and labels.get(v) and labels[v] <= {"recognition"}
         ]
-        self.states = [v for v in self.per_step if v not in roles and v not in self.aux]
+        #  a variable none of the roles, whose one record is a kernel under the label 'actuator',
+        #  is an emission: an output drawn from latents and control nodes
+        self.emitted = [
+            v
+            for v in self.per_step
+            if v not in roles and v not in self.aux and labels.get(v) and labels[v] <= {"actuator"}
+        ]
+        self.states = [
+            v
+            for v in self.per_step
+            if v not in roles and v not in self.aux and v not in self.emitted
+        ]
 
     def _dots(self) -> None:
         """The dot is reserved to composite prefixes (Q18.2): dotted per-step names make the
@@ -3114,6 +3153,7 @@ class _Model:
         self.transition: dict[str, _Factor] = {}
         self.likelihood: dict[str, _Factor] = {}
         self.actuator: dict[str, _Factor] = {}
+        self.emission: dict[str, _Factor] = {}
         self.targets: dict[str, _Factor] = {}
         self.terminals: dict[str, _Factor] = {}
         self.recognition: dict[str, _Factor] = {}
@@ -3217,7 +3257,29 @@ class _Model:
                         f"variable, and {child!r} is observed, an action node or an input"
                     )
                 put(self.recognition, fac, "a recognition record")
+            elif child in self.emitted:
+                if fac.steps != "all" or not (label == "actuator" or label not in LABELS):
+                    raise self.fail(
+                        f"{fac.address}: {child!r} is an emission, whose one record is its kernel "
+                        "under the label 'actuator', every step"
+                    )
+                bad = [
+                    f"{p}[t-1]" if o else p
+                    for p, o in fac.parents
+                    if o or (p not in states and p not in nodes)
+                ]
+                if bad or not fac.parents:
+                    raise self.fail(
+                        f"{fac.address}: an emission reads latents and control nodes at its own "
+                        f"step; {bad or 'it reads none'} cannot be read"
+                    )
+                put(self.emission, fac, "an emission kernel")
             elif child in self.actions:
+                if (child, "actuator") in self.reads or child in self.realised:
+                    raise self.fail(
+                        f"{fac.address}: an action node's actuator is a clamped probability "
+                        "table; a parameter variable and a realisation belong to an emission"
+                    )
                 if fac.steps != "all" or not (label == "actuator" or label not in LABELS):
                     raise self.fail(
                         f"{fac.address}: {child!r} is an action node, whose one record is its "
@@ -3270,6 +3332,13 @@ class _Model:
                         '"0" and "1+" (a code\'s initial read off its own transition is the '
                         "DerivedInitial family)"
                     )
+        for fac in self.factors:
+            read = [p for p, _ in fac.parents if p in self.emitted]
+            if read:
+                raise self.fail(
+                    f"{fac.address}: reads {read[0]!r}, an emission: an emission is an output of "
+                    "the System, and nothing in the model reads or scores it"
+                )
         for s in self.states:
             for table, what in ((self.initial, "initial"), (self.transition, "transition")):
                 if s not in table:
@@ -4874,6 +4943,7 @@ class _Model:
             for v in self.rec_order
         }
         actuator = {a: decode(fac, "actuator") for a, fac in self.actuator.items()}
+        emission = {e: decode(self.emission[e], "likelihood") for e in self.emitted}
         policy_prior = None
         if self.policy_prior is not None:
             policy_prior = decode(self.policy_prior, "policy_prior")
@@ -4890,7 +4960,8 @@ class _Model:
             with self.noting():
                 parameters[name] = self._decode_home(name)
         for (child, label), name in self.reads.items():
-            (transition if label == "transition" else likelihood)[child] = _factors.Parameter(name)
+            target = {"transition": transition, "actuator": emission}.get(label, likelihood)
+            target[child] = _factors.Parameter(name)
         self.flush()
         self._objective()
         self._check_frozen()
@@ -4962,6 +5033,12 @@ class _Model:
             mixture_schedule=self.config["mixture_schedule"],
             reduction_period=self.config["reduction_period"],
             reduction_pairs=self.config["reduction_pairs"],
+            emissions={
+                e: Emit(
+                    tuple(p for p, _ in self.emission[e].parents), self.realised.get(e, "sample")
+                )
+                for e in self.emitted
+            },
             lagged=tuple(
                 (o, self.lagged[o]) if isinstance(self.lagged[o], str) else self.lagged[o]
                 for o in mods
@@ -5001,6 +5078,7 @@ class _Model:
             policy_prior=policy_prior,
             control=dict(self.boxes),
             actuator=actuator,
+            emission=emission,
             durations=dict(self.durations),
             readings={
                 child: jnp.asarray(counts, jnp.result_type(float))
@@ -5140,6 +5218,7 @@ class _Model:
                         ),
                         reads=reads,
                         boundary=boundary.get(name, "none"),
+                        emissions=tuple(e for e in self.emitted if e.startswith(prefix)),
                     ),
                 )
             )

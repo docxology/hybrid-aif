@@ -27,9 +27,9 @@ from hybrid_aif import (
     describe,
 )
 from hybrid_aif.composition import (
+    Identify,
+    Link,
     MindCarry,
-    SharedParameter,
-    SiblingRead,
     agent_step,
     merge,
     nested,
@@ -125,7 +125,7 @@ def _composite(
     return merge(
         {"rover": sr, "mission": ss},
         {"rover": pr, "mission": ps},
-        [SiblingRead(READ, SOURCE, kernel, realise), *bindings],
+        [Link(SOURCE, READ, realise=realise, kernel=kernel), *bindings],
     )
 
 
@@ -312,7 +312,7 @@ def test_nested_is_true_for_a_component_bound_only_by_a_read_and_false_once_a_va
     comp, _ = _composite()
     assert nested(comp, "mission") and nested(comp, "rover")
     assert dict(comp.subsystems)["mission"].nested
-    shared, _ = _composite(shared=True, bindings=[SharedParameter("rover.field", "mission.field")])
+    shared, _ = _composite(shared=True, bindings=[Identify("rover.field", "mission.field")])
     assert not nested(shared, "mission") and not nested(shared, "rover")
     # no binding crosses the boundary: not nested
     (sr, pr), (ss, ps) = _rover(), _scheduler()
@@ -350,12 +350,12 @@ def test_a_sibling_read_in_one_component_is_refused_naming_system_lagged():
         merge(
             {"rover": sr, "mission": ss},
             {"rover": pr, "mission": ps},
-            [SiblingRead("rover.obs", SOURCE, GRID, "mode")],
+            [Link(SOURCE, "rover.obs", realise="mode", kernel=GRID)],
         )
 
 
 def test_a_level_count_that_is_not_the_source_s_or_the_grid_s_is_refused():
-    with pytest.raises(ValueError, match=r"SiblingRead.*4 values \(the grid's cells\).*3 levels"):
+    with pytest.raises(ValueError, match=r"Link.*4 values \(the grid's cells\).*3 levels"):
         (sr, pr), (ss, ps) = _rover(), _scheduler()
         ps = dataclasses.replace(
             ps,
@@ -366,7 +366,7 @@ def test_a_level_count_that_is_not_the_source_s_or_the_grid_s_is_refused():
         merge(
             {"rover": sr, "mission": ss},
             {"rover": pr, "mission": ps},
-            [SiblingRead(READ, SOURCE, GRID, "mode")],
+            [Link(SOURCE, READ, realise="mode", kernel=GRID)],
         )
     # a categorical source under the identity kernel: the modality's levels are the source's
     shared_r, shared_rp = _rover(shared=True)
@@ -375,7 +375,7 @@ def test_a_level_count_that_is_not_the_source_s_or_the_grid_s_is_refused():
         merge(
             {"rover": shared_r, "mission": ss},
             {"rover": shared_rp, "mission": ps},
-            [SiblingRead(READ, "rover.map", "identity", "mode")],
+            [Link("rover.map", READ, realise="mode")],
         )
 
 
@@ -390,15 +390,15 @@ def test_stats_of_a_gaussian_source_is_refused_naming_the_deferral():
 
 
 def test_the_other_refusals():
-    with pytest.raises(ValueError, match="not a state factor"):
+    with pytest.raises(ValueError, match="the source is unknown"):
         (sr, pr), (ss, ps) = _rover(), _scheduler()
         merge(
             {"rover": sr, "mission": ss},
             {"rover": pr, "mission": ps},
-            [SiblingRead(READ, "rover.nothing", GRID, "mode")],
+            [Link("rover.nothing", READ, realise="mode", kernel=GRID)],
         )
     with pytest.raises(ValueError, match="already has a read"):
-        _composite(bindings=[SiblingRead(READ, SOURCE, GRID, "stats")])
+        _composite(bindings=[Link(SOURCE, READ, realise="stats", kernel=GRID)])
     with pytest.raises(ValueError, match="realise must be one of"):
         _composite(realise="legacy")
 
@@ -422,7 +422,7 @@ def test_a_read_round_trips_through_the_description_document():
     # the document shows the boundary: a read crosses it as a blanket, a shared variable does not
     assert dict(rebuilt.subsystems)["mission"].nested and dict(rebuilt.subsystems)["rover"].nested
     shared, shared_params = _composite(
-        shared=True, bindings=[SharedParameter("rover.field", "mission.field")]
+        shared=True, bindings=[Identify("rover.field", "mission.field")]
     )
     document2, arrays2 = describe(shared, shared_params, arrays="inline")
     assert not dict(build(document2, arrays=arrays2)[0].subsystems)["mission"].nested
@@ -558,21 +558,25 @@ def test_merge_carries_own_pairs_beside_a_sibling_read_and_refuses_a_second_read
 
     system, params = _lagged_system()
     mission, mission_params = _scheduler()
-    binding = SiblingRead(READ, "a.x", GRID, "mode")
+    binding = Link("a.x", READ, realise="mode", kernel=GRID)
     comp, _ = merge(
         {"a": system, "mission": mission}, {"a": params, "mission": mission_params}, [binding]
     )
-    assert comp.lagged == (("a.prev_x", "a.x"), ("a.prev_type", "a.kind"), Read(*binding))
+    assert comp.lagged == (
+        ("a.prev_x", "a.x"),
+        ("a.prev_type", "a.kind"),
+        Read(READ, "a.x", GRID, "mode"),
+    )
     with pytest.raises(ValueError, match="already has a read"):
         merge(
             {"a": system, "mission": mission},
             {"a": params, "mission": mission_params},
-            [SiblingRead("a.prev_x", "mission.visit", "identity", "mode")],
+            [Link("mission.visit", "a.prev_x", realise="mode")],
         )
 
 
 def test_an_own_pair_on_an_action_node_follows_its_node_and_is_refused_when_it_leaves():
-    from hybrid_aif.composition import ActionControl, BoundaryPrior
+    from hybrid_aif.composition import Clamp, Link
     from tests.test_merge import agent_and_world
 
     (agent, agent_params), (world, world_params) = agent_and_world()
@@ -581,8 +585,8 @@ def test_an_own_pair_on_an_action_node_follows_its_node_and_is_refused_when_it_l
     comp, _ = merge(*parts)
     assert comp.lagged == (("agent.location_obs", "agent.a_location"),)
     with pytest.raises(ValueError, match="a binding removed"):
-        merge(*parts, [BoundaryPrior("agent.u_location", 1)])
-    drive = ActionControl(driver="world.u_location", control="agent.u_location")
+        merge(*parts, [Clamp("agent.u_location", 1)])
+    drive = Link("world.a_location", "agent.u_location")
     with pytest.raises(ValueError, match="another component's"):
         merge(*parts, [drive])
 
@@ -611,11 +615,11 @@ def test_a_user_read_cannot_declare_the_pair_s_realisation_and_the_message_names
         Read("m", "s", "identity", "legacy")
     inner, inner_params = _composite(realise="mode")
     other, other_params = _scheduler()
-    with pytest.raises(ValueError, match="declare the SiblingRead in the inner merge"):
+    with pytest.raises(ValueError, match="declare the link in the inner merge"):
         merge(
             {"tier": inner, "other": other},
             {"tier": inner_params, "other": other_params},
-            [SiblingRead("tier.mission.cell_obs", "tier.rover.x", GRID, "mode")],
+            [Link("tier.rover.x", "tier.mission.cell_obs", realise="mode", kernel=GRID)],
         )
 
 
@@ -623,31 +627,30 @@ def test_a_user_read_cannot_declare_the_pair_s_realisation_and_the_message_names
 
 
 def test_the_boundary_under_each_binding_kind_from_merge_and_from_the_document():
-    from hybrid_aif.composition import ActionControl, BoundaryPrior, ObservationLink
-    from hybrid_aif.composition.merge import TargetEmission
+    from hybrid_aif.composition import Clamp, Link
     from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world
 
     target = ConditionalCategorical(
         log_table=jnp.log(jnp.asarray([[0.9, 0.8, 0.7, 0.6, 0.5], [0.1, 0.2, 0.3, 0.4, 0.5]])),
         parent_ndims=1,
     )
-    relay = ActionControl(driver="agent.location", control="world.u_location")
-    control = ActionControl(driver="agent.u_location", control="world.u_location")
+    relay = Link("agent.location", "world.u_location")
+    control = Link("agent.a_location", "world.u_location")
     cases = {
         "relay": ([relay], ("shared", "shared")),
         "control node": ([control], ("blanket", "blanket")),
-        "observation link": ([OBSERVATION_BINDINGS[0]], ("shared", "shared")),
-        "boundary prior": ([BoundaryPrior("world.u_location", 1)], ("none", "none")),
-        "target emission": (
-            [TargetEmission(target="world.context", parents=("agent.location",))],
+        "structural link": ([OBSERVATION_BINDINGS[0]], ("shared", "shared")),
+        "clamp": ([Clamp("world.u_location", 1)], ("none", "none")),
+        "terminal link": (
+            [Link(("agent.location",), "terminal:world.context")],
             ("shared", "shared"),
         ),
         "control node and link": ([control, *OBSERVATION_BINDINGS], ("shared", "shared")),
     }
-    assert ObservationLink  # the link is among the bindings above
+    assert Link  # the link is among the bindings above
     for label, (bindings, expected) in cases.items():
         (agent, agent_params), (world, world_params) = agent_and_world()
-        if "target" in label:
+        if "terminal" in label:
             world_params = dataclasses.replace(world_params, terminal_targets={"context": target})
         comp, cparams = merge(
             {"agent": agent, "world": world},
@@ -660,7 +663,7 @@ def test_the_boundary_under_each_binding_kind_from_merge_and_from_the_document()
         rebuilt = dict(build(document, arrays=arrays)[0].subsystems)
         assert (rebuilt["agent"].boundary, rebuilt["world"].boundary) == expected, label
         assert made["agent"].nested == (expected[0] == "blanket"), label
-    shared, _ = _composite(shared=True, bindings=[SharedParameter("rover.field", "mission.field")])
+    shared, _ = _composite(shared=True, bindings=[Identify("rover.field", "mission.field")])
     assert {dict(shared.subsystems)[c].boundary for c in ("rover", "mission")} == {"shared"}
 
 

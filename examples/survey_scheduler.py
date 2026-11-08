@@ -8,7 +8,7 @@ sector 1 to 4 (the field's quadrants, in ``survey_world.zone_of`` order) and cha
 modalities: ``cell_obs`` (the cell the rover's position belief puts it in: in the merged
 composite, a sibling-belief read of the rover's position through the cell indicator, realised by
 ``mode`` and taken at each decision) and ``gauge`` (the energy band). The ``map`` factor reads the
-parameter variable ``field``, which a ``SharedParameter`` identifies with the rover's; the
+parameter variable ``field``, which an ``Identify`` identifies with the rover's; the
 scheduler has no observation of ``map`` and never counts into the field, so its novelty term
 (``transition:map``, the expected information about the field from the cells its plan visits) is
 honoured by the rover counting on the fast clock. The ``map`` is read where the rover stood one
@@ -165,7 +165,7 @@ def scheduler(
 ):
     """``(System, SystemParams)`` for the scheduler over ``grid`` (the rover's ``Grid``) with the
     cell centres ``centres``. Its parameter variable ``field`` has the shape and prior of the
-    rover's, so that ``SharedParameter("rover.field", "mission.field")`` identifies them. With
+    rover's, so that ``Identify("rover.field", "mission.field")`` identifies them. With
     ``durations`` the control node declares a round of ``SURVEY_TICKS`` for every level; with
     ``readings`` the ``map`` factor's novelty at each plan step is multiplied by the number of
     readings of the option selected at that step (``SURVEY_TICKS`` for a survey, one for charge,

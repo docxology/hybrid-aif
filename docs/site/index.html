@@ -137,13 +137,13 @@ params = SystemParams(
     readings={"map": READINGS},               # 12 for each survey sector, 1 for charge
     ...
 )</code></pre>
-  <p class="lead"><strong>Joining the tiers.</strong> From <code>examples/survey_run.py</code>: <code>merge</code> joins the scheduler and the rover into one particle. <code>ActionControl</code> makes the scheduler's option the rover's control node, so the rover plans no decision for it. <code>SharedParameter</code> identifies the two tiers' tables as one, which is the single <code>rover.field</code> node in the graph above: the tiers share it outright, because the rover's counts and the scheduler's novelty are one belief by design. The scheduler also needs the rover's position, which it takes as a sensation: the cell holding most of the position belief, passed in once per decision. The mission and rover views of the composite then run on their own clocks, the rover every tick and the scheduler once per option.</p>
+  <p class="lead"><strong>Joining the tiers.</strong> From <code>examples/survey_run.py</code>: <code>merge</code> joins the scheduler and the rover into one particle. <code>Link</code> from the scheduler's option action node makes the scheduler's option the rover's control node, so the rover plans no decision for it. <code>Identify</code> identifies the two tiers' tables as one, which is the single <code>rover.field</code> node in the graph above: the tiers share it outright, because the rover's counts and the scheduler's novelty are one belief by design. The scheduler also needs the rover's position, which it takes as a sensation: the cell holding most of the position belief, passed in once per decision. The mission and rover views of the composite then run on their own clocks, the rover every tick and the scheduler once per option.</p>
 <pre><code>cs, cp = merge(
     {"mission": ms, "rover": rs},
     {"mission": mp, "rover": rp},
     [
-        ActionControl("mission.u_option", "rover.u_opt"),
-        SharedParameter("rover.field", "mission.field"),
+        Link("mission.option", "rover.u_opt"),
+        Identify("rover.field", "mission.field"),
     ],
 )
 mview, mparams = subsystem(cs, cp, "mission")</code></pre>

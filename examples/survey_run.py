@@ -6,21 +6,20 @@ several warm starts, acts, and learns the terrain field by counting each terrain
 cells it was in. The true world (``survey_world``) is a separate process joined to the rover with
 ``couple``: the velocity command is an action, the fix, image and gauge are sensations. With
 ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are merged into one particle,
-with the field shared outright, and the particle is one participant of the coupling. The
-scheduler is the rover's slow tier: its cell reading is a sibling-belief read of the rover's
-position through the cell indicator (realised by ``mode``, the cell holding most of the position
-belief), its option is the rover's control node through ``ActionControl``, and the field is one
-table shared outright through ``SharedParameter``. One ``run`` call on a coupling of the particle
-and the world steps the rover every round and the scheduler's step, wrapped in ``hold``, once
-per option: every ``SLOW_TICKS`` rounds the scheduler infers, plans and chooses an option that the
-rover holds. The particle writes what the rover learns back into the composite's table each round,
-so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
-ablation pins the option to one sector. The scheduler is listed first, so its choice reaches the
-rover in the round it is made. Its cell reading is the rover's posterior of the round before, and
-absent in round 0.
-A level-1 setting is the epistemic terms (the field's novelty, the position fix's information
-gain, both or neither) and whether the image preference is declared. The runs of a grid are
-written to one bundle for the launch page, and a REPORT.md summarises them.
+with the field shared outright, and the particle is one participant of the coupling. The scheduler
+is the rover's slow tier: its cell reading is a belief read of the rover's position through the cell
+indicator (a ``Link`` realised by ``mode``, the cell holding most of the position belief), its
+option is the rover's control node through a ``Link`` from the option's action node, and the field
+is one table shared outright through ``Identify``. One ``run`` call on a coupling of the particle
+and the world steps the rover every round and the scheduler's step, wrapped in ``hold``, once per
+option: every ``SLOW_TICKS`` rounds the scheduler infers, plans and chooses an option that the rover
+holds. The particle writes what the rover learns back into the composite's table each round, so the
+scheduler's novelty reads the counts gathered so far; the scheduler never learns. The ablation pins
+the option to one sector. The scheduler is listed first, so its choice reaches the rover in the
+round it is made. Its cell reading is the rover's posterior of the round before, and absent in round
+0. A level-1 setting is the epistemic terms (the field's novelty, the position fix's information
+gain, both or neither) and whether the image preference is declared. The runs of a grid are written
+to one bundle for the launch page, and a REPORT.md summarises them.
 
     python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--level 2]
     python examples/survey_run.py --out DIR --assemble     # merge the part files into bundle
@@ -46,18 +45,7 @@ import survey_scheduler as ss
 import survey_world as wd
 
 from hybrid_aif import Parameter, __version__
-from hybrid_aif.composition import (
-    ActionControl,
-    SharedParameter,
-    SiblingRead,
-    Wire,
-    couple,
-    hold,
-    merge,
-    particle,
-    run,
-    subsystem,
-)
+from hybrid_aif.composition import Identify, Link, couple, hold, merge, particle, run, subsystem
 from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
@@ -287,11 +275,11 @@ def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STA
     wiring = couple(
         minds={"rover": (system, params, mind)},
         processes={"world": (env, env_params)},
-        wires=[
-            Wire("rover.a_v", "world.a_v"),
-            Wire("world.fix", "rover.fix"),
-            Wire("world.img", "rover.img"),
-            Wire("world.gauge", "rover.gauge"),
+        links=[
+            Link("rover.a_v", "world.a_v"),
+            Link("world.fix", "rover.fix"),
+            Link("world.img", "rover.img"),
+            Link("world.gauge", "rover.gauge"),
         ],
     )
     start = setting.get("start_energy")
@@ -337,8 +325,9 @@ def build_composite(decoder, setting):
     mission view, mission params, rover view, grid)``. With ``tiers == 2`` the composite is one
     particle with the field shared outright, so the scheduler's boundary is shared: the cell
     modality reads the rover's position through the cell indicator (``mode``), the option is
-    ``ActionControl`` and the field ``SharedParameter``. The pinned run (``tiers == 1``) is the
-    same composite, its scheduler replaced by a mind that always chooses ``PINNED_OPTION``."""
+    a ``Link`` from its action node and the field an ``Identify``. The pinned run
+    (``tiers == 1``) is the same composite, its scheduler replaced by a mind that always chooses
+    ``PINNED_OPTION``."""
     rs, rp, grid, centres = sm.rover(
         decoder,
         epistemic=tuple(setting["epistemic"]),
@@ -362,9 +351,9 @@ def build_composite(decoder, setting):
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
         [
-            ActionControl("mission.u_option", "rover.u_opt"),
-            SharedParameter("rover.field", "mission.field"),
-            SiblingRead("mission.cell_obs", "rover.x", grid, "mode"),
+            Link("mission.option", "rover.u_opt"),
+            Identify("rover.field", "mission.field"),
+            Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
         ],
     )
     mview, mparams = subsystem(cs, cp, "mission")
@@ -452,11 +441,11 @@ def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STAR
     fast = rover_step(
         rview, log, setting, steps, starts, "rover.", decoder=cp.likelihood["rover.img"]
     )
-    wires = [
-        Wire("agent.rover.a_v", "world.a_v"),
-        Wire("world.fix", "agent.rover.fix"),
-        Wire("world.img", "agent.rover.img"),
-        Wire("world.gauge", "agent.rover.gauge"),
+    links = [
+        Link("agent.rover.a_v", "world.a_v"),
+        Link("world.fix", "agent.rover.fix"),
+        Link("world.img", "agent.rover.img"),
+        Link("world.gauge", "agent.rover.gauge"),
     ]
     every = setting["slow_ticks"]
     pinned = jnp.asarray(PINNED_OPTION, jnp.int32)
@@ -466,11 +455,11 @@ def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STAR
         else lambda key, obs, carry, params: ({"mission.option": pinned}, carry, params)
     )
     minds = {"mission": slow, "rover": fast}  # the scheduler first: its choice reaches the rover
-    wires.append(Wire("world.gauge", "agent.mission.gauge"))
+    links.append(Link("world.gauge", "agent.mission.gauge"))
     wiring = couple(
         minds={"agent": (cs, cp, particle(cs, cp, minds))},
         processes={"world": wd.world()},
-        wires=wires,
+        links=links,
     )
     rec = run(wiring, ticks=ticks, key=jax.random.PRNGKey(setting["seed"]))
     options = rec["agent"].actions["mission.option"]

@@ -360,7 +360,8 @@ def test_the_links_of_a_tabular_model_are_what_d2_and_d3_say():
     dl = description_length(system, n, params=params)
     candidates = 2  # one state factor and one control node
     graph = dl.per_address["graph"]
-    assert graph.graph == pytest.approx(log_star(1) + log_star(2) + log_star(2))
+    #  the graph code counts the emissions too, prefix-free: log*(0 + 1) for a model with none
+    assert graph.graph == pytest.approx(log_star(1) + log_star(2) + log_star(2) + log_star(1))
     assert dl.per_address["control:u_s0"].graph == pytest.approx(log_star(2))
     init = dl.per_address["initial_state_prior:s0"]
     # an initial prior can only read earlier factors: its pool is the factors alone

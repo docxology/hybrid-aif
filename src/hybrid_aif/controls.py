@@ -476,7 +476,7 @@ def take_controls(
     axis is then contracted against it, as a mixture of the slices. ``log`` says ``table``
     holds log-probabilities, so the mixture is taken in probability space. The same contraction
     is the per-tick consumption of a control node supplied as a probability vector by its readers;
-    :class:`~hybrid_aif.composition.merge.BoundaryPrior` is the static case, averaged once at
+    :class:`~hybrid_aif.composition.merge.Clamp` is the static case, averaged once at
     merge time. Design: nesting-and-coupling.md N8.
     """
     if isinstance(index, ControlRead):
@@ -999,6 +999,7 @@ def _named_sizes(
     targets: Sequence[tuple[str, tuple[str, ...], object]] | None,
     observations: Sequence[tuple[str, tuple[int, ...], object]] | None,
     durations: Mapping[str, object] | None,
+    emissions: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
 ) -> dict[str, int]:
     """The level count of discrete control node ``k`` as each declaration beyond its readers
     gives it, keyed by the declaration."""
@@ -1015,6 +1016,13 @@ def _named_sizes(
         size = None if axes is None else axes[deps.index(node)]
         if size is not None:
             out[f"modality {modality!r}"] = size
+    for emission, deps, decl in emissions or ():
+        if node not in deps:
+            continue
+        axes = _observation_axes(decl, len(deps))
+        size = None if axes is None else axes[deps.index(node)]
+        if size is not None:
+            out[f"emission {emission!r}"] = size
     if durations and name in durations:
         shape = np.shape(durations[name])
         if len(shape) == 1:
@@ -1031,6 +1039,7 @@ def control_space(
     targets: Sequence[tuple[str, tuple[str, ...], object]] | None = None,
     observations: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
     durations: Mapping[str, object] | None = None,
+    emissions: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
 ) -> ControlSpace:
     """Each control node's kind and size, read off the params; the flat layout when every node
     is continuous.
@@ -1043,8 +1052,10 @@ def control_space(
     A discrete node no reader sizes is sized by the other declarations that name it, which must
     agree with each other: the parent axis of a conditional target (``targets``, one ``(key,
     parents, target)`` per ``C_deps`` entry), the per-level axis of a modality that observes its
-    action node (``observations``, one ``(modality, A_deps entry, likelihood)`` per modality), and
-    the length of a per-level ``durations`` entry. A discrete node that nothing reads or sizes is
+    action node (``observations``, one ``(modality, A_deps entry, likelihood)`` per modality),
+    the per-level axis of an emission that reads the node (``emissions``, in the same triples, the
+    node written as its action node is in ``A_deps``), and the length of a per-level
+    ``durations`` entry. A discrete node that nothing reads or sizes is
     refused, as is a continuous node that nothing reads.
     Each sentence names what to pass instead.
     """
@@ -1125,7 +1136,7 @@ def control_space(
                 f"control node {name!r} is read with different level counts {found}: every "
                 "factor that reads a control node must give it the same number of levels"
             )
-        named = _named_sizes(table, k, name, targets, observations, durations)
+        named = _named_sizes(table, k, name, targets, observations, durations, emissions)
         if not found and not named:
             if readers:
                 raise ValueError(

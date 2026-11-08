@@ -21,7 +21,7 @@ from hybrid_aif import (
     LinearGaussianObservation,
 )
 from hybrid_aif.composition import run
-from hybrid_aif.composition.merge import ActionControl, merge, subsystem
+from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box
 from hybrid_aif.distributions import MixtureGaussian
 from hybrid_aif.factors import LinearGaussianTransition
@@ -140,7 +140,7 @@ def two_tier(**kw):
     return merge(
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
-        [ActionControl("mission.u_option", "rover.u_opt")],
+        [Link("mission.option", "rover.u_opt")],
     )
 
 
@@ -254,7 +254,7 @@ def test_identifying_a_state_with_the_node_keeps_the_innovations():
     cs, cp = merge(
         {"a": driver, "b": rs},
         {"a": dp, "b": rp},
-        [ActionControl("a.d", "b.u_opt")],
+        [Link("a.d", "b.u_opt")],
     )
     before = rp.transition["x"].innovations
     after = cp.transition["b.x"].innovations

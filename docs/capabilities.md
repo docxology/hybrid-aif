@@ -55,9 +55,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   factor can emit what the model just believed (`design/structure-learning.md` S8). The datum
   is the source's posterior of the previous round, by source: for a categorical source its probability vector
   (a soft observation), for a Gaussian source its location, for an action-node source the level
-  taken; a pair declared this way keeps that behaviour. **A sibling-belief read**
+  taken; a pair declared this way keeps that behaviour. **A belief read**
   (`Read(modality, source, kernel, realise)`, in the same `lagged` tuple, beside pairs, and
-  `SiblingRead(modality, source, kernel, realise)` in a merge, `design/nesting-and-coupling.md`
+  `Link(source, modality, realise=..., kernel=...)` in a merge, `design/nesting-and-coupling.md`
   N3) generalises it three ways: the datum is the source's belief pushed through a kernel, the
   identity or a cell indicator over a `Grid` (so a categorical modality over the grid's cells
   reads a continuous position factor); the realisation is declared, `sample` (a draw, the
@@ -67,7 +67,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   another component of a merge, whose posterior of the previous round (`MindCarry.posterior`) `run`'s composite form supplies as the
   modality's observation each round, one tick behind, absent on the first. `merge` carries a
   component's own reads under its prefix, `Subsystem.reads` records the sibling ones, and a
-  component bound only by such reads and control-node `ActionControl` is nested (`nested`).
+  component bound only by such reads and links from an action node into a control node is nested
+  (`nested`).
   The description document records a read in `options.datum`.
 
 - **A categorical field over a continuous state** (`design/terrain-field.md`): a tabular
@@ -95,7 +96,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   (a rate keyed by a reader raises and names it); novelty on each reader is unchanged; the
   description length prices the variable once; the description document records it under a
   top-level `parameters` entry with each reader pointing at it; `merge` identifies two
-  components' variables with `SharedParameter`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build. A `SharedParameter` identifies a variable outright: the two components of one particle share it, with no blanket between them on it, and `write_back` is bookkeeping of that one home between views (`design/nesting-and-coupling.md` N2, N6). A separate mind joined by `couple` never takes another's table this way; it receives a report of counts through an action node.
+  components' variables with `Identify`. A neural (gradient) declaration is refused with NotImplementedError; see the design note for the second build. An `Identify` identifies a variable outright: the two components of one particle share it, with no blanket between them on it, and `write_back` is bookkeeping of that one home between views (`design/nesting-and-coupling.md` N2, N6). A separate mind joined by `couple` never takes another's table this way; it receives a report of counts through an action node.
 
 - **A slow factor's reading pooled over an option level** (`design/step-durations.md` T10):
   `System(readings=(("<factor>", "<control node>"),))` with `SystemParams.readings[<factor>]`, a
@@ -385,22 +386,22 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
 - `merge({name: System}, params, bindings) -> (System, SystemParams)`: composition
   by namespaced graph-merge, identifying latents across components —
   control-node identification or relay, a modality's parents,
-  **target emission** (`H_deps` across the boundary), boundary-prior
+  **target emission** (`H_deps` across the boundary), `Clamp`
   termination. The one-particle composite is **bitwise identical** to the
   hand-flattened declaration (the composite's arrays ARE the
   components'). Every face inherits: a merge adds namespacing, never
   inference machinery. A merge makes one particle, one set of internal states with one blanket
   to the world. A component is *nested* when every binding across its boundary is a
-  sibling-belief read or an `ActionControl`: its beliefs are its own and the rest of the
-  particle is its external world. A binding that identifies a latent outright
-  (`SharedParameter`, the relay, a joint `ObservationLink`) makes the components share that
+  belief read or a `Link` from an action node into a control node: its beliefs are its own and the
+  rest of the particle is its external world. A binding that identifies a latent outright
+  (`Identify`, the relay, a structural `Link` into a modality's parents) makes the components share that
   variable, with messages both ways (`design/nesting-and-coupling.md` N2).
-- Bindings name control nodes, native or the sugar's; a node driver is read at the same step (the two nodes become one), a state driver a step later. A control-node `ActionControl` makes one node in the composite, the driver's decision, which the driven component's factors read as a supplied level (a control node supplied by another participant, `design/nesting-and-coupling.md` N7); a decision is not a belief, so no belief of the driven component is identified with the driver's, and the binding is blanket-shaped at the driven component's boundary. The state-driver form, the relay, binds a state's belief into a factor's parent set a step later and is an identification. Actions speak action nodes (`a_<f>`, one per control node); a kernel `P(a | u)` in `params.actuator` is drawn by the environment.
+- Bindings name nodes, native or the sugar's; an action-node driver is read at the same step (the two control nodes become one), a state driver a step later. A `Link` from an action node into a control node makes one node in the composite, the driver's decision, which the driven component's factors read as a supplied level (a control node supplied by another participant, `design/nesting-and-coupling.md` N7); a decision is not a belief, so no belief of the driven component is identified with the driver's, and the binding is blanket-shaped at the driven component's boundary. The state-driver form, the relay, binds a state's belief into a factor's parent set a step later and is an identification. Actions speak action nodes (`a_<f>`, one per control node); a kernel `P(a | u)` in `params.actuator` is drawn by the environment.
 - `subsystem(name)`: a bona-fide per-mind System (private beliefs,
   boundary neighbours as ordinary latent factors — no partner
   ontology; partners are inferred and learned like any latent). On a nested component the view
   is that component's own model: the rest of the particle is its external world, and it reads
-  that world through sibling reads and `ActionControl` only (`design/nesting-and-coupling.md` N2).
+  that world through belief reads and links from action nodes only (`design/nesting-and-coupling.md` N2).
 - `driver.run()` with three tick orders, each one tick of time per round
   and every factor stepping once: simultaneous (a Jacobi sweep), sequential,
   and **async** (Gauss-Seidel sweeps in declaration or random order, each
@@ -421,7 +422,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
 - **Description length**: `hybrid_aif.description.mdl.description_length(document, n)`
   prices a document in
   nats as a chain of codes, a `structure` part (a universal-integer graph code over
-  factors, modalities, control nodes, families, sizes and parent sets, plus each
+  factors, modalities, control nodes, emissions, families, sizes and parent sets, plus each
   family's parametric complexity at resolution `n`, closed form for a table) and a
   `parameters` part (the declared prior's KL from the family's base, Jeffreys for a
   table and a reference prior at an overridable `scale` for a Gaussian family, closed
@@ -985,13 +986,13 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   held System must own no world process (documented, not checked); the wired form has no such
   restriction. `hold` is built and is the clock of a slow tier under a merge: wrap the slow
   component's respond in `hold` and the fast component runs every round, with the slow
-  component's option reaching it through `ActionControl`. The slow component reads the
-  fast one by a sibling-belief read (`SiblingRead`), and `composition.particle(composite,
+  component's option reaching it through a `Link` from its action node. The slow component reads the
+  fast one by a belief read (a `Link` with a `realise`), and `composition.particle(composite,
   params, minds)` makes the merged composite one mind for `couple`: each round it supplies the
   reads from the carries, hands each `ViewRespond` mind (`fn(key, obs, carry, params)`) its view
   from the parameter home at the levels the other components last chose, writes a learner's
   params back (a view that learns outside its declared parameter variables is refused) and
-  emits the composite's action nodes, so a `SharedParameter` needs no bookkeeping by the caller
+  emits the composite's action nodes, so an `Identify` needs no bookkeeping by the caller
   (`design/nesting-and-coupling.md` N3, N4, N9; `composing-systems.md`, "One particle as one
   mind"). `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
   `params.durations` reads concrete values and skips traced ones. Nothing changes for a model

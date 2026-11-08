@@ -1,12 +1,12 @@
 """``merge()`` identifies control nodes: the latent a driver names decides when the node is read.
 
-``ActionControl(driver, control)`` names a control node of the driven subsystem. A driver that is
+``Link(driver, control)`` names a control node of the driven subsystem. A driver that is
 a control node of the driving subsystem is read at the same step: the two nodes become one, the
 driver's. A driver that is a state of it is read a step later, through the one-tick relay.
-``BoundaryPrior`` names a control node too. These tests pin the timing of both spellings against a
+``Clamp`` names a control node too. These tests pin the timing of both spellings against a
 hand computation, the identification against a hand-built System with one shared control node,
 the refusals (unknown drivers, disagreeing control nodes, keys naming a node a binding removed),
-the boundary prior's numerics, and a continuous pair read through an LG factor's ``G u``.
+the clamp's numerics, and a continuous pair read through an LG factor's ``G u``.
 
 The zoo pair is ``tests.test_merge``'s: a T-maze agent and the same model as the world it acts
 on, the agent's modalities reading the world's factors.
@@ -24,7 +24,7 @@ import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition.driver import MindCarry, agent_step
-from hybrid_aif.composition.merge import ActionControl, BoundaryPrior, merge, subsystem
+from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
@@ -33,7 +33,7 @@ from tests.test_h_deps import _low
 from tests.test_merge import DRIVE, OBSERVATION_BINDINGS, _obs, agent_and_world, merged
 
 KEY = jax.random.PRNGKey(0)
-SAME_STEP = ActionControl(driver="agent.u_location", control="world.u_location")
+SAME_STEP = Link("agent.a_location", "world.u_location")
 
 
 def same_step(policy_len=2):
@@ -232,27 +232,27 @@ def test_a_nested_merge_requalifies_the_identification():
 def test_a_driver_that_is_neither_a_node_nor_a_state_is_refused_naming_both():
     (agent, ap), (world, wp) = agent_and_world()
     subs, ps = {"agent": agent, "world": world}, {"agent": ap, "world": wp}
-    with pytest.raises(ValueError, match="neither a control node nor a state factor") as err:
-        merge(subs, ps, [ActionControl("agent.u_locaiton", "world.u_location")])
-    assert "agent.u_location" in str(err.value) and "'agent.location'" in str(err.value)
+    with pytest.raises(ValueError, match="the source is unknown") as err:
+        merge(subs, ps, [Link("agent.a_locaiton", "world.u_location")])
+    assert "agent.a_location" in str(err.value) and "'agent.location'" in str(err.value)
     with pytest.raises(ValueError, match="pass 'world.u_location', the control node of"):
-        merge(subs, ps, [ActionControl("agent.u_location", "world.location")])
+        merge(subs, ps, [Link("agent.a_location", "world.location")])
     with pytest.raises(ValueError, match="pairs 'agent.u_location' with itself"):
-        merge(subs, ps, [ActionControl("agent.u_location", "agent.u_location")])
+        merge(subs, ps, [Link("agent.a_location", "agent.u_location")])
     with pytest.raises(ValueError, match=r"already merged \(with 'agent.u_location'\)"):
         merge(subs, ps, [SAME_STEP, SAME_STEP])
     with pytest.raises(ValueError, match="pairs 'agent.u_location' with itself"):
-        merge(subs, ps, [SAME_STEP, ActionControl("world.u_location", "agent.u_location")])
+        merge(subs, ps, [SAME_STEP, Link("world.a_location", "agent.u_location")])
 
 
 def test_disagreeing_control_nodes_are_refused():
     (_, _), (world, wp) = agent_and_world()
     low, lp = _low(policy_len=world.policy_len)  # a 3-level node against the world's 5
-    with pytest.raises(ValueError, match="'low.u_pos' has 3 level.s. but 'world.u_location' has 5"):
+    with pytest.raises(ValueError, match="'low.a_pos' has 3 level.s. but 'world.u_location' has 5"):
         merge(
             {"low": low, "world": world},
             {"low": lp, "world": wp},
-            [ActionControl("low.u_pos", "world.u_location")],
+            [Link("low.a_pos", "world.u_location")],
         )
 
 
@@ -325,7 +325,7 @@ def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
     assert set(tree["risk"]) == {"agent.u_location"}
 
 
-# --------------------------------------------------------------------- the boundary prior
+# ---------------------------------------------------------------------------- the clamp
 
 
 @pytest.mark.parametrize(
@@ -333,9 +333,7 @@ def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
 )
 def test_a_boundary_prior_names_a_node_and_terminates_its_reader(prior):
     (_, _), (_, wp) = agent_and_world()
-    composite, cp = merged(
-        bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.u_location", prior)]
-    )
+    composite, cp = merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.u_location", prior)])
     assert composite.names.controls == ("agent.u_location",)
     declared = wp.transition["location"]
     if isinstance(prior, int):
@@ -347,7 +345,7 @@ def test_a_boundary_prior_names_a_node_and_terminates_its_reader(prior):
     assert isinstance(got, ConditionalCategorical) and got.parent_ndims == 2
     assert jnp.array_equal(got.log_table, want)
     with pytest.raises(ValueError, match="pass 'world.u_location', the control node of"):
-        merged(bindings=[*OBSERVATION_BINDINGS, BoundaryPrior("world.location", prior)])
+        merged(bindings=[*OBSERVATION_BINDINGS, Clamp("world.location", prior)])
 
 
 # ------------------------------------------------------------------------- the views
@@ -406,7 +404,7 @@ def test_a_continuous_node_drives_another_minds_g_u_at_the_same_step():
     a, ap = _lg_mind("x", G2)
     G_y = jnp.asarray([[0.3], [-0.2]])
     b, bp = _lg_mind("y", G_y)
-    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [ActionControl("a.u_x", "b.u_y")])
+    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
     assert composite.names.controls == ("a.u_x",) and set(cp.control) == {"a.u_x"}
     beliefs = composite.initial_priors(cp)
     u = jnp.asarray([0.7])
@@ -418,10 +416,10 @@ def test_a_continuous_node_drives_another_minds_g_u_at_the_same_step():
         )
 
     wide, wp = _lg_mind("y", jnp.asarray([[0.3, 0.1], [-0.2, 0.0]]), dim=2)
-    with pytest.raises(ValueError, match="'a.u_x' has 1 dimension.s. but 'b.u_y' has 2"):
-        merge({"a": a, "b": wide}, {"a": ap, "b": wp}, [ActionControl("a.u_x", "b.u_y")])
-    with pytest.raises(NotImplementedError, match="bind from 'a.u_x' for a same-step read"):
-        merge({"a": a, "b": b}, {"a": ap, "b": bp}, [ActionControl("a.x", "b.u_y")])
+    with pytest.raises(ValueError, match="'a.a_x' has 1 dimension.s. but 'b.u_y' has 2"):
+        merge({"a": a, "b": wide}, {"a": ap, "b": wp}, [Link("a.a_x", "b.u_y")])
+    with pytest.raises(NotImplementedError, match="link from 'a.a_x' for a same-step read"):
+        merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.x", "b.u_y")])
 
 
 # ------------------------------------------------------------- order and combinations
@@ -452,8 +450,8 @@ def _refusal(subs, ps, bindings) -> str:
 
 def test_a_chain_of_same_step_bindings_is_one_node_in_either_order():
     subs, ps = _three()
-    first = ActionControl("agent.u_location", "w1.u_location")
-    second = ActionControl("w1.u_location", "w2.u_location")
+    first = Link("agent.a_location", "w1.u_location")
+    second = Link("w1.a_location", "w2.u_location")
     forward = merge(subs, ps, [first, second])
     _assert_same_composite(forward, merge(subs, ps, [second, first]))
     composite, cp = forward
@@ -475,7 +473,7 @@ def test_a_chain_of_same_step_bindings_is_one_node_in_either_order():
 def test_a_boundary_prior_and_a_same_step_binding_agree_in_either_order():
     (agent, ap), (world, wp) = agent_and_world()
     subs, ps = {"agent": agent, "world": world}, {"agent": ap, "world": wp}
-    prior = BoundaryPrior("agent.u_location", CUE)
+    prior = Clamp("agent.u_location", CUE)
     forward = merge(subs, ps, [prior, SAME_STEP, *OBSERVATION_BINDINGS])
     _assert_same_composite(forward, merge(subs, ps, [SAME_STEP, prior, *OBSERVATION_BINDINGS]))
     composite, cp = forward
@@ -485,7 +483,7 @@ def test_a_boundary_prior_and_a_same_step_binding_agree_in_either_order():
     assert jnp.array_equal(cp.transition["world.location"].log_table, want)
     #  the identified node ends at a terminated one: the key is dropped, not re-keyed
     beliefs = composite.initial_priors(cp)
-    with pytest.raises(ValueError, match="which a BoundaryPrior terminated") as err:
+    with pytest.raises(ValueError, match="which a Clamp terminated") as err:
         composite.update_empirical_prior(cp, beliefs, {"world.a_location": 0})
     assert "drop the key" in str(err.value) and "another subsystem" not in str(err.value)
 
@@ -493,12 +491,12 @@ def test_a_boundary_prior_and_a_same_step_binding_agree_in_either_order():
 def test_a_relay_into_a_node_a_same_step_binding_shares_is_refused_alike_in_either_order():
     (x, xp), _ = agent_and_world()
     subs, ps = _three(x=(x, xp))
-    relay = ActionControl("x.location", "agent.u_location")
-    node = ActionControl("agent.u_location", "w1.u_location")
+    relay = Link("x.location", "agent.u_location")
+    node = Link("agent.a_location", "w1.u_location")
     forward = _refusal(subs, ps, [node, relay])
     assert forward == _refusal(subs, ps, [relay, node])
     assert "['agent.location', 'w1.location'] read" in forward
-    assert "made one with ['w1.u_location'] by a same-step ActionControl" in forward
+    assert "made one with ['w1.u_location'] by a same-step Link" in forward
     assert "bind from 'x.u_location' for a same-step read" in forward
 
 
@@ -508,9 +506,7 @@ def test_a_relay_into_a_node_its_component_shares_names_the_wiring():
 
     team, tp = shared_model(policy_len=1)
     z, zp = _binary("z", controlled=True)
-    message = _refusal(
-        {"z": z, "team": team}, {"z": zp, "team": tp}, [ActionControl("z.z", "team.u_help")]
-    )
+    message = _refusal({"z": z, "team": team}, {"z": zp, "team": tp}, [Link("z.z", "team.u_help")])
     assert "['team.help', 'team.who'] read (shared within its component)" in (message)
     assert "bind from 'z.u_z' for a same-step read" in message
 
@@ -522,8 +518,8 @@ def test_a_mix_of_a_node_driver_and_a_relay():
         subs,
         ps,
         [
-            ActionControl("agent.u_location", "w1.u_location"),
-            ActionControl("agent.location", "w2.u_location"),
+            Link("agent.a_location", "w1.u_location"),
+            Link("agent.location", "w2.u_location"),
         ],
     )
     assert composite.names.controls == ("agent.u_location",)
@@ -544,12 +540,13 @@ def test_an_outer_merge_naming_an_inner_bound_away_node_says_what_it_became():
     solo, sp = agent_and_world()[0]
     subs, ps = {"pair": inner, "solo": solo}, {"pair": ip, "solo": sp}
     became = re.escape("a control node merge() identified with 'pair.agent.u_location'")
-    with pytest.raises(ValueError, match=f"BoundaryPrior names 'pair.world.u_location', {became}"):
-        merge(subs, ps, [BoundaryPrior("pair.world.u_location", 0)])
-    with pytest.raises(ValueError, match=f"ActionControl names 'pair.world.u_location', {became}"):
-        merge(subs, ps, [ActionControl("pair.world.u_location", "solo.u_location")])
-    with pytest.raises(ValueError, match=f"ActionControl names 'pair.world.u_location', {became}"):
-        merge(subs, ps, [ActionControl("solo.u_location", "pair.world.u_location")])
+    with pytest.raises(ValueError, match=f"Clamp names 'pair.world.u_location', {became}"):
+        merge(subs, ps, [Clamp("pair.world.u_location", 0)])
+    action = "the action node of a control node merge\\(\\) identified with 'pair.agent.u_location'"
+    with pytest.raises(ValueError, match=f"the source 'pair.world.a_location', {action}"):
+        merge(subs, ps, [Link("pair.world.a_location", "solo.u_location")])
+    with pytest.raises(ValueError, match=f"Link names 'pair.world.u_location', {became}"):
+        merge(subs, ps, [Link("solo.a_location", "pair.world.u_location")])
 
 
 def test_a_discrete_state_relayed_into_a_continuous_node_is_a_kind_mismatch():
@@ -558,12 +555,12 @@ def test_a_discrete_state_relayed_into_a_continuous_node_is_a_kind_mismatch():
     subs, ps = {"agent": agent, "b": b}, {"agent": ap, "b": bp}
     kind = "node kind mismatch: driver 'agent.location' is a discrete state"
     with pytest.raises(ValueError, match=kind):
-        merge(subs, ps, [ActionControl("agent.location", "b.u_y")])
+        merge(subs, ps, [Link("agent.location", "b.u_y")])
 
 
 def test_the_driven_view_of_a_continuous_pair_names_the_node():
     a, ap = _lg_mind("x", G2)
     b, bp = _lg_mind("y", jnp.asarray([[0.3], [-0.2]]))
-    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [ActionControl("a.u_x", "b.u_y")])
+    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
     with pytest.raises(NotImplementedError, match=r"continuous control node \['a.u_x'\]"):
         subsystem(composite, cp, "b")
