@@ -50,24 +50,19 @@ not of object types, and the tick orders are inference schedules over one graph.
 ## The steps, in order
 
 Each step is small enough to vet on its own, keeps the test suite and the notebook gate green,
-and reproduces the recorded survey runs bitwise (level 1 and level 2, 400 ticks, against the
-runner as it stands at the step's start) unless the step says why not.
+and says how the recorded survey runs are reproduced.
 
-1. **Params flow through the runner.** One step shape for every participant,
-   `step(key, obs, carry, params) -> (action, carry', params')`. The runner holds params per
-   participant across rounds and records them. Detailed below.
-2. **One `run`.** The wired form absorbs the composite form's per-component stepping under
-   sequential and async; the composite form goes. A merged System with several planners runs
-   under `run` by taking each component's view from the shared params each round, which is
-   `particle`'s body moved to where it belongs; `particle` goes. `couple` returns a System whose
-   wires are edges with a declared realisation; `Wiring` goes.
-3. **Processes are Systems.** A participant of `couple` is a System with params and a step; a
-   world is a System whose step samples its model forward (`as_env` is the face it uses).
-   `GenerativeEnv` stops being a participant type.
-4. **Clocks in `run`.** `hold` becomes a per-participant clock argument; the duration is still
-   read off the chosen option's `durations`.
-5. **Vocabulary.** Each term defined where first used in the docs; the terms that no longer
-   name anything dropped (mind, respond, process, particle as API words).
+1. **Params flow through the runner.** DONE (f41330a). One step shape for every participant,
+   `step(key, obs, carry, params) -> (action, carry', params')`; the runner holds params per
+   participant and records them; the composite form learns.
+2. **Worlds act, and one `run`.** One build, revised on 2026-11-07 after Alex's questions (below,
+   "Step 2 in detail"): a world is a System that acts, so every port's direction is fixed by its
+   kind; `as_env` becomes the mirror transform; the bindings become `Link`, `Identify` and `Clamp`;
+   `couple` returns a System and `Wiring` goes; `run` takes a closed System, its params, a step per
+   leaf component (`plan()`, `sample()` or custom), and clocks, and returns a `Trajectory` tree; the
+   composite form, `particle`, `hold`, `agent_step` and `ancestral_step` go. The action node of a
+   state factor (nesting-and-coupling.md N5) is built as part of it.
+3. **Cleanup.** The vocabulary pass over the docs touched, and the deletions the build leaves.
 
 ## Step 1 in detail: params flow through the runner
 
@@ -171,10 +166,15 @@ wrapper, a `ViewRespond` for the learner, and `couple` to host it. After step 1 
 composite form itself:
 
 ```python
-cs, cp = merge({"mission": ms, "rover": rs}, {"mission": mp, "rover": rp},
-               [ActionControl("mission.u_option", "rover.u_opt"),
-                SharedParameter("rover.field", "mission.field"),
-                SiblingRead("mission.cell_obs", "rover.x", grid, "mode")])
+cs, cp = merge(
+    subsystems={"mission": ms, "rover": rs},
+    params={"mission": mp, "rover": rp},
+    bindings=[
+        ActionControl(driver="mission.u_option", control="rover.u_opt"),
+        SharedParameter(left="rover.field", right="mission.field"),
+        SiblingRead(modality="mission.cell_obs", source="rover.x", kernel=grid, realise="mode"),
+    ],
+)
 mview, _ = subsystem(cs, cp, "mission")
 rview, _ = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": 0})
 
@@ -215,3 +215,246 @@ Two cases the end state must handle, which fix what steps 2 and 3 aim at:
   entry saying a part steps every k rounds, and `run` is only "call the closed System's step for
   T ticks and record". The carry of a composite is the tree of its parts' carries. `particle`'s
   loop is this recursion written for one level.
+
+## Step 2 in detail: worlds act, and one `run`
+
+Revised 2026-11-07 after Alex's questions; supersedes the earlier "every participant is a System
+with a step" and "one run" drafts.
+
+**Ports are modalities in and action nodes out; a control node is never a port.** A control
+node is an internal latent `c`, the model's control variable, in one of three regimes, and the
+regime is all that distinguishes a planner from a world:
+
+- *chosen*: a planner's policy posterior sets it (today's control node of an agent);
+- *driven*: an input arrives and the node is inferred from it. Formally the input is a sensory
+  modality `a` of the System, the received action, with the identity likelihood `P(a | c)`, so
+  exact inference gives `q(c) = δ(c = a)`: the posterior mode is the slice of the transition the
+  input selects, which is the mirror of the agent's own intention selecting a slice of its model
+  of the dynamics. Under a soft input (`stats`, N8) `q(c)` is the probability vector and the
+  transition is averaged over it, which is what `BoundaryPrior`'s vector case and a view's
+  `partner_priors` already do;
+- *free*: no datum and no planner, so `q(c)` is the prior over `c`, the habit, and a sampler
+  draws from it (today's `ancestral_step`).
+
+Every port's direction is then fixed by its kind: modalities in, action nodes out. A world is a
+System that acts: its inputs are the input modalities of its control nodes, driven by links from
+the agent's action nodes, and its outputs are action nodes whose parents are its state factors,
+realised each round from an emission kernel (the thing a model calls its likelihood), and linked
+to the agent's modalities. So every link runs from an action node to a modality, and in blanket
+terms the world's inputs are its sensory states, as they should be. An ancestral sampler is an
+actor, not a perceiver: the whole model run forward, every control node free. Nothing has to
+declare what a step realises, so no object is needed around a step function: a custom step is a
+plain callable.
+
+**The shortcut the code takes.** The identity inference is a slice, so the engine keeps computing
+a driven node's posterior by slicing (a level) or averaging (a vector) as it does now, with no
+inference machinery on the input modality; the equivalence above is what makes the shortcut
+exact, and it is stated where the slice is taken. The representation carries the scrupulous
+form: the mirror exposes each control node's input as a modality under the node's name (so
+`"world.a_v"` is a modality of the world's port list), descriptions and the link checks show it
+as one, and a non-identity input likelihood (actuator noise on the receiving side) is a later
+option that changes nothing here. Walked by Alex and Fable before this arc (the identity mapping
+into the state space) and re-derived on 2026-11-07; the shortcut is the new piece.
+
+**The action node of a state factor.** The keystone, N5 of `nesting-and-coupling.md`, decided
+and not built: an action node may be parented by state factors instead of a control node, with
+an emission kernel of any likelihood family (tabular, linear-Gaussian, neural), from which the
+driver realises it each round (`sample` by default) as it realises a control-parented node from
+its actuator kernel. Its port type comes from the kernel as a modality's does today. A System
+may have both kinds.
+
+**The mirror.** `mirror(system, params) -> (System, SystemParams)` is the transform behind
+`as_env`: every modality becomes an action node parented by the modality's parents, with the
+likelihood as its emission kernel, and the control nodes stay, now the inputs. The result is a
+world that acts; sampling it forward is what `as_env(...).step` does today. `as_env` stays as a
+convenience over the mirror for callers that want the env faces.
+
+**The bindings.** Three kinds, replacing `ObservationLink`, `SiblingRead`, `Wire`,
+`ActionControl`, `SharedParameter` and `BoundaryPrior`:
+
+- `Link(source, target, realise=None, kernel=None)`: an arc of the graphical model of the whole.
+  With `realise=None` it is a structural arc, the source a parent of the target with messages
+  both ways (today's `ObservationLink`; the relay form of `ActionControl`, a state factor of the
+  driver parenting the driven control node's latent). With `realise` given it is a realised arc, one
+  way: the target's datum each round is a realisation of the source's current value, a belief
+  (today's `SiblingRead`, `source` a state factor) or a realised port (today's `Wire`, `source`
+  an action node), through `kernel` where the source's space is not the target's (the grid over
+  a continuous position read as a cell). `realise` is `sample`, `mode` or `stats` (N8).
+- `Identify(a, b)`: two parameter variables become one, keeping `a`'s declaration (today's
+  `SharedParameter`). Today's `ActionControl` is not an identification but a `Link` from the
+  driver's action node to the driven control node's input modality; its relay form is a
+  structural `Link` from a state factor.
+- `Clamp(node, level)`: a control latent no planner chooses and no link drives, clamped at a
+  constant: a level, or a probability vector averaged over once at merge time (today's
+  `BoundaryPrior`, and `couple`'s `fixed`). A realised link from a constant, given its own name
+  since a literal source reads differently from a node (Alex, 2026-11-07).
+
+`TargetEmission` (a component's terminal target conditioned on another component's factors, a
+structural arc whose target is a target node) folds into `Link` if target nodes are addressable
+in the build, else stays as the one binding of its own. Three times exist in the language: a
+transition reads the previous round by definition, a read is one round late, everything else is
+same-round (a terminal target at the plan's horizon, not at a lag).
+
+**`merge` and `couple`.** `merge(subsystems, params, bindings) -> (System, SystemParams)` as
+today, taking the three kinds. `couple(components, links, fixed) -> (System, SystemParams)` is
+`merge` specialised to separate particles: every binding is a realised `Link` from an action
+node to a modality (`realise` defaults to `sample`), the modality being an observation or a
+control node's input; a structural link or an identification is refused, naming `merge`. Both
+return a merged System with the `subsystems` metadata, so a coupling can be merged, coupled,
+described, priced and nested like any System. `Wiring` goes.
+
+**`run`.** `run(system, params, ticks, key, steps, clocks=None, tick_order="simultaneous",
+carries=None, record_carries=False) -> Trajectory`, over a closed System. `steps` names every
+leaf component (dotted through nested merges, `"agent.rover"`; a missing one is refused, nothing
+is implicit) and gives each its step, `step(system, key, obs, carry, params) -> (action, carry',
+params')`, handed its view's System and params each round (a step compiles on the System it is
+handed, the same object every round at one level). Two default steps are provided, named by
+what they do, and a custom one is any callable of that shape:
+
+- `plan(planner=None, learn=None, trace=False)`: infer over the modalities with the carried
+  beliefs as priors, choose the free control nodes with the planner (`None` is the enumerated
+  default; a driven one is sliced by its input), push the empirical prior, realise the action
+  nodes; `learn` names what to count and `trace` keeps the planner's metrics in the carry's
+  `trace` slot;
+- `sample()`: every control node driven or free, step the factors forward, draw the
+  state-parented action nodes from their emission kernels and the control-parented ones from
+  the driven or drawn levels (today's `ancestral_step`, now the full process step);
+- a custom step: hand-written dynamics (the survey world) or hand-written learning (the survey
+  rover); one that plans calls `system.act(planner=...)` itself.
+
+`clocks` maps a component to its `ticks_per_unit`: the component decides once per option,
+reading the duration off its chosen level, and holds the action for the rounds in between,
+which is `hold` as an argument; `hold` goes. The per-round body is step 1's: each component's
+view is taken from the shared params at the levels its linked control nodes stand at; its
+realised in-ports (belief reads and port reads alike) are supplied; what it returns is written
+back; its action nodes are realised and stand for the rest of the round. The orders mean what
+they mean today. The composite form goes, and with it running a System against its own model as
+a mode: that case is `couple({"model": (cs, cp), "world": mirror(cs, cp)}, links=...)`, written
+out. `particle` goes: a merged composite inside a coupling is leaf components with their own
+entries, the recursion of "Beyond step 1" being `run`'s body over the leaves. `agent_step` and
+`ancestral_step` go, replaced by `plan()` and `sample()`, which take no System: `run` hands it.
+
+**Closedness.** `run` refuses an open System: an observation modality no link feeds, and a link into
+a modality a belief read already supplies. No control node can be unaccounted for, since every leaf
+component plans, steps or samples, and a chosen node a planner must not plan over is a `Clamp`. The
+checks of step 1 stay (a reader with no uniform view needs its chooser listed first under sequential
+and is refused under the other orders; no non-identity actuator kernel on a node another view
+reads).
+
+**The trajectory.** As ruled: a tree mirroring the System's nesting, `params` at the root,
+leaves with `received`, `emitted`, `intended`, `carries` (per round, opt-in) and `carry`,
+dotted lookup, composite nodes' `received` and `emitted` as prefixed unions, diagnostics in the
+carry's `trace` slot. `MindRecord`, `ProcessRecord` and today's `Trajectory` go.
+
+**Keys.** The tick's key splits into `2N + 1` keys for `N` leaf components in the System's
+component order: component `j` steps with key `j`, its action nodes are realised with key
+`N + j` under sequential and async and every component's with the last key under simultaneous;
+reads draw with `modality_key(k_tick, m)`. A new key stream for every run with a world, so no
+bitwise check against today's runner. Acceptance: each pinned test re-pinned only after a probe
+shows the old and new runs agree when handed the same per-round keys; the survey reproduced
+statistically over several seeds (coverage at the four marks within the old runner's seed
+spread, decisions on the slow clock, the energy floor); the page bundle regenerated from the new
+runner at the end of the arc.
+
+**The survey world as a System.** New work: factors for position, terrain and energy, the
+control node for the velocity command, and three state-parented action nodes (fix, image,
+gauge) with emission kernels of the right families and types; the hand-written dynamics stay as
+its custom step. The tables of a world that is never sampled are placeholders, so the build gives
+a world whose dynamics are hand-written a small constructor for its names and port types alone
+(`ports(factors=..., controls=..., emissions=...)`) if the full `System` constructor proves
+heavy for it, and a pymdp-style positional environment still enters through an adapter that
+makes a step of it given the declaring System (today's `GenerativeEnv.wrap`).
+
+**Step 2 as a caller sees it.** The two-tier survey rover, the whole of today's runner:
+
+```python
+cs, cp = merge(
+    subsystems={"mission": ms, "rover": rs},
+    params={"mission": mp, "rover": rp},
+    bindings=[
+        Link("mission.u_option", "rover.u_opt"),      # the option drives the rover's control
+        Identify("rover.field", "mission.field"),
+        Link(source="rover.x", target="mission.cell_obs", kernel=grid, realise="mode"),
+    ],
+)
+ws, wp = wd.world_system()   # position, terrain, energy; a_v in; fix, img, gauge out
+system, params = couple(
+    components={"agent": (cs, cp), "world": (ws, wp)},
+    links=[
+        Link("agent.rover.a_v", "world.a_v"),
+        Link("world.fix", "agent.rover.fix"),
+        Link("world.img", "agent.rover.img"),
+        Link("world.gauge", "agent.rover.gauge"),
+        Link("world.gauge", "agent.mission.gauge"),
+    ],
+)
+rec = run(
+    system, params, ticks=400, key=key, tick_order="sequential",
+    steps={
+        "agent.mission": plan(trace=True),       # the default step; the enumerated planner
+        "agent.rover": rover_step,               # custom: learns the field, decodes the image
+        "world": wd.world_step,                  # custom: the hand-written dynamics
+    },
+    clocks={"agent.mission": 1},                 # one option = its duration in rounds
+    record_carries=True,
+)
+rec.params                                  # the whole System's params, the field as learned
+rec["agent.mission"].emitted["option"]      # the options, held twelve rounds each
+rec["agent.mission"].carries[t].trace.tree  # the scheduler's term tree at a decision
+rec["world"].carries[t]["x"]                # the true position
+describe(system)                            # the whole coupling as one model document
+```
+
+The scheduler needs no custom step: the default plans, and its metrics are in the trace. The
+rover keeps one because it learns the field and decodes the image for the page; the world keeps
+one because its dynamics are hand-written. A world that is a model run forward is
+`mirror(system, params)` with `sample()` as its step.
+
+**What the world's two functions are**, written out, since an example that calls convenience
+functions hides what a user writes (Alex, 2026-11-07; the exact spelling of a state-parented
+action node is the build's, N5 being unbuilt, but the size is honest):
+
+```python
+def world_system():
+    """The world's ports: three state factors, one driven control node, three emissions."""
+    system = System(
+        factor_names=("terrain", "x", "energy"),
+        B_deps=((1,), (1,), (2, 0, 1)),               # terrain and x from x; energy from all
+        controls=(FLOAT,),                            # a_v: the velocity command, width 2
+        action_names=("a_v", "fix", "img", "gauge"),  # a_v from the control; the rest emitted
+        emissions={"fix": ("x",), "img": ("x", "terrain"), "gauge": ("energy",)},
+    )
+    params = SystemParams(
+        control={"a_v": Box(-jnp.ones(2), jnp.ones(2))},
+        emission={                                    # the kernels that type the out-ports
+            "fix": LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2)),
+            "img": LinearGaussianObservation(H=jnp.zeros((IMG_PIXELS, 4)), ...),
+            "gauge": ConditionalCategorical(log_table=jnp.log(jnp.eye(4)), parent_ndims=1),
+        },
+        transition={}, initial_state_prior={},        # never sampled: the step is hand-written
+    )
+    return system, params
+
+
+def world_step(system, key, obs, carry, params):
+    """The true dynamics: the carry is the state; obs holds a_v; the emissions are returned."""
+    state = carry if carry is not None else reset_state()
+    k_move, k_obs = jax.random.split(key)
+    x = move(state, obs["a_v"], k_move)                # F, G, walls, stall, as today's step
+    new = {"terrain": terrain_of(x[:2]), "x": x, "energy": energy_after(state, x)}
+    return observe(k_obs, new), new, params            # {"fix", "img", "gauge"}, the state, params
+```
+
+Today's `world()` is the same three declarations plus a positional shell and a hand-built name
+table, which the `GenerativeEnv` type imposes and which go. The rule for the showcase notebook
+and the page: every convenience function an example calls is defined in the example, in a cell
+the reader can see, or inlined.
+
+**Open for Alex.**
+
+- `Link`, `Identify`, `Clamp` as the binding kinds (ruled 2026-11-07), and `TargetEmission`'s
+  fate in the build.
+- `steps` naming every leaf component, with `plan()` and `sample()` as the default steps (revised
+  2026-11-07 after Alex's questions; `planners=` dropped).
+- The key stream changes; the acceptance above replaces bitwise.
+- The survey world declared as a System, the price of one kind of participant.
