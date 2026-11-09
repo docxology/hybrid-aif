@@ -19,8 +19,10 @@ What is kept, dropped and refused:
   variable staying a reference;
 - **dropped**: everything that belongs to the planner, the learner or the posterior: targets,
   ``C_deps``, ``H_deps``, ``epistemic``, ``terms``, ``scoring``, ``branch_on``, ``planning_belief``,
-  ``feedback``, ``readings``, ``lagged`` reads (a read is a datum for inference, and a world
-  samples such a modality from its likelihood), ``reduction_*``, ``recognition``,
+  ``feedback``, ``readings``, ``observes`` (a modality observing the System's own emission or
+  action node is a datum for inference, and a world samples such a modality from its likelihood),
+  every emission of the System (an out-port: the mirror models what the System senses),
+  ``reduction_*``, ``recognition``,
   ``params.actuator`` (the receiving side is exact: an input is the level taken; an environment
   built by ``as_env`` applies the actuator at its own face) and ``subsystems``;
 - **lowered on request**: ``lower=True`` replaces every learnable declaration and parameter
@@ -28,10 +30,9 @@ What is kept, dropped and refused:
   order likelihood, transition, initial prior (the emissions in the likelihood's place), one per
   parameter variable shared by its readers. The mirror itself keeps them, since a world that is
   described or priced is the model;
-- **refused**: a System that declares emissions (an agent's own outputs are not the world's), a
-  System with cells a tabular factor reads (the forward process reads a table's parent as a
-  level), and an amortized System (running its declarations forward is imagination, not a
-  world).
+- **refused**: a System with cells a tabular factor reads (the forward process reads a table's
+  parent as a level), and an amortized System (running its declarations forward is imagination,
+  not a world).
 
 Key use of the world sampled forward (``as_env`` and the System's own sampling steps), by the
 forward process of :mod:`hybrid_aif.envs._process`. ``reset(key)``: ``keys = split(key, F + 1)``;
@@ -56,7 +57,7 @@ from hybrid_aif.controls import FLOAT
 from hybrid_aif.distributions import Categorical
 from hybrid_aif.factors import Parameter
 from hybrid_aif.planning.enumerate import enumerate_policies
-from hybrid_aif.reads import Emit
+from hybrid_aif.reads import Emission
 from hybrid_aif.system import keyed, validation
 from hybrid_aif.system.core import System, SystemParams
 
@@ -87,13 +88,6 @@ def mirror(
         )
     keyed_params = params
     params = system._params_in(params, face)
-    if system.emissions:
-        raise ValueError(
-            f"{face} on a System that declares emissions {list(system._emission_names)}: an "
-            "emission is an output of this System, and the mirror of a model is the world that "
-            "generated what the model perceives, whose outputs are the modalities; mirror the "
-            "System before it declares its own outputs, or run it forward as it is"
-        )
     if system.cells:
         system._validate(params, face)
     if system._cell_parents():
@@ -135,7 +129,7 @@ def mirror(
         return table.state_names[g] if g < n_states else table.control_names[g - n_nodes]
 
     emissions = tuple(
-        (m, Emit(tuple(parent(g) for g in deps)))
+        (m, Emission(tuple(parent(g) for g in deps)))
         for m, deps in zip(system.modality_names, system.A_deps, strict=True)
     )
     world = System(

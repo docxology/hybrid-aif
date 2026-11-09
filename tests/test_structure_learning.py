@@ -719,17 +719,26 @@ def test_a_growable_factor_with_dead_levels_round_trips_bitwise():
     assert float(rebuilt.transition["z"].growth) == 1.0
 
 
-# ============================================================ S8: the lagged datum
+# ============================================================ S8: the recurrent datum
 
 
-def _lagged_system(lagged=(("prev_x", "x"), ("prev_type", "kind"))):
+def _own_read_system(emissions=None, observes=None):
     """``x`` a 2-D random walk observed by ``obs_x``; ``kind`` a categorical factor observed by
     ``obs_kind``; ``z`` growable, emitting the previous ``x`` (a Gaussian emission) and the
-    previous ``kind`` (a tabular modality), both read from the carry."""
-    from hybrid_aif import Categorical, ConditionalCategorical, Gaussian
+    previous ``kind`` (a tabular modality), each an emission of the System that a modality
+    observes: ``x_mean`` (the mean of ``x``) and ``kind_vector`` (the probability vector of
+    ``kind``)."""
+    from hybrid_aif import Categorical, ConditionalCategorical, Emission, Gaussian
     from hybrid_aif.distributions import ConditionalGaussian
     from hybrid_aif.factors import LinearGaussianTransition
 
+    if emissions is None:
+        emissions = {
+            "x_mean": Emission(("x",), realise="mode", kernel="identity"),
+            "kind_vector": Emission(("kind",), realise="stats", kernel="identity"),
+        }
+    if observes is None:
+        observes = {"prev_x": "x_mean", "prev_type": "kind_vector"}
     system = System(
         A_deps=((0,), (1,), (2,), (2,)),
         B_deps=((), (1,), ()),
@@ -738,7 +747,8 @@ def _lagged_system(lagged=(("prev_x", "x"), ("prev_type", "kind"))):
         modality_names=("obs_x", "obs_kind", "prev_x", "prev_type"),
         factor_names=("x", "kind", "z"),
         epistemic=False,
-        lagged=lagged,
+        emissions=emissions,
+        observes=observes,
     )
     k = 4
     weights = jnp.zeros((k, 1)).at[0, 0].set(1.0)
@@ -776,82 +786,91 @@ def _lagged_system(lagged=(("prev_x", "x"), ("prev_type", "kind"))):
     return system, params
 
 
-def test_a_lagged_datum_is_the_previous_belief_mean():
-    system, params = _lagged_system()
+KEY0 = jax.random.PRNGKey(0)
+
+
+def test_an_emission_datum_is_the_previous_belief_mean():
+    system, params = _own_read_system()
     obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    first, _ = system.infer_states(params, {**obs, "prev_x": None, "prev_type": None}, None)
-    # without a carry the lagged modalities are absent: z keeps its prior
+    first, _ = system.infer_states(params, obs, None)
+    # without a datum the observing modalities are absent: z keeps its prior
     np.testing.assert_allclose(np.asarray(first["z"].probs), [1.0, 0, 0, 0])
+    absent, _ = system.infer_states(params, {**obs, "x_mean": None, "kind_vector": None}, None)
+    np.testing.assert_array_equal(np.asarray(absent["z"].logits), np.asarray(first["z"].logits))
     nxt = {"obs_x": jnp.asarray([1.2, -0.8]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    second, _ = system.infer_states(
-        params, {**nxt, "prev_x": None, "prev_type": None}, None, previous=first
-    )
-    # the same as handing the previous means over as observations
-    explicit, _ = system.infer_states(
-        params, {**nxt, "prev_x": first["x"].mean(), "prev_type": first["kind"].probs}, None
-    )
-    np.testing.assert_allclose(
-        np.asarray(second["z"].probs), np.asarray(explicit["z"].probs), rtol=1e-6
-    )
-    # an explicit datum wins over the carry
+    datum = system.emit(KEY0, params, first)
+    assert set(datum) == {"x_mean", "kind_vector"}
+    second, _ = system.infer_states(params, {**nxt, **datum}, None)
+    # the datum is the previous mean and probability vector
+    np.testing.assert_array_equal(np.asarray(datum["x_mean"]), np.asarray(first["x"].mean()))
+    np.testing.assert_array_equal(np.asarray(datum["kind_vector"]), np.asarray(first["kind"].probs))
+    assert not np.allclose(np.asarray(second["z"].logits), np.asarray(first["z"].logits))
+    # the datum is what the caller supplies: another value moves the posterior elsewhere
     other, _ = system.infer_states(
-        params, {**nxt, "prev_x": jnp.asarray([9.0, 9.0]), "prev_type": None}, None, previous=first
+        params, {**nxt, **datum, "x_mean": jnp.asarray([9.0, 9.0])}, None
     )
     assert not np.allclose(np.asarray(other["z"].logits), np.asarray(second["z"].logits))
 
 
-def test_learn_reads_the_lagged_datum_from_prev_beliefs():
-    system, params = _lagged_system()
+def test_learn_absorbs_the_supplied_datum_and_nothing_where_it_is_absent():
+    system, params = _own_read_system()
     obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    first, _ = system.infer_states(params, {**obs, "prev_x": None, "prev_type": None}, None)
+    first, _ = system.infer_states(params, obs, None)
     nxt = {"obs_x": jnp.asarray([1.2, -0.8]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    second, _ = system.infer_states(
-        params, {**nxt, "prev_x": None, "prev_type": None}, None, previous=first
-    )
-    learned = system.learn(
-        params, {**nxt, "prev_x": None, "prev_type": None}, second, prev_beliefs=first
-    )
-    explicit = system.learn(
-        params,
-        {**nxt, "prev_x": first["x"].mean(), "prev_type": first["kind"].probs},
-        second,
-        prev_beliefs=first,
-    )
-    for a, b in zip(
-        jax.tree_util.tree_leaves(learned), jax.tree_util.tree_leaves(explicit), strict=True
-    ):
-        assert np.array_equal(np.asarray(a), np.asarray(b))
+    datum = system.emit(KEY0, params, first)
+    second, _ = system.infer_states(params, {**nxt, **datum}, None)
+    learned = system.learn(params, {**nxt, **datum}, second, prev_beliefs=first)
     # the emission absorbed the carried mean at the live level (prior strength 0.1 at the origin)
     np.testing.assert_allclose(
         np.asarray(learned.likelihood["prev_x"].c[0]),
         np.asarray(first["x"].mean()) / 1.1,
         rtol=1e-5,
     )
+    # a tick with no datum teaches the observing slots nothing
+    skipped = system.learn(params, nxt, second, prev_beliefs=first)
+    for name in ("prev_x", "prev_type"):
+        for a, b in zip(
+            jax.tree_util.tree_leaves(skipped.likelihood[name]),
+            jax.tree_util.tree_leaves(params.likelihood[name]),
+            strict=True,
+        ):
+            assert np.array_equal(np.asarray(a), np.asarray(b))
 
 
-def test_replay_fills_lagged_data_from_its_carry():
+def test_replay_feeds_the_emissions_it_realises_after_each_tick():
     from hybrid_aif import replay
 
-    system, params = _lagged_system()
+    system, params = _own_read_system()
     T = 5
     rng = np.random.default_rng(2)
     xs = jnp.asarray(np.cumsum(rng.normal(size=(T, 2)), axis=0), jnp.float32)
     kinds = jnp.asarray(rng.integers(0, 3, size=T), jnp.int32)
     out = replay(system, params, {"obs_x": xs, "obs_kind": kinds}, {}, metrics=False)
-    # tick 0: the lagged modalities are absent, z at its prior; tick t: the carry's means
+    # tick 0: the observing modalities are absent, z at its prior; tick t: the previous emission
     np.testing.assert_allclose(np.asarray(out.beliefs["z"].probs[0]), [1.0, 0, 0, 0])
     assert out.exercised is None
-    beliefs_prev = {
-        name: jax.tree_util.tree_map(lambda a: a[0], b) for name, b in out.beliefs.items()
-    }
+    assert set(out.emitted) == {"x_mean", "kind_vector"}
+    np.testing.assert_array_equal(
+        np.asarray(out.emitted["x_mean"]), np.asarray(out.beliefs["x"].loc)
+    )
     want, _ = system.infer_states(
         params,
-        {"obs_x": xs[1], "obs_kind": kinds[1], "prev_x": None, "prev_type": None},
+        {
+            "obs_x": xs[1],
+            "obs_kind": kinds[1],
+            "x_mean": out.emitted["x_mean"][0],
+            "kind_vector": out.emitted["kind_vector"][0],
+        },
         {name: jax.tree_util.tree_map(lambda a: a[1], b) for name, b in out.priors.items()},
-        previous=beliefs_prev,
     )
     np.testing.assert_allclose(
         np.asarray(out.beliefs["z"].probs[1]), np.asarray(want["z"].probs), rtol=1e-5
+    )
+    # a datum the trace supplies wins over the emission
+    given = {"obs_x": xs, "obs_kind": kinds, "x_mean": jnp.zeros((T, 2))}
+    other = replay(system, params, given, {}, metrics=False)
+    assert not np.allclose(
+        np.asarray(other.beliefs["z"].logits), np.asarray(out.beliefs["z"].logits)
     )
     # and learning along the replay absorbs the carried data on every tick that has a carry
     learned = replay(
@@ -869,156 +888,147 @@ def test_replay_fills_lagged_data_from_its_carry():
     )
 
 
-def test_lagged_refusals_and_description():
-    with pytest.raises(ValueError, match="neither a state factor"):
-        _lagged_system(lagged=(("prev_x", "nowhere"),))
-    with pytest.raises(ValueError, match="not one of"):
-        _lagged_system(lagged=(("elsewhere", "x"),))
-    system, params = _lagged_system(
-        lagged=(("prev_x", "kind"),)
-    )  # a categorical read by a Gaussian
-    with pytest.raises(ValueError, match="tabular modality over 3 levels"):
-        system.infer_states(
-            params,
-            {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0), "prev_x": None, "prev_type": None},
-            None,
-        )
-    system, params = _lagged_system()
+def test_observes_refusals_and_description():
+    from hybrid_aif import Emission
+
+    with pytest.raises(ValueError, match="does not generate"):
+        _own_read_system(observes={"prev_x": "nowhere"})
+    with pytest.raises(ValueError, match="not a modality"):
+        _own_read_system(observes={"elsewhere": "x_mean"})
+    with pytest.raises(ValueError, match="twice"):
+        _own_read_system(observes=(("prev_x", "x_mean"), ("prev_x", "kind_vector")))
+    # a categorical read by a Gaussian modality: the port types differ
+    system, params = _own_read_system(observes={"prev_x": "kind_vector"})
+    with pytest.raises(ValueError, match="port types must be equal"):
+        system._validate(params)
+    system, params = _own_read_system()
     document, arrays = describe(system, params, arrays="inline")
-    assert document["factors"]["prev_x"]["likelihood"]["options"] == {"datum": "x[t-1]"}
-    assert document["factors"]["prev_type"]["likelihood"]["options"] == {"datum": "kind[t-1]"}
+    assert document["factors"]["prev_x"]["likelihood"]["observes"] == "x_mean"
+    assert document["factors"]["prev_type"]["likelihood"]["observes"] == "kind_vector"
+    assert "observes" not in document["factors"]["obs_x"]["likelihood"]
+    assert document["factors"]["x_mean"]["actuator"] == {
+        "parents": ["x"],
+        "options": {"kernel": "identity", "realise": "mode"},
+    }
+    assert document["factors"]["kind_vector"]["actuator"]["options"]["realise"] == "stats"
     rebuilt_system, rebuilt = build(document, arrays=arrays)
     assert rebuilt_system == system
+    assert rebuilt.emission == {}
     for a, b in zip(
         jax.tree_util.tree_leaves(params), jax.tree_util.tree_leaves(rebuilt), strict=True
     ):
         assert np.array_equal(np.asarray(a), np.asarray(b))
+    assert Emission
 
 
-# ------------------------------------------- the read declaration (nesting-and-coupling N3)
+# ----------------------------------------------- the kernel and realisation of an emission
 
 
-def _explicit_reads():
-    from hybrid_aif.reads import Read
+def test_a_sampled_emission_draws_with_the_key_and_a_mode_does_not():
+    from hybrid_aif import Emission
 
-    return (
-        Read("prev_x", "x", "identity", "mode"),
-        Read("prev_type", "kind", "identity", "stats"),
+    system, params = _own_read_system(
+        emissions={
+            "x_mean": Emission(("x",), "mode", kernel="identity"),
+            "kind_draw": Emission(("kind",), "sample", kernel="identity"),
+        },
+        observes={"prev_x": "x_mean", "prev_type": "kind_draw"},
     )
-
-
-def test_a_pair_and_its_explicit_read_give_identical_results():
-    pair, params = _lagged_system()
-    explicit, _ = _lagged_system(lagged=_explicit_reads())
     obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    absent = {"prev_x": None, "prev_type": None}
-    first, _ = pair.infer_states(params, {**obs, **absent}, None)
-    a, _ = pair.infer_states(params, {**obs, **absent}, None, previous=first)
-    b, _ = explicit.infer_states(params, {**obs, **absent}, None, previous=first)
-    for name in a:
-        for x, y in zip(
-            jax.tree_util.tree_leaves(a[name]), jax.tree_util.tree_leaves(b[name]), strict=True
-        ):
-            assert np.array_equal(np.asarray(x), np.asarray(y))
-    la = pair.learn(params, {**obs, **absent}, a, prev_beliefs=first)
-    lb = explicit.learn(params, {**obs, **absent}, b, prev_beliefs=first)
-    for x, y in zip(jax.tree_util.tree_leaves(la), jax.tree_util.tree_leaves(lb), strict=True):
-        assert np.array_equal(np.asarray(x), np.asarray(y))
-    assert pair._reads[0].realise == "legacy" and explicit._reads[0].realise == "mode"
-
-
-def test_a_declared_sample_draws_with_the_key_and_a_mode_does_not():
-    from hybrid_aif.reads import Read
-
-    system, params = _lagged_system(lagged=(Read("prev_type", "kind", "identity", "sample"),))
-    obs = {
-        "obs_x": jnp.asarray([1.0, -1.0]),
-        "obs_kind": jnp.asarray(2, jnp.int32),
-        "prev_x": jnp.asarray([0.0, 0.0]),
-        "prev_type": None,
-    }
     first, _ = system.infer_states(params, obs, None)
     with pytest.raises(ValueError, match="needs a key"):
-        system.infer_states(params, obs, None, previous=first)
+        system._emit(None, params, first)
     keys = [jax.random.PRNGKey(i) for i in range(20)]
-    data = {
-        int(system._fill_lagged((None,) * 4, None, tuple(first.values()), None, False, k)[0][3])
-        for k in keys
-    }
+    data = {int(system.emit(k, params, first)["kind_draw"]) for k in keys}
     assert len(data) > 1  # it draws from the belief over 3 kinds
-    # learn, given the filter's read_key, absorbs the datum the filter was given; the face's key
-    # is a different thing (it collapses the posterior) and draws nothing for a read
-    with pytest.raises(ValueError, match="read_key"):
-        system.infer_states(params, obs, None, previous=first, key=keys[0])
-    key = keys[5]
-    post, _ = system.infer_states(params, obs, None, previous=first, read_key=key)
-    assert float(jnp.abs(post["x"].chol).max()) > 0  # not collapsed
-    learned = system.learn(params, obs, post, prev_beliefs=first, read_key=key)
-    datum = int(
-        system._fill_lagged((None,) * 4, None, tuple(first.values()), None, False, key)[0][3]
+    # the mode takes no key; and the draw is the datum the caller supplies to infer and to learn
+    assert np.array_equal(
+        np.asarray(system.emit(keys[0], params, first)["x_mean"]),
+        np.asarray(system.emit(keys[7], params, first)["x_mean"]),
     )
+    datum = system.emit(keys[5], params, first)
+    post, _ = system.infer_states(params, {**obs, **datum}, None)
+    assert float(jnp.abs(post["x"].chol).max()) > 0  # not collapsed
+    learned = system.learn(params, {**obs, **datum}, post, prev_beliefs=first)
     delta = np.asarray(learned.likelihood["prev_type"].concentration) - np.asarray(
         params.likelihood["prev_type"].concentration
     )
-    assert delta[datum].sum() > 0 and np.delete(delta, datum, axis=0).sum() == 0
+    level = int(datum["kind_draw"])
+    assert delta[level].sum() > 0 and np.delete(delta, level, axis=0).sum() == 0
 
 
 def test_a_gaussian_source_has_no_stats():
-    from hybrid_aif.reads import Read
+    from hybrid_aif import Emission
 
-    system, params = _lagged_system(lagged=(Read("prev_x", "x", "identity", "stats"),))
+    system, params = _own_read_system(
+        emissions={
+            "x_stats": Emission(("x",), "stats", kernel="identity"),
+            "kind_vector": Emission(("kind",), "stats", kernel="identity"),
+        },
+        observes={"prev_x": "x_stats", "prev_type": "kind_vector"},
+    )
     with pytest.raises(ValueError, match="deferred"):
-        system.infer_states(
-            params,
-            {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0), "prev_x": None, "prev_type": None},
-            None,
-        )
+        system.infer_states(params, {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0)}, None)
 
 
-def test_a_read_through_a_grid_is_a_categorical_datum_over_the_cells():
-    from hybrid_aif import Grid
-    from hybrid_aif.reads import Read
+def test_an_emission_through_a_grid_is_a_categorical_datum_over_the_cells():
+    from hybrid_aif import Emission, Grid
 
     grid = Grid(shape=(2, 2), low=-3.0, high=3.0)
-    system, params = _lagged_system(lagged=(Read("prev_type", "x", grid, "mode"),))
-    with pytest.raises(ValueError, match="4 observation levels, not 3"):
-        system.infer_states(
-            params,
-            {"obs_x": jnp.zeros(2), "obs_kind": jnp.asarray(0), "prev_x": None, "prev_type": None},
-            None,
-        )
+    system, params = _own_read_system(
+        emissions={
+            "x_mean": Emission(("x",), "mode", kernel="identity"),
+            "cell": Emission(("x",), "mode", kernel=grid),
+        },
+        observes={"prev_x": "x_mean", "prev_type": "cell"},
+    )
+    assert system.ports(params).outs["cell"] == ("level", 4)
+    with pytest.raises(ValueError, match="port types must be equal"):
+        system._validate(params)
 
 
-def test_a_read_round_trips_in_the_document_and_a_pair_keeps_its_spelling():
-    from hybrid_aif.reads import Read
+def test_an_emission_round_trips_in_the_document_with_its_kernel_and_realisation():
+    from hybrid_aif import Emission, Grid
 
-    reads = (Read("prev_x", "x", "identity", "sample"), ("prev_type", "kind"))
-    system, params = _lagged_system(lagged=reads)
+    grid = Grid(shape=(2, 2), low=-3.0, high=3.0)
+    system, params = _own_read_system(
+        emissions={
+            "x_draw": Emission(("x",), "sample", kernel="identity"),
+            "kind_vector": Emission(("kind",), "stats", kernel="identity"),
+            "cell": Emission(("x",), "sample", kernel=grid),
+        },
+        observes={"prev_x": "x_draw", "prev_type": "kind_vector"},
+    )
     document, arrays = describe(system, params, arrays="inline")
-    assert document["factors"]["prev_x"]["likelihood"]["options"]["datum"] == {
-        "source": "x[t-1]",
-        "kernel": "identity",
-        "realise": "sample",
+    assert document["factors"]["x_draw"]["actuator"]["options"] == {"kernel": "identity"}
+    assert document["factors"]["cell"]["actuator"]["options"] == {
+        "kernel": "indicator",
+        "grid": {"shape": [2, 2], "low": [-3.0, -3.0], "high": [3.0, 3.0], "axes": [0, 1]},
     }
-    assert document["factors"]["prev_type"]["likelihood"]["options"] == {"datum": "kind[t-1]"}
     rebuilt, _ = build(document, arrays=arrays)
     assert rebuilt == system
 
 
 def test_replay_draws_a_declared_sample_with_its_key():
-    from hybrid_aif import replay
-    from hybrid_aif.reads import Read
+    from hybrid_aif import Emission, replay
 
-    system, params = _lagged_system(lagged=(Read("prev_type", "kind", "identity", "sample"),))
+    system, params = _own_read_system(
+        emissions={
+            "x_mean": Emission(("x",), "mode", kernel="identity"),
+            "kind_draw": Emission(("kind",), "sample", kernel="identity"),
+        },
+        observes={"prev_x": "x_mean", "prev_type": "kind_draw"},
+    )
     T = 4
     rng = np.random.default_rng(3)
     xs = jnp.asarray(np.cumsum(rng.normal(size=(T, 2)), axis=0), jnp.float32)
     kinds = jnp.asarray(rng.integers(0, 3, size=T), jnp.int32)
-    obs = {"obs_x": xs, "obs_kind": kinds, "prev_x": jnp.zeros((T, 2))}
+    obs = {"obs_x": xs, "obs_kind": kinds}
     with pytest.raises(ValueError, match="needs a key"):
         replay(system, params, obs, {}, metrics=False)
     out = replay(system, params, obs, {}, metrics=False, key=jax.random.PRNGKey(0))
     assert out.beliefs["z"].probs.shape == (T, 4)
+    assert out.emitted["kind_draw"].shape == (T,)
 
 
 # ================================================================ the acceptance task
@@ -1279,13 +1289,14 @@ def test_a_structural_zero_round_trips_without_growth():
     )
 
 
-def test_a_lagged_modality_may_be_left_out_of_the_observations():
-    system, params = _lagged_system()
+def test_a_modality_observing_an_emission_may_be_left_out_of_the_observations():
+    system, params = _own_read_system()
     obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
     first, _ = system.infer_states(params, obs, None)
-    second, _ = system.infer_states(params, obs, None, previous=first)
-    explicit, _ = system.infer_states(
-        params, {**obs, "prev_x": None, "prev_type": None}, None, previous=first
+    explicit, _ = system.infer_states(params, {**obs, "x_mean": None, "kind_vector": None}, None)
+    np.testing.assert_allclose(np.asarray(first["z"].probs), np.asarray(explicit["z"].probs))
+    absent, _ = system.infer_states(
+        params, obs, None, present={"x_mean": False, "kind_vector": False}
     )
-    np.testing.assert_allclose(np.asarray(second["z"].probs), np.asarray(explicit["z"].probs))
-    system.learn(params, obs, second, prev_beliefs=first)
+    np.testing.assert_array_equal(np.asarray(absent["z"].logits), np.asarray(first["z"].logits))
+    system.learn(params, obs, first, prev_beliefs=first)

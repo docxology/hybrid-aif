@@ -51,6 +51,7 @@ from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
 from hybrid_aif.objectives.base import term_sign
 from hybrid_aif.planning.gradient import make_gradient_planner
+from hybrid_aif.reads import EMIT_TAG
 
 PLANNER_STEPS = 40
 PLANNER_STARTS = 4  # warm starts of the plan's descent; the best final plan is the policy
@@ -173,7 +174,6 @@ def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
     state = dict(prev=None)
 
     def step(key, obs, carry, params):
-        del key
         t_start = time.time()
         beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
         if state["prev"] is not None:
@@ -226,7 +226,9 @@ def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
                 seen=seen,
             )
         )
-        return action, carry._replace(beliefs=pushed, posterior=beliefs), params
+        #  the view's emissions (the cell the scheduler reads) are realised from the posterior
+        emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs) or None
+        return action, carry._replace(beliefs=pushed, emitted=emitted), params
 
     return step
 

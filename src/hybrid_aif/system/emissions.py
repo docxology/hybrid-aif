@@ -1,10 +1,11 @@
 """Realising an emission: the draw, the mode and the statistics of a kernel.
 
-An emission's kernel (``SystemParams.emission``) is a likelihood of any family, and its parents are
-values or beliefs. Over **point** parents (a world's state) a kernel conditions on them exactly.
-Over **belief** parents (an agent's posterior) the draw is a draw of the parents followed by the
-kernel's draw, an exact predictive draw, and the mode and the statistics are those of the
-predictive distribution: a table contracted against the parents' probabilities, a
+An emission's kernel (``SystemParams.emission``) is a likelihood of any family, or the static
+identity or indicator kernel its declaration names (:func:`identity`, :func:`indicator`), and its
+parents are values or beliefs. Over **point** parents (a world's state) a kernel conditions on
+them exactly. Over **belief** parents (an agent's posterior) the draw is a draw of the parents
+followed by the kernel's draw, an exact predictive draw, and the mode and the statistics are
+those of the predictive distribution: a table contracted against the parents' probabilities, a
 linear-Gaussian kernel's mixture over its discrete parents moment-matched to a mean and a
 covariance (``H mu + c`` and ``H S H^T + R`` for one mode). A neural kernel is realised by a draw
 only. :meth:`hybrid_aif.system.System.emit` is the face; the functions here are its parts.
@@ -14,6 +15,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from hybrid_aif.cells import Grid, cell_index, cell_mass
 from hybrid_aif.distributions import (
     Categorical,
     ConditionalCategorical,
@@ -21,6 +23,7 @@ from hybrid_aif.distributions import (
     MixtureGaussian,
     MLPConditional,
 )
+from hybrid_aif.inference.sample import collapse
 
 #: The tag a key is folded with before the parents of an emission are drawn from a belief, so the
 #: kernel's draw (which uses the key itself) is that of the same emission over point parents.
@@ -111,6 +114,66 @@ def linear_gaussian(decl, parents: tuple, realise: str, name: str):
     spread = m - mean
     cov = jnp.einsum("j,jop->op", w, within + jnp.einsum("jo,jp->jop", spread, spread))
     return mean, cov
+
+
+def _draw(probs: Array, key: Array | None, name: str) -> Array:
+    """A level drawn from the probability vector ``probs``."""
+    if key is None:
+        raise ValueError(
+            f"emission {name!r} is realised by 'sample', which draws and needs a key; pass one, "
+            "or declare realise='mode' or 'stats'"
+        )
+    return jax.random.categorical(key, jnp.log(jnp.maximum(probs, 1e-30))).astype(jnp.int32)
+
+
+def identity(
+    value: object, realise: str, key: Array | None, name: str, levels: int | None = None
+) -> Array:
+    """The identity emission of one state factor, realised from a belief or a point.
+
+    A categorical factor gives a level (``sample``: a draw from the belief, ``mode``: its
+    argmax; a point is its own level) or, under ``stats``, its probability vector (``levels``
+    gives the width of a point's one-hot). A continuous factor gives its mean under ``mode`` (a
+    point is its own value) and a draw's value under ``sample``; its ``stats`` are not defined.
+    """
+    if isinstance(value, Categorical):
+        if realise == "sample":
+            return _draw(value.probs, key, name)
+        if realise == "mode":
+            return jnp.argmax(value.probs).astype(jnp.int32)
+        return value.probs
+    if isinstance(value, Gaussian | MixtureGaussian):
+        if realise == "mode":
+            return value.mean()
+        if realise == "sample":
+            if key is None:
+                _draw(jnp.ones(1), None, name)  # raises: a draw needs a key
+            return collapse(value, key).mean()
+    elif realise != "stats":  # a point
+        return jnp.asarray(value)
+    elif jnp.issubdtype(jnp.asarray(value).dtype, jnp.integer) and levels is not None:
+        return jax.nn.one_hot(jnp.asarray(value, jnp.int32), levels)
+    raise ValueError(
+        f"emission {name!r}: realise {realise!r} of a continuous factor is not defined (the "
+        "sufficient statistics of a Gaussian belief are deferred); declare 'sample' or 'mode', "
+        "or read the factor through a Grid kernel"
+    )
+
+
+def indicator(value: object, grid: Grid, realise: str, key: Array | None, name: str) -> Array:
+    """The indicator emission of one continuous state factor over ``grid``, from a belief or a
+    point: a point's cell index (``stats``: its one-hot), a Gaussian or mixture belief's cell
+    index by ``sample`` (a draw from the cell mass) or ``mode`` (the largest cell), and its cell
+    mass under ``stats``."""
+    if isinstance(value, Gaussian | MixtureGaussian):
+        probs = cell_mass(value, grid)
+        if realise == "sample":
+            return _draw(probs, key, name)
+        if realise == "mode":
+            return jnp.argmax(probs).astype(jnp.int32)
+        return probs
+    cell = cell_index(jnp.asarray(value), grid)
+    return jax.nn.one_hot(cell, grid.n_cells) if realise == "stats" else cell
 
 
 def predictive(decl, parents: tuple, realise: str, name: str):

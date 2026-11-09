@@ -99,8 +99,7 @@ from hybrid_aif.planning.enumerate import (
     action_marginals,
     enumerate_policies,
 )
-from hybrid_aif.reads import REALISATIONS, Emit, Read, as_read
-from hybrid_aif.reads import check_declaration as check_read_declaration
+from hybrid_aif.reads import REALISATIONS, Emission
 from hybrid_aif.system import emissions as _emissions
 from hybrid_aif.system import keyed, selectors, validation
 from hybrid_aif.system.selectors import _KEY_KINDS, _EpistemicVar
@@ -715,34 +714,33 @@ class System(eqx.Module):
     #   epistemic chain's posterior plus the estimate spread the corrections leave), and a
     #   Gaussian target on a continuous control node also charges the corrections. Requires
     #   ``planning_belief="posterior"`` (design: closed-loop-planning.md)
-    lagged: tuple[tuple[str, str] | Read, ...] = eqx.field(static=True, default=())
-    #   the reads: ``(modality, source)`` pairs or :class:`~hybrid_aif.reads.Read` declarations
-    #   ``Read(modality, source, kernel, realise)``. The modality's datum is the source's
-    #   posterior of the previous round (``prev_beliefs``, after that round's inference), pushed
-    #   through the kernel at the
-    #   source (the identity, or an indicator over a :class:`~hybrid_aif.cells.Grid`, which a
-    #   categorical modality reads over the grid's cells) and realised by ``sample`` (the default
-    #   of a ``Read``), ``mode`` or ``stats``, rather than supplied. The source is a state factor
-    #   or an action node (the level taken); a state factor of another component is the source
-    #   of a belief read, which a merge's ``Link`` with a ``realise`` declares and the driver
-    #   supplies as the modality's observation. A pair is the identity kernel with ``stats`` for
-    #   a categorical source, ``mode`` (the location) for a Gaussian one, and the level for an
-    #   action node. The modality's own parents explain the datum, so a factor can emit what the
-    #   model just believed. An explicit observation for the modality wins over the carry;
-    #   without either (the first tick) the modality is absent. Design: structure-learning.md S8;
-    #   nesting-and-coupling.md N3
-    emissions: tuple[tuple[str, Emit], ...] = eqx.field(static=True, default=())
+    observes: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
+    #   which variable each slot observes: ``(slot, variable)`` pairs, given as ``{"cell_obs":
+    #   "cell"}`` at construction. A slot is a modality; a variable is an
+    #   action node or an emission of this System (the variables it generates), and the slot's
+    #   port type must equal the variable's. A slot the map does not name observes the variable
+    #   of its own name, so it is an in-port of the System (:meth:`ports`). The datum of an
+    #   observed variable is an observation like any other: the caller supplies it, keyed by
+    #   the variable (:meth:`infer_states` fans it out to every slot observing it), and
+    #   ``replay`` and ``run`` realise the emissions after a round and feed them back as the next
+    #   round's observation. Own-belief read: ``emissions={"cell": Emission(("x",),
+    #   realise="mode", kernel=GRID)}, observes={"cell_obs": "cell"}``. The variable set (state
+    #   factors, control nodes, action nodes, emissions and the slots ``observes`` does not name)
+    #   is derived from the declarations, never stored. Design: engine-consolidation.md;
+    #   structure-learning.md S8; nesting-and-coupling.md N3
+    emissions: tuple[tuple[str, Emission], ...] = eqx.field(static=True, default=())
     #   the outputs the System draws from its state factors, **by name**: ``{"fix": ("x",),
-    #   "img": Emit(("x", "terrain"), realise="mode")}`` at construction (a tuple of parents is a
-    #   draw), stored as ``(name, Emit)`` pairs in the order given because static fields must
-    #   hash (``dict(system.emissions)`` reads it, and the order fixes the key each emission
+    #   "img": Emission(("x", "terrain"), realise="mode")}`` at construction (a tuple of parents
+    #   is a draw), stored as ``(name, Emission)`` pairs in the order given because static fields
+    #   must hash (``dict(system.emissions)`` reads it, and the order fixes the key each emission
     #   draws with). An emission is the action node of a state factor: its parents are state
     #   factors and control nodes (a control parent reads the node's realised level), its kernel
-    #   is ``SystemParams.emission[name]`` and its port type is read off that kernel. It has no
-    #   node index: nothing in the model reads or scores it, so no ``A_deps``, read, target,
+    #   is ``SystemParams.emission[name]``, or the static identity or ``Grid`` kernel its
+    #   declaration names, and its port type is read off that kernel. It has no
+    #   node index: nothing in the model reads or scores it, so no ``A_deps``, target,
     #   ``C_deps``, ``H_deps``, ``epistemic`` key, ``branch_on`` or ``readings`` entry may name
-    #   it, and no inference, planning or learning face reads the field. Design:
-    #   nesting-and-coupling.md N5
+    #   it. A modality may observe it (``observes``), which is the only way the
+    #   model reads it. Design: nesting-and-coupling.md N5
     readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
     #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
     #   at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
@@ -826,11 +824,24 @@ class System(eqx.Module):
         self.C_deps = self._normalized_C_deps()
         self.cells = self._normalized_cells()
         self.emissions = self._normalized_emissions()
+        self.observes = self._normalized_observes()
+
+    def _normalized_observes(self) -> tuple:
+        """``observes`` as ``(slot, variable)`` pairs in the order given (a mapping, or pairs); a
+        value of another shape is passed through for :meth:`_check_observes` to refuse."""
+        given = self.observes
+        if not given:
+            return ()
+        if isinstance(given, Mapping):
+            return tuple(given.items())
+        if isinstance(given, tuple | list):
+            return tuple(tuple(item) if isinstance(item, list) else item for item in given)
+        return given
 
     def _normalized_emissions(self) -> tuple:
-        """``emissions`` as ``(name, Emit)`` pairs in the order given. A mapping, or pairs, of a
-        name to a tuple of parents (a draw) or an :class:`~hybrid_aif.reads.Emit`; a value of
-        another shape is passed through for :meth:`_check_emissions` to refuse."""
+        """``emissions`` as ``(name, Emission)`` pairs in the order given. A mapping, or pairs, of
+        a name to a tuple of parents (a draw) or an :class:`~hybrid_aif.reads.Emission`; a value
+        of another shape is passed through for :meth:`_check_emissions` to refuse."""
         given = self.emissions
         if not given:
             return ()
@@ -845,13 +856,14 @@ class System(eqx.Module):
             if not (isinstance(item, tuple | list) and len(item) == 2):
                 return given
             name, decl = item
-            if isinstance(decl, Emit):
-                decl = Emit(
+            if isinstance(decl, Emission):
+                decl = Emission(
                     tuple(decl.parents) if isinstance(decl.parents, list) else decl.parents,
                     decl.realise,
+                    decl.kernel,
                 )
             elif isinstance(decl, tuple | list):
-                decl = Emit(tuple(decl))
+                decl = Emission(tuple(decl))
             out.append((name, decl))
         return tuple(out)
 
@@ -1112,7 +1124,7 @@ class System(eqx.Module):
                 'open-loop cross-entropy); set planning_belief="posterior"'
             )
         self._table  # noqa: B018  (validates the control nodes)
-        self._check_lagged()
+        self._check_observes()
         self._check_readings()
         self._check_C_deps()
         self._check_cells()
@@ -1247,22 +1259,23 @@ class System(eqx.Module):
             raise ValueError(f"action_names {empty} have an empty name: name every action node")
 
     def _check_emissions(self) -> None:
-        """``emissions``: pairs of a name and an :class:`~hybrid_aif.reads.Emit`, each name
+        """``emissions``: pairs of a name and an :class:`~hybrid_aif.reads.Emission`, each name
         unique in the System's one namespace, each parent a state factor or a control node, each
-        realisation a declared one. The kernels are checked with the params."""
+        realisation a declared one, each static kernel a :class:`~hybrid_aif.cells.Grid` over one
+        state factor. The kernels in the params are checked with them."""
         emissions = self.emissions
         if not isinstance(emissions, tuple) or not all(
             isinstance(entry, tuple)
             and len(entry) == 2
             and isinstance(entry[0], str)
-            and isinstance(entry[1], Emit)
+            and isinstance(entry[1], Emission)
             and isinstance(entry[1].parents, tuple)
             and all(isinstance(p, str) for p in entry[1].parents)
             for entry in emissions
         ):
             raise TypeError(
-                "emissions must map an emission's name to a tuple of parent names or an Emit "
-                f"(parents, realise), got {emissions!r}"
+                "emissions must map an emission's name to a tuple of parent names or an Emission "
+                f"(parents, realise, kernel), got {emissions!r}"
             )
         if not emissions:
             return
@@ -1291,6 +1304,19 @@ class System(eqx.Module):
                     f"emission {name!r}: realise must be one of {list(REALISATIONS)}, got "
                     f"{emit.realise!r}"
                 )
+            if emit.kernel is not None and not (
+                emit.kernel == "identity" or isinstance(emit.kernel, Grid)
+            ):
+                raise ValueError(
+                    f"emission {name!r}: a static kernel is 'identity' or a Grid, got "
+                    f"{emit.kernel!r}; kernel=None means the kernel is in params.emission, and "
+                    "any other kernel is declared there"
+                )
+            if emit.kernel is not None and len(emit.parents) != 1:
+                raise ValueError(
+                    f"emission {name!r}: a static kernel (the identity or an indicator) reads "
+                    f"one state factor, and the emission names {len(emit.parents)} parents"
+                )
             if not emit.parents:
                 raise ValueError(
                     f"emission {name!r} names no parent: an emission is drawn from state "
@@ -1301,6 +1327,11 @@ class System(eqx.Module):
                 raise ValueError(f"emission {name!r} names {dup} twice among its parents")
             for p in emit.parents:
                 if p in table.state_names or p in table.control_names:
+                    if emit.kernel is not None and p not in table.state_names:
+                        raise ValueError(
+                            f"emission {name!r}: a static kernel reads a state factor, and "
+                            f"{p!r} is a control node"
+                        )
                     continue
                 if p in names:
                     why = "an emission, an output that nothing reads"
@@ -1530,18 +1561,39 @@ class System(eqx.Module):
         """The emissions' names, in declaration order."""
         return tuple(name for name, _ in self.emissions)
 
+    def _kernelled(self, params: SystemParams) -> tuple[tuple[str, Emission], ...]:
+        """The emissions whose kernel is in ``params.emission`` (declared with ``kernel=None``),
+        in declaration order: every emission but the static ones (``kernel="identity"``, or a
+        Grid indicator)."""
+        return tuple((name, emit) for name, emit in self.emissions if emit.kernel is None)
+
     def _emission_decls(self, params: SystemParams) -> tuple:
-        """The emissions' kernels in declaration order, a ``Parameter`` reference replaced by the
-        parameter variable it names; a missing kernel, or a key that names no emission, raises."""
-        names = self._emission_names
+        """The kernels of :meth:`_kernelled` in declaration order, a ``Parameter`` reference
+        replaced by the parameter variable it names; a key that names no emission, a static
+        kernel that also has one in the params, and an emission with no kernel anywhere raise."""
         kernels = params.emission
-        if set(kernels) != set(names):
+        names = self._emission_names
+        unknown = sorted(set(kernels) - set(names))
+        if unknown:
             raise ValueError(
-                f"params.emission holds kernels for {sorted(kernels)} and the System declares the "
-                f"emissions {list(names)}: give one kernel per emission, keyed by its name"
+                f"params.emission holds kernels for {unknown}, which are not emissions of this "
+                f"System; it declares {list(names)}"
+            )
+        static = sorted(n for n, e in self.emissions if e.kernel is not None and n in kernels)
+        if static:
+            raise ValueError(
+                f"params.emission holds a kernel for {static}, whose declaration names a static "
+                "kernel: an emission has one kernel, the declared one or the one in the params"
+            )
+        missing = [n for n, _ in self._kernelled(params) if n not in kernels]
+        if missing:
+            raise ValueError(
+                f"params.emission holds kernels for {sorted(kernels)} and the System declares "
+                f"the emissions {missing} with kernel=None: give one kernel per emission, keyed "
+                "by its name, or declare kernel='identity' (or a Grid)"
             )
         out = []
-        for name in names:
+        for name, _ in self._kernelled(params):
             decl = kernels[name]
             if isinstance(decl, Parameter):
                 decl = keyed._home(params, decl.name, "emission", name)
@@ -1553,12 +1605,14 @@ class System(eqx.Module):
         node indices with a control node ``k`` written ``len(B_deps) + k``, the convention of a
         modality that observes an action node: what sizes a control node only an emission
         reads."""
-        if not self.emissions or set(params.emission) != set(self._emission_names):
+        if not set(params.emission) <= set(self._emission_names):
             return ()
         table = self._table
         n = len(self.B_deps)
         out = []
-        for (name, emit), decl in zip(self.emissions, self._emission_decls(params), strict=True):
+        for (name, emit), decl in zip(
+            self._kernelled(params), self._emission_decls(params), strict=True
+        ):
             if not any(p in table.control_names for p in emit.parents):
                 continue
             deps = tuple(
@@ -1585,10 +1639,10 @@ class System(eqx.Module):
             )
         )
 
-    @property
-    def _emission_engine_deps(self) -> tuple[tuple[int, ...], ...]:
-        """Each emission's parents at the forward process's positions: a state factor at its
-        index, a control node after the state factors in :attr:`_emission_columns` order."""
+    def _emission_engine_deps(self, params: SystemParams) -> tuple[tuple[int, ...], ...]:
+        """Each kernelled emission's parents at the forward process's positions: a state factor
+        at its index, a control node after the state factors in :attr:`_emission_columns`
+        order."""
         table = self._table
         s = table.num_states
         at = {k: s + i for i, k in enumerate(self._emission_columns)}
@@ -1599,15 +1653,39 @@ class System(eqx.Module):
                 else table.state_names.index(p)
                 for p in emit.parents
             )
-            for _, emit in self.emissions
+            for _, emit in self._kernelled(params)
         )
 
+    def _static_type(self, params: SystemParams, emit: Emission, name: str) -> tuple[str, int]:
+        """The port type of a static-kernel emission: a Grid's is ``(LEVEL, cells)``, and the
+        identity's is its parent's, ``(LEVEL, levels)`` of a categorical factor and ``(FLOAT,
+        width)`` of a continuous one."""
+        if isinstance(emit.kernel, Grid):
+            return LEVEL, emit.kernel.n_cells
+        (parent,) = emit.parents
+        if parent in self._table.control_names:
+            raise ValueError(
+                f"emission {name!r} is the identity of the control node {parent!r}: its action "
+                "node is that port, and an emission is the identity of a state factor"
+            )
+        f = self._table.state_names.index(parent)
+        if self._families(params)[f] == _hybrid.CATEGORICAL:
+            return LEVEL, int(self._factor_levels(params, f))
+        return FLOAT, int(selectors._factor_dim(params, f))
+
     def _emission_types(self, params: SystemParams) -> dict[str, tuple[str, int]]:
-        """Each emission's port type, by name, read off its kernel as a modality's is."""
+        """Each emission's port type, by name: read off its kernel as a modality's is, or the
+        static kernel's (:meth:`_static_type`)."""
         params = self._p(params)
-        return {
+        kernelled = {
             name: _observation_type(decl, f"params.emission[{name!r}]")
-            for (name, _), decl in zip(self.emissions, self._emission_decls(params), strict=True)
+            for (name, _), decl in zip(
+                self._kernelled(params), self._emission_decls(params), strict=True
+            )
+        }
+        return {
+            name: kernelled[name] if name in kernelled else self._static_type(params, emit, name)
+            for name, emit in self.emissions
         }
 
     def ports(self, params: SystemParams) -> "Ports":
@@ -1615,10 +1693,13 @@ class System(eqx.Module):
 
         ``ins`` are the in-ports: each modality, typed by its likelihood, and each control node
         under its own name (a node the System chooses is listed as well, since a link into it
-        makes it driven), typed ``(LEVEL, levels)`` or ``(FLOAT, width)``. ``outs`` are the
-        out-ports: each action node, typed as its control node, and each emission, typed by its
-        kernel. A type is ``(LEVEL, levels)`` for a table and ``(FLOAT, dimension)`` for a
-        linear-Gaussian or neural kernel. There is no node index for a port: a port is its name.
+        makes it driven), typed ``(LEVEL, levels)`` or ``(FLOAT, width)``, except the slots
+        ``System.observes`` names: a slot that observes a variable of the System is no in-port,
+        since the System feeds it. ``outs`` are the out-ports: each action node, typed as its
+        control node, and each emission, typed by its kernel (the identity's is its parent's, a
+        Grid's is a level per cell). A type is ``(LEVEL, levels)`` for a table and ``(FLOAT,
+        dimension)`` for a linear-Gaussian or neural kernel. There is no node index for a port:
+        a port is its name.
         """
         params = self._params_in(params, "ports")
         ins = dict(self._modality_types(params))
@@ -1631,7 +1712,8 @@ class System(eqx.Module):
                 ins[u] = (space.kinds[k], int(space.sizes[k]))
                 outs[a] = (space.kinds[k], int(space.sizes[k]))
         outs.update(self._emission_types(params))
-        return Ports(ins, outs)
+        fed = set(dict(self.observes))
+        return Ports({slot: t for slot, t in ins.items() if slot not in fed}, outs)
 
     # ------------------------------------------------------------ names at the faces
 
@@ -1647,6 +1729,7 @@ class System(eqx.Module):
         else:  # a node no factor reads has no column
             owners = None
         gone = self._bound_away()
+        generated = (*(self.action_names or ()), *self._emission_names)
         if params is None or not table.controls:
             return keyed.FaceNames(
                 table.state_names,
@@ -1658,6 +1741,8 @@ class System(eqx.Module):
                 actions=self.action_names,
                 sensed=self._sensed,
                 emissions=self._emission_names,
+                observes=self.observes,
+                generated=generated,
             )
         space = self._space(params)
         return keyed.FaceNames(
@@ -1672,6 +1757,8 @@ class System(eqx.Module):
             self.action_names,
             self._sensed,
             self._emission_names,
+            self.observes,
+            generated,
         )
 
     def _bound_away(self, prefix: str = "") -> tuple[tuple[str, str], ...]:
@@ -1797,20 +1884,14 @@ class System(eqx.Module):
         params: SystemParams,
         given: Mapping[str, Belief] | None,
         face: str,
-        prev_action: tuple[Array | None, ...] | None = None,
     ) -> tuple[Categorical, ...]:
-        """Each observed action node's prior, in column order: the entry ``given`` carries,
-        else the one-hot at the previous realised level ``prev_action`` names for that node
-        (one entry per action node, ``None`` where unnamed), else uniform over its control
-        node's levels."""
+        """Each observed action node's prior, in column order: the entry ``given`` carries, else
+        uniform over its control node's levels."""
         self._check_sensed_kinds(params, face)
         levels = self._control_levels(params)
         out = []
         for k, name in zip(self._sensed_columns, self._sensed, strict=True):
             q = None if given is None else given.get(name)
-            if q is None and prev_action is not None and prev_action[k] is not None:
-                out.append(Categorical.from_probs(jax.nn.one_hot(prev_action[k], levels[k])))
-                continue
             if q is None:
                 out.append(Categorical(logits=jnp.zeros((levels[k],))))
                 continue
@@ -2095,7 +2176,7 @@ class System(eqx.Module):
         ):
             space = self._space(p)
             process = HybridProcess(
-                A_deps=self._emission_engine_deps,
+                A_deps=self._emission_engine_deps(p),
                 B_deps=self._B,
                 controlled=tuple(bool(c) for c in table.control_parents),
                 D_deps=self._effective_D_deps(),
@@ -2111,7 +2192,7 @@ class System(eqx.Module):
                 initial_state_prior=p.initial_state_prior,
             )
         process = DiscreteProcess(
-            A_deps=self._emission_engine_deps,
+            A_deps=self._emission_engine_deps(p),
             B_deps=self._B,
             D_deps=self._effective_D_deps(),
             B_control_deps=table,
@@ -2134,7 +2215,12 @@ class System(eqx.Module):
         lowered = self._lower_learnable(params, None)
         lowered = dataclasses.replace(lowered, parameters={}, references=())
         process, pp = self._forward(lowered)
-        names = self._names(params)._replace(modalities=self._emission_names, sensed=())
+        names = self._names(params)._replace(
+            modalities=tuple(name for name, _ in self._kernelled(lowered)),
+            sensed=(),
+            observes=(),
+            generated=(),
+        )
         return GenerativeEnv(process, names), keyed.params_keyed(names, pp)
 
     def _free_controls(
@@ -2194,13 +2280,15 @@ class System(eqx.Module):
     def _unsampled(
         self, key: Array, params: SystemParams, state: Mapping[str, Array], controls: Mapping
     ) -> dict[str, object]:
-        """The emissions realised by ``mode`` or ``stats``, from ``state`` and the control nodes'
-        values: what the forward process, which draws, does not give."""
-        if all(e.realise == "sample" for _, e in self.emissions):
+        """The emissions the forward process does not draw: those realised by ``mode`` or
+        ``stats``, and the static-kernel ones (the identity and indicator kernels), from
+        ``state`` and the control nodes' values."""
+        left = [n for n, e in self.emissions if e.realise != "sample" or e.kernel is not None]
+        if not left:
             return {}
         values = {**state, **controls}
         emitted = self.emit(jax.random.fold_in(key, _emissions.PARENT_TAG), params, values)
-        return {n: emitted[n] for n, e in self.emissions if e.realise != "sample"}
+        return {n: emitted[n] for n in left}
 
     def sample_initial(
         self,
@@ -2255,12 +2343,13 @@ class System(eqx.Module):
         emitted, nxt = env.step(key, state, action, ep, factors)
         return {**emitted, **self._unsampled(key, params, nxt, controls)}, nxt
 
-    def _emission_observer(self, decls: tuple) -> tuple:
-        """A positional process whose observation side is the emissions over the distinct
-        parents in first-use order: ``(process, process params, parents)``. Observing it at a
-        tuple of parent values draws every emission with ``split(key, E)[e]``."""
-        parents = tuple(dict.fromkeys(p for _, e in self.emissions for p in e.parents))
-        deps = tuple(tuple(parents.index(p) for p in e.parents) for _, e in self.emissions)
+    def _emission_observer(self, kernelled: tuple, decls: tuple) -> tuple:
+        """A positional process whose observation side is the ``kernelled`` emissions (pairs of
+        a name and its declaration, with their kernels ``decls``) over the distinct parents in
+        first-use order: ``(process, process params, parents)``. Observing it at a tuple of
+        parent values draws every emission with ``split(key, E)[e]``."""
+        parents = tuple(dict.fromkeys(p for _, e in kernelled for p in e.parents))
+        deps = tuple(tuple(parents.index(p) for p in e.parents) for _, e in kernelled)
         if all(isinstance(a, ConditionalCategorical) for a in decls):
             process = DiscreteProcess(A_deps=deps, B_deps=())
             likelihood = tuple(jnp.exp(a.log_probs) for a in decls)
@@ -2276,19 +2365,34 @@ class System(eqx.Module):
 
         ``values`` holds each parent of an emission by name: a state factor as a point (a level,
         or a float vector: a world's state) or as a belief (an agent's posterior), a control node
-        as its realised level. Each emission is realised by its own rule (``Emit.realise``) with
-        ``jax.random.split(key, E)[e]`` for emission ``e``. From points, ``sample`` conditions
-        the kernel on the parents and draws (the draw the forward process makes of an
-        observation), ``mode`` is the most probable level or the mean, ``stats`` the probability
-        vector or the ``(mean, covariance)``. From beliefs, ``sample`` draws the parents and then
-        the kernel (an exact predictive draw), and ``mode`` and ``stats`` are those of the
-        predictive distribution (:mod:`hybrid_aif.system.emissions`). Learnable kernels act at
-        their posterior mean. Nothing in inference or planning reads an emission.
+        as its realised level. Each emission is realised by its own rule (``Emission.realise``)
+        with ``jax.random.split(key, E)[e]`` for emission ``e`` of the ``E`` emissions that have
+        a kernel in ``params.emission`` (the others draw from ``split(key, E')[e]`` over all
+        ``E'``). From points, ``sample`` conditions the kernel on the parents and draws (the
+        draw the forward process makes of an observation), ``mode`` is the most probable level or
+        the mean, ``stats`` the probability vector or the ``(mean, covariance)``. From beliefs,
+        ``sample`` draws the parents and then the kernel (an exact predictive draw), and
+        ``mode`` and ``stats`` are those of the predictive distribution
+        (:mod:`hybrid_aif.system.emissions`). Learnable kernels act at their posterior mean. A
+        static kernel realises its parent directly: the identity gives the factor's level,
+        probability vector or location, and a :class:`~hybrid_aif.cells.Grid` gives the cell a
+        point falls in, or from a belief the cell index by ``sample`` and ``mode`` and the cell
+        mass by ``stats``. Nothing in inference or planning reads an emission; a modality
+        observes one through ``System.observes``, its datum then supplied to the faces.
         """
         params = self._params_in(params, "emit")
+        if self.emissions:
+            self._validate(params, "emit")
+        return self._emit(key, params, values)
+
+    def _emit(
+        self, key: Array, params: SystemParams, values: Mapping[str, object]
+    ) -> dict[str, object]:
+        """:meth:`emit` over the positional view of the params, unvalidated: what a compiled
+        loop or a scan calls with params it has already checked."""
+        params = self._p(params)
         if not self.emissions:
             return {}
-        self._validate(params, "emit")
         names = self._emission_names
         parents = tuple(dict.fromkeys(p for _, e in self.emissions for p in e.parents))
         absent = [p for p in parents if p not in values]
@@ -2297,26 +2401,53 @@ class System(eqx.Module):
                 f"emit: values has no entry for {absent}, which the emissions read; give each "
                 f"parent of {list(names)} by name ({list(parents)})"
             )
-        lowered = self._lower_learnable(params, None)
-        decls = tuple(lowered.emission[n] for n in names)
+        kernelled = self._kernelled(params)
         out: dict[str, object] = {}
-        if any(e.realise == "sample" for _, e in self.emissions):
-            parent_keys = jax.random.split(
-                jax.random.fold_in(key, _emissions.PARENT_TAG), len(parents)
-            )
-            points = tuple(
-                _emissions.point_of(k, values[p]) for k, p in zip(parent_keys, parents, strict=True)
-            )
-            process, pp, _ = self._emission_observer(decls)
-            drawn = process._observe(key, points, pp)
-        for i, ((name, emit), decl) in enumerate(zip(self.emissions, decls, strict=True)):
-            if emit.realise == "sample":
-                out[name] = drawn[i]
-            else:
-                out[name] = _emissions.predictive(
-                    decl, tuple(values[p] for p in emit.parents), emit.realise, name
+        if kernelled:
+            lowered = self._lower_learnable(params, None)
+            decls = tuple(lowered.emission[n] for n, _ in kernelled)
+            if any(e.realise == "sample" for _, e in kernelled):
+                parent_keys = jax.random.split(
+                    jax.random.fold_in(key, _emissions.PARENT_TAG), len(parents)
                 )
-        return out
+                points = tuple(
+                    _emissions.point_of(k, values[p])
+                    for k, p in zip(parent_keys, parents, strict=True)
+                )
+                process, pp, _ = self._emission_observer(kernelled, decls)
+                drawn = process._observe(key, points, pp)
+            for i, ((name, emit), decl) in enumerate(zip(kernelled, decls, strict=True)):
+                if emit.realise == "sample":
+                    out[name] = drawn[i]
+                else:
+                    out[name] = _emissions.predictive(
+                        decl, tuple(values[p] for p in emit.parents), emit.realise, name
+                    )
+        static = [(i, n, e) for i, (n, e) in enumerate(self.emissions) if n not in out]
+        if static:
+            keys = None if key is None else jax.random.split(key, len(self.emissions))
+            types = None
+            for i, name, emit in static:
+                (parent,) = emit.parents
+                if isinstance(emit.kernel, Grid):
+                    out[name] = _emissions.indicator(
+                        values[parent],
+                        emit.kernel,
+                        emit.realise,
+                        None if keys is None else keys[i],
+                        name,
+                    )
+                    continue
+                if emit.realise == "stats" and not _emissions.is_belief(values[parent]):
+                    types = types or self._emission_types(params)
+                out[name] = _emissions.identity(
+                    values[parent],
+                    emit.realise,
+                    None if keys is None else keys[i],
+                    name,
+                    None if types is None else types[name][1],
+                )
+        return {name: out[name] for name in names}
 
     def _lower_learnable(self, params: SystemParams, param_key: Array | None) -> SystemParams:
         """``params`` (positional view) with every learnable declaration at its point form or one
@@ -2324,9 +2455,9 @@ class System(eqx.Module):
         keeping one draw for all its readers, and come back keyed by name with the references
         dissolved."""
         params = self._p(params)
-        if not self.emissions:
+        if not params.emission:
             return conjugate_stats._lower_learnable(params, param_key)
-        names = self._emission_names
+        names = tuple(name for name, _ in self._kernelled(params))
         decls = self._emission_decls(params)
         read = tuple(
             ("emission", i, params.emission[name].name)
@@ -2356,8 +2487,6 @@ class System(eqx.Module):
         present: Mapping[str, bool | Array] | None = None,
         support_floor: float = SUPPORT_FLOOR,
         key: Array | None = None,
-        previous: Mapping[str, Belief | Array] | None = None,
-        read_key: Array | None = None,
     ) -> tuple[dict[str, Belief], InferenceDetail | None]:
         """Mean-field state posteriors for one tick's observations: ``(beliefs, detail)``.
 
@@ -2407,14 +2536,12 @@ class System(eqx.Module):
         (one-particle filtering; amortized carries pass through; on a predict-only tick it is
         the prior that collapses). See docs/composing-systems.md.
 
-        ``previous`` is the carry a lagged modality (``System.lagged``) reads its datum from,
-        for a source in this component: the previous tick's posteriors keyed by factor name and
-        the previous action keyed by action name, any entry optional. A lagged modality whose
-        observation is ``None`` takes its datum from there, pushed through its kernel and
-        realised; with no entry for its source it is absent. A read realised by ``sample`` draws
-        with ``read_key`` (which is not ``key``, the posterior's collapse), and raises without one.
-        A source in another component is read from that component's carry by the driver and
-        arrives as the modality's observation. Design: nesting-and-coupling.md N3.
+        ``observations`` and ``present`` are keyed by **variable**: a modality that
+        ``System.observes`` names takes the datum of the variable it observes (an emission or an
+        action node of this System), and one datum feeds every slot observing the variable; a key
+        naming a slot the map renames is refused, naming the variable. The datum of an observed
+        variable is optional: a slot whose variable is left out, or ``None``, is absent that tick
+        (the first tick of an own-belief read has none). Design: nesting-and-coupling.md N3.
         """
         return _infer_face.infer_states(
             self,
@@ -2426,8 +2553,6 @@ class System(eqx.Module):
             present,
             support_floor,
             key,
-            previous,
-            read_key,
         )
 
     def _infer_states(
@@ -2441,8 +2566,6 @@ class System(eqx.Module):
         support_floor: float = SUPPORT_FLOOR,
         key: Array | None = None,
         face: str = "this face",
-        previous: tuple | None = None,
-        read_key: Array | None = None,
     ) -> tuple[tuple[Belief, ...], InferenceDetail | None]:
         """The engine: :func:`hybrid_aif.system.faces.infer._infer_states`."""
         return _infer_face._infer_states(
@@ -2456,80 +2579,61 @@ class System(eqx.Module):
             support_floor,
             key,
             face,
-            previous,
-            read_key,
         )
 
-    @property
-    def _reads(self) -> tuple[Read, ...]:
-        """``lagged`` with every ``(modality, source)`` pair as the :class:`~hybrid_aif.reads.Read`
-        it stands for."""
-        return tuple(as_read(entry) for entry in self.lagged)
-
-    @property
-    def _lagged_reads(self) -> dict[int, tuple[str, int, Read]]:
-        """Each lagged modality's index to ``("factor", f, read)`` or ``("action", k, read)``."""
-        out: dict[int, tuple[str, int, Read]] = {}
-        mods, facs = self.modality_names, self._facs[: len(self.B_deps)]
-        actions = tuple(self.action_names or ())
-        for read in self._reads:
-            m = mods.index(read.modality)
-            if read.source in facs:
-                out[m] = ("factor", facs.index(read.source), read)
-            else:
-                out[m] = ("action", actions.index(read.source), read)
-        return out
-
-    @property
-    def _lagged_sources(self) -> dict[int, tuple[str, int]]:
-        """Each lagged modality's index to ``("factor", f)`` or ``("action", k)``."""
-        return {m: (kind, i) for m, (kind, i, _) in self._lagged_reads.items()}
-
-    def _check_lagged(self) -> None:
-        if not self.lagged:
+    def _check_observes(self) -> None:
+        """``observes``: pairs of a slot (a modality, named at most once) and
+        a variable the System generates (an action node or an emission). The port types are
+        checked with the params."""
+        observes = self.observes
+        if not isinstance(observes, tuple) or not all(
+            isinstance(entry, tuple) and len(entry) == 2 and all(isinstance(x, str) for x in entry)
+            for entry in observes
+        ):
+            raise TypeError(
+                f"observes maps a modality's name to the variable it "
+                f"observes, a mapping of two names or (slot, variable) pairs, got {observes!r}"
+            )
+        if not observes:
             return
-        mods, facs = self.modality_names, self._facs[: len(self.B_deps)]
-        actions = tuple(self.action_names or ())
-        seen = set()
-        for entry in self.lagged:
-            if not (
-                isinstance(entry, Read)
-                or (
-                    isinstance(entry, tuple)
-                    and len(entry) == 2
-                    and all(isinstance(x, str) for x in entry)
-                )
-            ):
+        mods, nodes = self.modality_names, self._table.control_names
+        generated = {*(self.action_names or ()), *self._emission_names}
+        seen: set[str] = set()
+        for slot, variable in observes:
+            if slot in nodes:
                 raise ValueError(
-                    f"lagged holds (modality, source) pairs of names or Read declarations, got "
-                    f"{entry!r}"
+                    f"observes names the control node {slot!r} as a slot: driving a control node "
+                    "by identification with a variable is not yet supported, so observe the "
+                    "variable with a modality"
                 )
-            read = as_read(entry)
-            modality, source = read.modality, read.source
-            check_read_declaration(read)
-            if modality not in mods:
+            if slot not in mods:
                 raise ValueError(
-                    f"lagged names the modality {modality!r}, which is not one of {list(mods)}"
+                    f"observes names the slot {slot!r}, which is not a modality {list(mods)}"
                 )
-            if modality in seen:
-                raise ValueError(f"lagged names the modality {modality!r} twice")
-            seen.add(modality)
-            self._refuse_emission(source, f"lagged: the read of {modality!r}")
-            if source not in facs and source not in actions:
+            if slot in seen:
                 raise ValueError(
-                    f"lagged: modality {modality!r} reads {source!r} at the previous tick, which "
-                    f"is neither a state factor {list(facs)} nor an action node {list(actions)}"
+                    f"observes names the slot {slot!r} twice: a slot observes one variable"
                 )
-            if source in actions and read.kernel != "identity":
+            seen.add(slot)
+            if variable not in generated:
                 raise ValueError(
-                    f"lagged: modality {modality!r} reads the action node {source!r}, a level, "
-                    "which takes the identity kernel only"
+                    f"observes: {slot!r} observes {variable!r}, which this System does not "
+                    f"generate; the variables it generates are its action nodes "
+                    f"{list(self.action_names or ())} and its emissions "
+                    f"{list(self._emission_names)}"
                 )
-            if source in actions and read.realise == "stats":
-                raise ValueError(
-                    f"lagged: modality {modality!r} reads the action node {source!r}, a level, "
-                    "so its datum is the level; declare realise='sample' or 'mode'"
-                )
+
+    @property
+    def _observed(self) -> dict[str, str]:
+        """``observes`` as a mapping: the variable of each slot the map names."""
+        return dict(self.observes)
+
+    @property
+    def _modality_variables(self) -> tuple[str, ...]:
+        """The variable each modality observes, in modality order: the one ``observes`` names,
+        else the modality's own name."""
+        observed = self._observed
+        return tuple(observed.get(m, m) for m in self.modality_names)
 
     def _check_readings(self) -> None:
         if not self.readings:
@@ -2581,33 +2685,6 @@ class System(eqx.Module):
         )
         return _pooling.Pooled(entries)
 
-    def _with_lagged(self, observations: Mapping[str, Array | None]) -> Mapping:
-        """``observations`` with a ``None`` entry for every lagged modality it leaves out: a
-        lagged modality's datum comes from the carry, so its key is optional."""
-        if not self.lagged or not isinstance(observations, Mapping):
-            return observations
-        return {**{read.modality: None for read in self._reads}, **dict(observations)}
-
-    def _fill_lagged(
-        self,
-        observations: tuple[Array | None, ...],
-        present: tuple[bool | Array, ...] | None,
-        prev_beliefs: tuple[Belief | None, ...] | None,
-        prev_action: Array | tuple[Array | None, ...] | None,
-        first: Array | bool = False,
-        read_key: Array | None = None,
-    ) -> tuple[tuple[Array | None, ...], tuple[bool | Array, ...] | None]:
-        """The engine: :func:`hybrid_aif.system.faces.infer._fill_lagged`."""
-        return _infer_face._fill_lagged(
-            self,
-            observations,
-            present,
-            prev_beliefs,
-            prev_action,
-            first,
-            read_key,
-        )
-
     @staticmethod
     def _present(
         present: tuple[bool | Array, ...] | Array | None, n_mods: int
@@ -2634,7 +2711,6 @@ class System(eqx.Module):
         prior: SystemParams | None = None,
         priors: Mapping[str, Belief] | None = None,
         externals: Mapping[str, Array] | None = None,
-        read_key: Array | None = None,
     ) -> "SystemParams | tuple[SystemParams, LearnState]":
         """One tick's parameter update: every learnable slot absorbs this tick's statistic.
 
@@ -2724,13 +2800,10 @@ class System(eqx.Module):
         weights' rate (``transition:<factor>``) gates growth and reduction, a static zero
         freezing the factor's structure and a traced zero skipping it at run time.
 
-        **Lagged modalities** (``System.lagged``) read their datum from ``prev_beliefs`` and
-        ``action`` and may be left out of ``observations``; at tick 0, where ``prev_beliefs`` is
-        a dummy, freeze their likelihood slots and the weights with a traced zero rate as for a
-        transition. A read realised by ``sample`` draws with ``read_key``, the key ``infer_states``
-        was given as ``read_key=``, so both see one datum, and raises without one; a sibling-belief
-        read whose source is in another component takes its datum from the observation the driver
-        supplies. Design: nesting-and-coupling.md N3.
+        ``observations`` is keyed by variable, as :meth:`infer_states` takes it: the datum of an
+        emission or action node a modality observes (``System.observes``) is the one the caller
+        supplied to ``infer_states``, and a slot whose datum is absent teaches its likelihood
+        slot nothing that tick. Design: nesting-and-coupling.md N3.
 
         Design: docs/design/parameter-learning.md D1 D3 D4 D5 D7 D8;
         docs/design/per-variable-infogain.md V1 V7; docs/design/amortization.md A2;
@@ -2752,7 +2825,6 @@ class System(eqx.Module):
             prior,
             priors,
             externals,
-            read_key,
         )
 
     def _learn(
@@ -2774,7 +2846,6 @@ class System(eqx.Module):
         grow: bool = True,
         priors: tuple[Belief, ...] | None = None,
         externals: Mapping[str, Array] | None = None,
-        read_key: Array | None = None,
     ) -> "SystemParams | tuple[SystemParams, LearnState]":
         """The engine: :func:`hybrid_aif.system.faces.learn._learn`."""
         return _learn_face._learn(
@@ -2796,7 +2867,6 @@ class System(eqx.Module):
             grow,
             priors,
             externals,
-            read_key,
         )
 
     def carry(

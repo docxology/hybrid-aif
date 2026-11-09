@@ -267,23 +267,35 @@ def _present_in(
     """``present`` as a :class:`~hybrid_aif.objectives.presence.Presence`, or ``None`` when
     every modality is present throughout. An entry is a bool (the whole plan), a ``(horizon,)``
     bool array (per step), or a one-key mapping from a discrete control node's name to a bool
-    per level of that node (read at each step's level of the node). A modality left out is
-    present; an unknown modality or node, a continuous node, a mapping with other than one
+    per level of that node (read at each step's level of the node). ``present`` is keyed by
+    variable, as at ``infer_states``: one entry covers every modality observing the variable. A
+    modality left out is present; an unknown variable (or a key naming a modality that observes
+    another variable) or node, a continuous node, a mapping with other than one
     key, a wrong length and a non-bool dtype are refused."""
     if present is None:
         return None
     mods = system.modality_names
-    unknown = sorted(set(present) - set(mods))
+    face_names = system._names(params)
+    variables = face_names.variables
+    unknown = sorted(set(present) - set(variables))
     if unknown:
+        renamed = dict(face_names.observes)
+        named = [k for k in unknown if k in renamed and k in mods]
+        if named:
+            raise ValueError(
+                f"{face}: present= names {named[0]!r}, a modality that observes the variable "
+                f"{renamed[named[0]]!r}; key its flag by {renamed[named[0]]!r}"
+            )
         raise ValueError(
             f"{face}: present= names {unknown}, which are not modalities of this System "
-            f"({list(mods)})"
+            f"({list(variables)})"
         )
     space = system._space(params)
     nodes = system._table.control_names
     discrete = [n for k, n in enumerate(nodes) if space.kinds[k] == LEVEL]
     columns, by_level, never = [], [], set()
     for m, name in enumerate(mods):
+        name = face_names.variable_of(name)
         flag = present.get(name, True)
         if isinstance(flag, Mapping):
             if len(flag) != 1:

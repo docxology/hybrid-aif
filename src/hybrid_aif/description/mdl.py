@@ -429,7 +429,7 @@ class _Walk:
         self.states = tuple(table.state_names)
         self.controls = tuple(table.control_names)
         self.mods = tuple(system.modality_names)
-        self.emissions = system._emission_names
+        self.emissions = tuple(name for name, _ in system._kernelled(params))
         if prior is not None:
             now = {(slot, i): home for slot, i, home in params.references}
             then = {(slot, i): home for slot, i, home in prior.references}
@@ -454,6 +454,7 @@ class _Walk:
                         + " in the prior, and a posterior is priced against a prior of the same "
                         "form only; declare both alike"
                     )
+        self.static = {f"emission:{n}" for n, e in system.emissions if e.kernel is not None}
         self.out: dict[str, Links] = {}
         self.readers: dict[str, list[str]] = {}
         self.referencing: set[str] = set()
@@ -514,8 +515,10 @@ class _Walk:
         return tuple(live.get(g) if g < len(self.states) else None for g in deps)
 
     def run(self) -> DescriptionLength:
-        f_count, m_count, u_count = len(self.states), len(self.mods), len(self.controls)
-        e_count = len(self.emissions)
+        #  a modality that observes a variable of the System is no variable of its own
+        f_count, u_count = len(self.states), len(self.controls)
+        m_count = sum(1 for o in self.mods if o not in self.system._observed)
+        e_count = len(self.system._emission_names)
         self.out["graph"] = Links(
             graph=(
                 log_star(f_count)
@@ -593,7 +596,7 @@ class _Walk:
             )
         emission_decls = self.system._emission_decls(self.params) if self.emissions else ()
         for i, (e, decl) in enumerate(zip(self.emissions, emission_decls, strict=True)):
-            deps = self.emission_deps(i)
+            deps = self.emission_deps(e)
             prior_e = None
             if self.prior is not None:
                 prior_e = self.prior.emission[e]
@@ -609,6 +612,28 @@ class _Walk:
                 mode_masks=self.mode_masks(deps),
                 home=self.reading.get(("emission", i)),
             )
+        types = self.system._emission_types(self.params) if self.system.emissions else {}
+        for e, emit in self.system.emissions:
+            if e in self.params.emission:
+                continue
+            #  a static kernel has no parameters: the record is its structure, the parents it
+            #  reads and the size of the variable it emits
+            kind, size = types[e]
+            domain = (
+                _description._real(size) if kind == "float" else _description._categorical(size)
+            )
+            deps = self.emission_deps(e)
+            self.out[f"emission:{e}"] = Links(
+                graph=parent_set_code(len(deps), f_count + u_count) + _size_code(domain),
+                family=None,
+                prior=None,
+                posterior=None,
+                exact=True,
+                n=None,
+                note="the identity"
+                if emit.kernel == "identity"
+                else "an indicator kernel over a grid",
+            )
         self.homes()
         ordered = [self.out[key] for key in sorted(self.out)]
         structure = math.fsum(link.structure for link in ordered)
@@ -618,7 +643,7 @@ class _Walk:
             for addr, link in self.out.items()
             for name in ("family", "prior", "posterior")
             if getattr(link, name) is None
-            and not (addr == "graph" or addr.startswith("control:"))
+            and not (addr == "graph" or addr.startswith("control:") or addr in self.static)
             and addr not in self.referencing
         )
         return DescriptionLength(
@@ -630,13 +655,13 @@ class _Walk:
             unscored=unscored,
         )
 
-    def emission_deps(self, i: int) -> tuple[int, ...]:
-        """Emission ``i``'s parents as node indices: a state factor at its index, a control node
-        after the state factors."""
+    def emission_deps(self, name: str) -> tuple[int, ...]:
+        """The parents of the emission ``name`` as node indices: a state factor at its index, a
+        control node after the state factors."""
         n = len(self.states)
         return tuple(
             self.states.index(p) if p in self.states else n + self.controls.index(p)
-            for p in self.system.emissions[i][1].parents
+            for p in dict(self.system.emissions)[name].parents
         )
 
     def mode_masks(self, deps: tuple[int, ...]) -> tuple:
@@ -659,7 +684,7 @@ class _Walk:
                 deps = self.system.B_deps[i]
                 seen.setdefault(home, []).append((self.axis_masks(deps), self.live[i], None))
             elif slot == "emission":
-                deps = self.emission_deps(i)
+                deps = self.emission_deps(self.emissions[i])
                 seen.setdefault(home, []).append(
                     (self.axis_masks(deps, used=True), None, self.mode_masks(deps))
                 )
@@ -916,26 +941,36 @@ def resolution_from_evidence(evidence: Mapping[str, Any]) -> dict[str, float]:
 
 def _trace_resolution(system: System, valid: np.ndarray) -> dict[str, float]:
     """Each address's ``n`` along a trace (D1): the data its family is judged against there. A
-    likelihood sees every valid tick (a lagged one every tick but an episode's first, which has
-    no datum), a transition every valid tick but an episode's first, an initial prior one draw
-    per episode (a row of the trace's leading axes with a valid tick). An address with no data
-    along the trace is left out (its family link unscored)."""
+    likelihood sees every valid tick (one that observes an emission or action node of the System
+    every tick but an episode's first, which has no datum), a transition every valid tick but an
+    episode's first, an initial prior one draw per episode (a row of the trace's leading axes with
+    a valid tick). An address with no data along the trace is left out (its family link
+    unscored)."""
     ticks = float(valid.sum())
     episodes = float(np.sum(np.any(valid, axis=-1)))
     states = tuple(system._table.state_names)
-    #  a read's kernel, realisation and source are not yet priced (open: description-length.md,
-    #  the 2026-11-06 note, which prices the source as a parent choice when the format records
-    #  it); only the datum's absence on an episode's first tick enters the resolution
-    lagged = {read.modality for read in system._reads}
+    #  the kernel and realisation of an emission are not yet priced (open: description-length.md,
+    #  the 2026-11-06 note); only the datum's absence on an episode's first tick enters the
+    #  resolution
+    observed = _observed_modalities(system)
     n = {
         **{
-            f"likelihood:{o}": ticks - (episodes if o in lagged else 0.0)
+            f"likelihood:{o}": ticks - (episodes if o in observed else 0.0)
             for o in system.modality_names
         },
         **{f"transition:{s}": ticks - episodes for s in states},
         **{f"initial_state_prior:{s}": episodes for s in states},
     }
     return {address: count for address, count in n.items() if count > 0.0}
+
+
+def _observed_modalities(system: System) -> set[str]:
+    """The modalities that observe an emission or an action node of the System: their datum is
+    the previous tick's value, so an episode's first tick has none."""
+    generated = set(system.action_names or ()) | set(system._emission_names)
+    return {
+        o for o, variable in system.observes if variable in generated and o in system.modality_names
+    }
 
 
 def _changed(start, end) -> bool:

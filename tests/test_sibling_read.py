@@ -1,6 +1,6 @@
 """The sibling-belief read (design: nesting-and-coupling.md N3): a modality of one component
-takes its datum from another component's belief, through a kernel, realised; ``merge`` carries
-it, ``subsystem`` leaves the modality an observation, and ``run`` supplies it each round."""
+observes an emission of another, the source's belief through a kernel, realised; ``merge`` carries
+the pair, ``subsystem`` leaves the modality an observation, and ``run`` supplies it each round."""
 
 import dataclasses
 
@@ -19,7 +19,6 @@ from hybrid_aif import (
     LinearGaussianTransition,
     MixtureGaussian,
     Parameter,
-    Read,
     System,
     SystemParams,
     build,
@@ -37,12 +36,14 @@ from hybrid_aif.composition import (
     subsystem,
 )
 from hybrid_aif.distributions import ConditionalGaussian
-from hybrid_aif.reads import modality_key, read_datum
+from hybrid_aif.reads import Emission
+from hybrid_aif.system.emissions import identity, indicator
 
 GRID = Grid(shape=(2, 2), low=0.0, high=2.0)
 CELLS = GRID.n_cells
 READ = "mission.cell_obs"
 SOURCE = "rover.x"
+EMITTED = "rover.cell_obs"  # the emission the belief read declares on the source's component
 
 
 def _rover(
@@ -90,7 +91,7 @@ def _field():
     return ConditionalDirichlet(concentration=jnp.ones((2, 1)), parent_ndims=1)
 
 
-def _scheduler(shared: bool = False, lagged=()):
+def _scheduler(shared: bool = False):
     """A categorical ``visit`` factor over the grid's cells, observed through ``cell_obs``."""
     names = ("visit", "map") if shared else ("visit",)
     system = System(
@@ -100,7 +101,6 @@ def _scheduler(shared: bool = False, lagged=()):
         modality_names=("cell_obs",),
         epistemic=False,
         policy_len=1,
-        lagged=lagged,
     )
     table = jnp.log(jnp.eye(CELLS) * 0.85 + 0.05)
     transition = {"visit": ConditionalCategorical(jnp.log(jnp.full((CELLS, 1), 1 / CELLS)), 1)}
@@ -137,8 +137,16 @@ def _recorded(step, log, mind: str):
     return wrapped
 
 
+def _posterior(view, entry, mind_prefix: str = "rover"):
+    """The posterior ``view`` held at a step: its logged ``(obs, carry in)`` filtered again."""
+    obs, carry = entry
+    return view[0].infer_states(view[1], obs, priors=carry.beliefs)[0]
+
+
 def _run(composite, params, ticks: int, key=0):
-    """Run the two perceivers; the log holds ``(mind, obs seen, carry in)`` per step."""
+    """Run the two perceivers; the log holds ``(mind, obs seen, carry in)`` per step. Returns the
+    trajectory, one record per round (the ``obs`` the mission saw, both carries in, and the
+    rover's posterior at the round) and the mission's view."""
     log: list = []
     rover = subsystem(composite, params, "rover")
     mission = subsystem(composite, params, "mission")
@@ -147,19 +155,23 @@ def _run(composite, params, ticks: int, key=0):
         "mission": _recorded(agent_step(mission[0]), log, "mission"),
     }
     trajectory = run(composite, params, minds, ticks, jax.random.PRNGKey(key))
-    rounds = [
-        {
-            "obs": next(o for m, o, _ in log[2 * t : 2 * t + 2] if m == "mission"),
-            "rover": next(c for m, _, c in log[2 * t : 2 * t + 2] if m == "rover"),
-            "mission": next(c for m, _, c in log[2 * t : 2 * t + 2] if m == "mission"),
-        }
-        for t in range(ticks)
-    ]
+    rounds = []
+    for t in range(ticks):
+        entries = {m: (o, c) for m, o, c in log[2 * t : 2 * t + 2]}
+        rounds.append(
+            {
+                "obs": entries["mission"][0],
+                "rover": entries["rover"][1],
+                "mission": entries["mission"][1],
+                "posterior": _posterior(rover, entries["rover"])[SOURCE],
+            }
+        )
     return trajectory, rounds, mission
 
 
 def _mass(round_):
-    return np.asarray(cell_mass(round_["rover"].posterior[SOURCE], GRID))
+    """The cell mass of the rover's posterior at ``round_``."""
+    return np.asarray(cell_mass(round_["posterior"], GRID))
 
 
 # ------------------------------------------------------------------ the three realisations
@@ -169,10 +181,10 @@ def test_mode_datum_is_the_argmax_of_the_cell_mass_of_the_carried_belief():
     comp, params = _composite(realise="mode")
     _, rounds, _ = _run(comp, params, 8)
     assert rounds[0]["obs"][READ] is None  # the source has no carry yet: absent
-    for r in rounds[1:]:
+    for before, r in zip(rounds[:-1], rounds[1:], strict=True):
         datum = r["obs"][READ]
         assert datum.dtype == jnp.int32
-        assert int(datum) == int(np.argmax(_mass(r)))
+        assert int(datum) == int(np.argmax(_mass(before)))  # the posterior of the round before
 
 
 def test_sample_frequency_matches_the_cell_mass_and_mode_would_not():
@@ -184,7 +196,7 @@ def test_sample_frequency_matches_the_cell_mass_and_mode_would_not():
     comp, params = _composite(realise="sample", rover=hold)
     ticks = 600
     _, rounds, _ = _run(comp, params, ticks)
-    masses = np.array([_mass(r) for r in rounds[1:]])
+    masses = np.array([_mass(r) for r in rounds[:-1]])
     mean_mass = masses.mean(axis=0)
     assert abs(mean_mass[0] - 0.5) < 0.05 and abs(mean_mass[2] - 0.5) < 0.05
     drawn = np.array([int(r["obs"][READ]) for r in rounds[1:]])
@@ -199,11 +211,11 @@ def test_many_draws_of_a_fixed_categorical_belief_have_its_frequencies():
     belief = Categorical.from_probs(jnp.asarray([0.2, 0.5, 0.3]))
     n = 4000
     keys = jax.random.split(jax.random.PRNGKey(0), n)
-    drawn = jax.vmap(lambda k: read_datum(belief, "identity", "sample", k))(keys)
+    drawn = jax.vmap(lambda k: identity(belief, "sample", k, "e"))(keys)
     freq = np.bincount(np.asarray(drawn), minlength=3) / n
     tol = 4 * np.sqrt(0.25 / n)
     np.testing.assert_allclose(freq, [0.2, 0.5, 0.3], atol=tol)
-    mode = read_datum(belief, "identity", "mode")
+    mode = identity(belief, "mode", None, "e")
     assert int(mode) == 1 and abs(1.0 - 0.5) > tol
 
 
@@ -214,7 +226,7 @@ def test_the_soft_observation_is_within_the_jensen_bound_of_the_exact_treatment(
     table = np.asarray(jax.nn.softmax(jnp.log(jnp.eye(CELLS) * 0.85 + 0.05), axis=0), np.float64)
     table = table / table.sum(axis=0)
     belief = Gaussian(loc=jnp.asarray([1.0, 0.7]), chol=0.4 * jnp.eye(2))
-    mass = np.asarray(read_datum(belief, GRID, "stats"), np.float64)
+    mass = np.asarray(indicator(belief, GRID, "stats", None, "e"), np.float64)
     support = mass > 1e-12
     gap = np.log(mass @ table) - mass @ np.log(table)  # per hidden state, over the datum's cells
     bound = np.log(table[support].max(axis=0) / table[support].min(axis=0))
@@ -237,9 +249,9 @@ def test_stats_datum_is_the_cell_mass_and_the_posterior_is_the_soft_observation_
     trajectory, rounds, mission = _run(comp, params, 6)
     view, view_params = mission
     log_a = jax.nn.log_softmax(view_params.likelihood[READ].log_table, axis=0)
-    for r in rounds[1:]:
+    for before, r in zip(rounds[:-1], rounds[1:], strict=True):
         datum = r["obs"][READ]
-        np.testing.assert_allclose(np.asarray(datum), _mass(r), rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(np.asarray(datum), _mass(before), rtol=1e-5, atol=1e-7)
         prior = r["mission"].beliefs["mission.visit"]
         # the filter's soft observation: the expected log-likelihood under the vector
         want = jax.nn.softmax(prior.logits + datum @ log_a)
@@ -269,9 +281,10 @@ def test_a_read_is_one_tick_behind_under_sequential_order_too():
     }
     run(comp, params, minds, 5, jax.random.PRNGKey(1), tick_order="sequential")
     for t in range(1, 5):
-        rover_in = log[2 * t][2].posterior[SOURCE]  # the rover responds first, from last round's
+        # the rover responds first; the mission reads the posterior of the round before
+        rover_before = _posterior(rover, log[2 * (t - 1)][1:])[SOURCE]
         datum = log[2 * t + 1][1][READ]
-        assert int(datum) == int(np.argmax(np.asarray(cell_mass(rover_in, GRID))))
+        assert int(datum) == int(np.argmax(np.asarray(cell_mass(rover_before, GRID))))
 
 
 def test_the_pushed_belief_may_be_a_mixture_and_the_identity_kernel_reads_the_mean():
@@ -282,30 +295,69 @@ def test_the_pushed_belief_may_be_a_mixture_and_the_identity_kernel_reads_the_me
     )
     mass = np.asarray(cell_mass(mixture, GRID))
     np.testing.assert_allclose(mass, [0.25, 0.0, 0.75, 0.0], atol=1e-3)
-    assert int(read_datum(mixture, GRID, "mode")) == 2
-    np.testing.assert_allclose(np.asarray(read_datum(mixture, GRID, "stats")), mass, atol=1e-6)
+    assert int(indicator(mixture, GRID, "mode", None, "e")) == 2
+    np.testing.assert_allclose(
+        np.asarray(indicator(mixture, GRID, "stats", None, "e")), mass, atol=1e-6
+    )
     gaussian = Gaussian(loc=jnp.asarray([1.0, -1.0]), chol=0.1 * jnp.eye(2))
-    np.testing.assert_allclose(np.asarray(read_datum(gaussian, "identity", "mode")), [1.0, -1.0])
-    draw = read_datum(gaussian, "identity", "sample", modality_key(jax.random.PRNGKey(0), 0))
+    np.testing.assert_allclose(np.asarray(identity(gaussian, "mode", None, "e")), [1.0, -1.0])
+    draw = identity(gaussian, "sample", jax.random.PRNGKey(0), "e")
     assert draw.shape == (2,) and float(jnp.abs(draw - gaussian.loc).max()) < 1.0
     with pytest.raises(ValueError, match="deferred"):
-        read_datum(gaussian, "identity", "stats")
+        identity(gaussian, "stats", None, "e")
     with pytest.raises(ValueError, match="needs a key"):
-        read_datum(gaussian, "identity", "sample")
+        identity(gaussian, "sample", None, "e")
 
 
 # ----------------------------------------------------------------------- the merge
 
 
-def test_a_sibling_read_is_a_read_on_the_composite_and_a_record_on_the_reader():
+def test_a_sibling_read_is_an_emission_and_an_observation_on_the_composite():
     comp, params = _composite(realise="mode")
-    assert comp.lagged == (Read(READ, SOURCE, GRID, "mode"),)
+    assert comp.observes == ((READ, EMITTED),)
+    assert dict(comp.emissions)[EMITTED] == Emission((SOURCE,), "mode", GRID)
     table = dict(comp.subsystems)
     assert table["mission"].reads == ((READ, SOURCE, GRID, "mode"),)
-    assert table["rover"].reads == ()
-    # the reader's view leaves the modality an ordinary observation
+    assert table["rover"].reads == () and table["rover"].emissions == (EMITTED,)
+    # the reader's view leaves the modality an ordinary observation; the source's view emits
     view, _ = subsystem(comp, params, "mission")
-    assert view.lagged == ()
+    assert view.observes == () and view.emissions == ()
+    source, _ = subsystem(comp, params, "rover")
+    assert source.names.emissions == (EMITTED,) and source.observes == ()
+    assert comp.ports(params).outs[EMITTED] == ("level", CELLS)
+    assert READ not in comp.ports(params).ins
+
+
+def test_the_identity_kernel_declares_no_static_kernel_on_the_emission():
+    shared_r, shared_rp = _rover(shared=True)
+    ss, ps = _scheduler()
+    ps = dataclasses.replace(
+        ps,
+        likelihood={
+            "cell_obs": ConditionalCategorical(jnp.log(jnp.full((2, 4), 1 / 2)), 1),
+        },
+    )
+    comp, _ = merge(
+        {"rover": shared_r, "mission": ss},
+        {"rover": shared_rp, "mission": ps},
+        [Link("rover.map", READ, realise="mode")],
+    )
+    assert dict(comp.emissions)[EMITTED] == Emission(("rover.map",), "mode", "identity")
+
+
+def test_a_name_the_source_component_uses_is_refused_naming_the_explicit_form():
+    (sr, pr), (ss, ps) = _rover(), _scheduler()
+    sr = dataclasses.replace(
+        sr, emissions={"cell_obs": Emission(("x",), "mode", kernel="identity")}
+    )
+    with pytest.raises(
+        ValueError, match=r"named 'rover.cell_obs'.*another source, kernel or realisation"
+    ):
+        merge(
+            {"rover": sr, "mission": ss},
+            {"rover": pr, "mission": ps},
+            [Link(SOURCE, READ, realise="mode", kernel=GRID)],
+        )
 
 
 def test_nested_is_true_for_a_component_bound_only_by_a_read_and_false_once_a_variable_is_shared():
@@ -320,33 +372,32 @@ def test_nested_is_true_for_a_component_bound_only_by_a_read_and_false_once_a_va
     assert not nested(apart, "mission")
 
 
-def test_merge_carries_a_components_own_lagged_pairs_under_its_prefix():
-    from tests.test_structure_learning import _lagged_system
+def test_merge_carries_a_components_own_observes_under_its_prefix():
+    from tests.test_structure_learning import _own_read_system
 
-    system, params = _lagged_system()
+    system, params = _own_read_system()
     other, other_params = _scheduler()
     comp, cparams = merge({"a": system, "mission": other}, {"a": params, "mission": other_params})
-    assert comp.lagged == (("a.prev_x", "a.x"), ("a.prev_type", "a.kind"))
+    assert comp.observes == (("a.prev_x", "a.x_mean"), ("a.prev_type", "a.kind_vector"))
+    assert comp.names.emissions == ("a.x_mean", "a.kind_vector")
     view, _ = subsystem(comp, cparams, "a")
-    assert view.lagged == comp.lagged
-    # the composite reads its own carry as the component does
+    assert view.observes == comp.observes
+    # the composite reads its own datum as the component does
     obs = {"obs_x": jnp.asarray([1.2, -0.8]), "obs_kind": jnp.asarray(2, jnp.int32)}
-    first, _ = system.infer_states(params, {**obs, "prev_x": None, "prev_type": None}, None)
-    second, _ = system.infer_states(
-        params, {**obs, "prev_x": None, "prev_type": None}, None, previous=first
-    )
-    c_obs = {f"a.{k}": v for k, v in {**obs, "prev_x": None, "prev_type": None}.items()}
+    first, _ = system.infer_states(params, obs, None)
+    datum = system.emit(jax.random.PRNGKey(0), params, first)
+    second, _ = system.infer_states(params, {**obs, **datum}, None)
+    c_obs = {f"a.{k}": v for k, v in {**obs, **datum}.items()}
     c_obs["mission.cell_obs"] = jnp.asarray(0, jnp.int32)
-    prev = {f"a.{k}": v for k, v in first.items()}
-    got, _ = comp.infer_states(cparams, c_obs, None, previous=prev)
+    got, _ = comp.infer_states(cparams, c_obs, None)
     np.testing.assert_allclose(
         np.asarray(got["a.z"].probs), np.asarray(second["z"].probs), rtol=1e-5
     )
 
 
-def test_a_sibling_read_in_one_component_is_refused_naming_system_lagged():
+def test_a_sibling_read_in_one_component_is_refused_naming_system_observes():
     (sr, pr), (ss, ps) = _rover(), _scheduler()
-    with pytest.raises(ValueError, match=r"both in component 'rover'.*System\.lagged"):
+    with pytest.raises(ValueError, match=r"both in component 'rover'.*System\.observes"):
         merge(
             {"rover": sr, "mission": ss},
             {"rover": pr, "mission": ps},
@@ -397,7 +448,7 @@ def test_the_other_refusals():
             {"rover": pr, "mission": ps},
             [Link("rover.nothing", READ, realise="mode", kernel=GRID)],
         )
-    with pytest.raises(ValueError, match="already has a read"):
+    with pytest.raises(ValueError, match="already observes a variable"):
         _composite(bindings=[Link(SOURCE, READ, realise="stats", kernel=GRID)])
     with pytest.raises(ValueError, match="realise must be one of"):
         _composite(realise="legacy")
@@ -409,15 +460,16 @@ def test_the_other_refusals():
 def test_a_read_round_trips_through_the_description_document():
     comp, cparams = _composite(realise="sample")
     document, arrays = describe(comp, cparams, arrays="inline")
-    options = document["factors"][READ]["likelihood"]["options"]
-    assert options["datum"] == {
-        "source": f"{SOURCE}[t-1]",
-        "kernel": "indicator",
-        "grid": {"shape": [2, 2], "low": [0.0, 0.0], "high": [2.0, 2.0], "axes": [0, 1]},
-        "realise": "sample",
+    assert document["factors"][READ]["likelihood"]["observes"] == EMITTED
+    assert document["factors"][EMITTED]["actuator"] == {
+        "parents": [SOURCE],
+        "options": {
+            "kernel": "indicator",
+            "grid": {"shape": [2, 2], "low": [0.0, 0.0], "high": [2.0, 2.0], "axes": [0, 1]},
+        },
     }
     rebuilt, rebuilt_params = build(document, arrays=arrays)
-    assert rebuilt.lagged == comp.lagged
+    assert rebuilt.observes == comp.observes and rebuilt.emissions == comp.emissions
     assert dict(rebuilt.subsystems)["mission"].reads == dict(comp.subsystems)["mission"].reads
     # the document shows the boundary: a read crosses it as a blanket, a shared variable does not
     assert dict(rebuilt.subsystems)["mission"].nested and dict(rebuilt.subsystems)["rover"].nested
@@ -437,7 +489,7 @@ def test_a_read_round_trips_through_the_description_document():
     assert rounds[0]["obs"][READ] is None and rounds[2]["obs"][READ] is not None
 
 
-def test_a_read_in_one_system_round_trips_and_a_pair_keeps_its_spelling():
+def test_an_own_read_in_one_system_round_trips():
     system, params = _scheduler()
     system = dataclasses.replace(
         system,
@@ -445,7 +497,8 @@ def test_a_read_in_one_system_round_trips_and_a_pair_keeps_its_spelling():
         B_deps=((), ()),
         factor_names=("visit", "kind"),
         modality_names=("cell_obs", "prev_kind"),
-        lagged=(("prev_kind", "kind"),),
+        emissions={"kind_vector": Emission(("kind",), "stats", kernel="identity")},
+        observes={"prev_kind": "kind_vector"},
     )
     params = dataclasses.replace(
         params,
@@ -463,7 +516,11 @@ def test_a_read_in_one_system_round_trips_and_a_pair_keeps_its_spelling():
         },
     )
     document, arrays = describe(system, params, arrays="inline")
-    assert document["factors"]["prev_kind"]["likelihood"]["options"] == {"datum": "kind[t-1]"}
+    assert document["factors"]["prev_kind"]["likelihood"]["observes"] == "kind_vector"
+    assert document["factors"]["kind_vector"]["actuator"]["options"] == {
+        "kernel": "identity",
+        "realise": "stats",
+    }
     rebuilt, _ = build(document, arrays=arrays)
     assert rebuilt == system
 
@@ -471,29 +528,30 @@ def test_a_read_in_one_system_round_trips_and_a_pair_keeps_its_spelling():
 # ------------------------------------------- every read of a minded component is supplied
 
 
-def _posteriors_seen(log, mind):
-    return [(obs, carry) for m, obs, carry in log if m == mind]
+def test_a_components_own_emissions_are_supplied_from_its_own_posterior_under_run():
+    from tests.test_structure_learning import _own_read_system
 
-
-def test_a_components_own_lagged_pairs_are_supplied_from_its_own_posterior_under_run():
-    from tests.test_structure_learning import _lagged_system
-
-    system, params = _lagged_system()
+    system, params = _own_read_system()
     other, other_params = _scheduler()
     comp, cparams = merge({"a": system, "mission": other}, {"a": params, "mission": other_params})
     log: list = []
+    view = subsystem(comp, cparams, "a")
     minds = {
-        n: _recorded(agent_step(subsystem(comp, cparams, n)[0]), log, n) for n in ("a", "mission")
+        "a": _recorded(agent_step(view[0]), log, "a"),
+        "mission": _recorded(agent_step(subsystem(comp, cparams, "mission")[0]), log, "mission"),
     }
     run(comp, cparams, minds, 5, jax.random.PRNGKey(0))
-    seen = _posteriors_seen(log, "a")
-    assert seen[0][0]["a.prev_x"] is None and seen[0][0]["a.prev_type"] is None
-    for obs, carry in seen[1:]:  # the posterior of the round before, not the world's sample
+    seen = [(obs, carry) for m, obs, carry in log if m == "a"]
+    # the view's modalities take their data keyed by the variables they observe
+    assert seen[0][0]["a.x_mean"] is None and seen[0][0]["a.kind_vector"] is None
+    assert "a.prev_x" not in seen[0][0]
+    for t, (obs, _) in enumerate(seen[1:], start=1):  # the posterior of the round before
+        before = _posterior(view, seen[t - 1])
         np.testing.assert_allclose(
-            np.asarray(obs["a.prev_x"]), np.asarray(carry.posterior["a.x"].mean()), rtol=1e-6
+            np.asarray(obs["a.x_mean"]), np.asarray(before["a.x"].mean()), rtol=1e-6
         )
         np.testing.assert_allclose(
-            np.asarray(obs["a.prev_type"]), np.asarray(carry.posterior["a.kind"].probs), rtol=1e-6
+            np.asarray(obs["a.kind_vector"]), np.asarray(before["a.kind"].probs), rtol=1e-6
         )
 
 
@@ -509,42 +567,45 @@ def test_a_sibling_read_inside_an_inner_composite_is_supplied_when_it_is_one_min
     )
     assert table["tier.mission"].boundary == "blanket" and table["tier"].reads == ()
     log: list = []
+    view = subsystem(outer, params, "tier")
     minds = {
-        n: _recorded(agent_step(subsystem(outer, params, n)[0]), log, n) for n in ("tier", "other")
+        "tier": _recorded(agent_step(view[0]), log, "tier"),
+        "other": _recorded(agent_step(subsystem(outer, params, "other")[0]), log, "other"),
     }
     run(outer, params, minds, 6, jax.random.PRNGKey(0))
-    seen = _posteriors_seen(log, "tier")
-    assert seen[0][0]["tier.mission.cell_obs"] is None
-    for obs, carry in seen[1:]:
-        belief = carry.posterior["tier.rover.x"]
-        assert int(obs["tier.mission.cell_obs"]) == int(
+    seen = [(obs, carry) for m, obs, carry in log if m == "tier"]
+    assert seen[0][0]["tier.rover.cell_obs"] is None
+    for t, (obs, _) in enumerate(seen[1:], start=1):
+        belief = _posterior(view, seen[t - 1])["tier.rover.x"]
+        assert int(obs["tier.rover.cell_obs"]) == int(
             np.argmax(np.asarray(cell_mass(belief, GRID)))
         )
 
 
-def test_a_held_mind_s_posterior_is_read_through_its_wrapper():
+def test_a_held_mind_s_emissions_are_read_through_its_wrapper():
     from hybrid_aif.composition import HoldCarry
-    from hybrid_aif.composition.driver import _posterior
+    from hybrid_aif.composition.driver import _emitted
 
-    assert _posterior(HoldCarry(MindCarry(posterior={"x": 1}), 2, {})) == {"x": 1}
-    assert _posterior(MindCarry()) is None
+    assert _emitted(HoldCarry(MindCarry(emitted={"x": 1}), 2, {})) == {"x": 1}
+    assert _emitted(MindCarry()) is None
 
 
-def test_the_compiled_face_takes_the_read_key():
-    from hybrid_aif.reads import Read as _Read
-    from tests.test_structure_learning import _lagged_system
+def test_the_compiled_face_takes_the_supplied_datum():
+    from hybrid_aif import Emission as _Emission
+    from tests.test_structure_learning import _own_read_system
 
-    system, params = _lagged_system(lagged=(_Read("prev_type", "kind", "identity", "sample"),))
-    obs = {
-        "obs_x": jnp.asarray([1.0, -1.0]),
-        "obs_kind": jnp.asarray(2, jnp.int32),
-        "prev_x": jnp.zeros(2),
-        "prev_type": None,
-    }
+    system, params = _own_read_system(
+        emissions={
+            "x_mean": _Emission(("x",), "mode", kernel="identity"),
+            "kind_draw": _Emission(("kind",), "sample", kernel="identity"),
+        },
+        observes={"prev_x": "x_mean", "prev_type": "kind_draw"},
+    )
+    obs = {"obs_x": jnp.asarray([1.0, -1.0]), "obs_kind": jnp.asarray(2, jnp.int32)}
     first, _ = system.infer_states(params, obs, None)
-    key = jax.random.PRNGKey(4)
-    eager, _ = system.infer_states(params, obs, None, previous=first, read_key=key)
-    fast, _ = system.compiled().infer_states(params, obs, None, previous=first, read_key=key)
+    datum = system.emit(jax.random.PRNGKey(4), params, first)
+    eager, _ = system.infer_states(params, {**obs, **datum}, None)
+    fast, _ = system.compiled().infer_states(params, {**obs, **datum}, None)
     np.testing.assert_allclose(
         np.asarray(eager["z"].logits), np.asarray(fast["z"].logits), rtol=1e-5, atol=1e-6
     )
@@ -553,21 +614,22 @@ def test_the_compiled_face_takes_the_read_key():
 # ------------------------------------------------------------------ more of the merge
 
 
-def test_merge_carries_own_pairs_beside_a_sibling_read_and_refuses_a_second_read():
-    from tests.test_structure_learning import _lagged_system
+def test_merge_carries_own_observes_beside_a_sibling_read_and_refuses_a_second_read():
+    from tests.test_structure_learning import _own_read_system
 
-    system, params = _lagged_system()
+    system, params = _own_read_system()
     mission, mission_params = _scheduler()
     binding = Link("a.x", READ, realise="mode", kernel=GRID)
     comp, _ = merge(
         {"a": system, "mission": mission}, {"a": params, "mission": mission_params}, [binding]
     )
-    assert comp.lagged == (
-        ("a.prev_x", "a.x"),
-        ("a.prev_type", "a.kind"),
-        Read(READ, "a.x", GRID, "mode"),
+    assert comp.observes == (
+        ("a.prev_x", "a.x_mean"),
+        ("a.prev_type", "a.kind_vector"),
+        (READ, "a.cell_obs"),
     )
-    with pytest.raises(ValueError, match="already has a read"):
+    assert dict(comp.emissions)["a.cell_obs"] == Emission(("a.x",), "mode", GRID)
+    with pytest.raises(ValueError, match="already observes a variable"):
         merge(
             {"a": system, "mission": mission},
             {"a": params, "mission": mission_params},
@@ -575,15 +637,15 @@ def test_merge_carries_own_pairs_beside_a_sibling_read_and_refuses_a_second_read
         )
 
 
-def test_an_own_pair_on_an_action_node_follows_its_node_and_is_refused_when_it_leaves():
+def test_an_own_observation_of_an_action_node_follows_its_node_and_is_refused_when_it_leaves():
     from hybrid_aif.composition import Clamp, Link
     from tests.test_merge import agent_and_world
 
     (agent, agent_params), (world, world_params) = agent_and_world()
-    reading = dataclasses.replace(agent, lagged=(("location_obs", "a_location"),))
+    reading = dataclasses.replace(agent, observes={"location_obs": "a_location"})
     parts = ({"agent": reading, "world": world}, {"agent": agent_params, "world": world_params})
     comp, _ = merge(*parts)
-    assert comp.lagged == (("agent.location_obs", "agent.a_location"),)
+    assert comp.observes == (("agent.location_obs", "agent.a_location"),)
     with pytest.raises(ValueError, match="a binding removed"):
         merge(*parts, [Clamp("agent.u_location", 1)])
     drive = Link("world.a_location", "agent.u_location")
@@ -591,28 +653,18 @@ def test_an_own_pair_on_an_action_node_follows_its_node_and_is_refused_when_it_l
         merge(*parts, [drive])
 
 
-def test_a_read_of_an_action_node_round_trips_through_the_document():
-    from hybrid_aif.reads import Read as _Read
+def test_an_observation_of_an_action_node_round_trips_through_the_document():
     from tests.test_merge import agent_and_world
 
     (agent, agent_params), _ = agent_and_world()
-    system = dataclasses.replace(
-        agent, lagged=(_Read("location_obs", "a_location", "identity", "mode"),)
-    )
+    system = dataclasses.replace(agent, observes={"location_obs": "a_location"})
     document, arrays = describe(system, agent_params, arrays="inline")
-    options = document["factors"]["location_obs"]["likelihood"]["options"]
-    assert options["datum"] == {
-        "source": "a_location[t-1]",
-        "kernel": "identity",
-        "realise": "mode",
-    }
+    assert document["factors"]["location_obs"]["likelihood"]["observes"] == "a_location"
     rebuilt, _ = build(document, arrays=arrays)
-    assert rebuilt.lagged == system.lagged
+    assert rebuilt.observes == system.observes
 
 
-def test_a_user_read_cannot_declare_the_pair_s_realisation_and_the_message_names_the_inner_merge():
-    with pytest.raises(ValueError, match="realise must be one of"):
-        Read("m", "s", "identity", "legacy")
+def test_the_message_names_the_inner_merge_for_a_read_between_inner_components():
     inner, inner_params = _composite(realise="mode")
     other, other_params = _scheduler()
     with pytest.raises(ValueError, match="declare the link in the inner merge"):
@@ -672,11 +724,11 @@ def test_the_boundary_under_each_binding_kind_from_merge_and_from_the_document()
 
 def test_a_read_is_counted_from_an_episodes_second_tick_in_the_description_length():
     from hybrid_aif.description.mdl import _trace_resolution
-    from tests.test_structure_learning import _lagged_system
+    from tests.test_structure_learning import _own_read_system
 
     ticks = 6
     valid = np.ones((1, ticks), bool)
-    system, _ = _lagged_system(lagged=(Read("prev_type", "kind", "identity", "sample"),))
+    system, _ = _own_read_system()
     n = _trace_resolution(system, valid)
     assert n["likelihood:prev_type"] == ticks - 1 and n["likelihood:obs_x"] == ticks
     comp, _ = _composite()

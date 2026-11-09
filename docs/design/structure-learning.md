@@ -433,6 +433,19 @@ above, each a reading of the rulings rather than a change to them:
   everywhere, dead levels by an explicit mask) was set aside: it buys orthodoxy at the cost of
   exact parity with hard-zero tables and a second encoding of liveness.
 
+  *2026-11-09: superseding the mechanism sentence above (`infer_states(previous=…)`, `learn` from
+  `prev_beliefs`/`action`, `replay` from its carry, `options.datum`); S8's semantics stand (lag
+  one, a point datum, a categorical's probability vector as a soft observation). The lagged
+  datum is an emission of the System with the identity kernel (`mode` for a Gaussian's location,
+  `stats` for a categorical's probability vector) that the modality observes, written
+  `System(emissions={"x_mean": Emission(("x",), realise="mode")}, observes={"prev_x":
+  "x_mean"})`; the previous action's level is the action node in `observes`. `System.lagged` and
+  the `previous=` and `read_key=` arguments are retired: the datum reaches inference as any
+  observation, keyed by the variable, from the caller for `infer_states` and `learn` and from the
+  emissions `replay` realises after each tick (fed as the next tick's datum, absent at the
+  first); the description writes an `observes` entry on the likelihood and a record of the
+  emission (`design/engine-consolidation.md`, chunk B).*
+
 ## Open: growth as inference, and the prior's reserve (2026-10-16, not adjudicated)
 
 Two readings raised after the build, recorded for a later design round; neither changes S3.

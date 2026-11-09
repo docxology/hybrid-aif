@@ -287,43 +287,85 @@ System with no free control nodes); a System that already has emissions is refus
 mirror, then the variables lowered to tables (the posterior mean, or a draw with `param_key`) as
 today, then the unchanged forward process, so it samples bitwise what it samples now.
 
-**The bindings.** Three kinds, replacing `ObservationLink`, `SiblingRead`, `Wire`,
-`ActionControl`, `SharedParameter` and `BoundaryPrior`:
+**The bindings: identify, link, emit** (ruled by Alex 2026-11-08, superseding the three kinds of
+2026-11-07 that chunk A built; chunk B rewrites to this). The graphical model of the whole has
+variables and factors, and a factor sends messages both ways, always, with one exception: a variable
+that is a *transducer*, one whose value is determined solely by its external source, absorbs the
+messages sent into it. A modality identified with another component's out-port is such a variable:
+on the receiving side it is clamped to what the source realised, so its likelihood's top-down
+message into it is computed but changes nothing, while the same likelihood's upward message is what
+inference uses. A likelihood whose child is a latent sends top-down messages as any factor does (a
+predictive-coding hierarchy; the amortized recognition map is a piece of the process playing the
+role of an approximate posterior). So flow along an identified variable is one way exactly when the
+receiving variable is a transducer, which is ordinary message passing with observed variables, and
+nothing in the vocabulary names a direction or sorts factors into kinds (Alex's refinement of
+2026-11-08, replacing an earlier wording in terms of process and model factors).
 
-- `Link(source, target, realise=None, kernel=None)`: an arc of the graphical model of the whole.
-  `source` is a node or a tuple of nodes. From a *realised* port (an action node or an emission) it
-  carries that port's realised value to a modality or to a control node's input: today's `Wire`, and
-  `ActionControl`'s same-step form, with no `realise` of its own, since the port is realised once by
-  its kernel (C13) and every link from it carries that value. From a state factor to a modality with
-  `realise` given it is a belief read, one way: the target's datum each round is the source's
-  posterior realised (`sample`, `mode` or `stats`, N8), through `kernel` where the source's space is
-  not the target's (the grid over a continuous position read as a cell): today's `SiblingRead`. From
-  state factors to a modality with no `realise` it is a structural arc, the sources the modality's
-  parents with messages both ways: today's `ObservationLink`; a `kernel` without `realise` is
-  refused, so the two cannot be confused. From a state factor to a control node's latent it is the
-  relay form of `ActionControl`. From factors to `"terminal:<factor>"` it is today's
-  `TargetEmission`.
-- `Identify(a, b)`: two parameter variables become one, keeping `a`'s declaration (today's
-  `SharedParameter`). Today's `ActionControl` is not an identification but a `Link` from the
-  driver's action node to the driven control node's input modality; its relay form is a
-  structural `Link` from a state factor.
-- `Clamp(node, level)`: a control latent no planner chooses and no link drives, clamped at a
-  constant: a level, or a probability vector averaged over once at merge time (today's
-  `BoundaryPrior`, and `couple`'s `fixed`). A realised link from a constant, given its own name
-  since a literal source reads differently from a node (Alex, 2026-11-07).
+- `Identify(a, b)`: two variables are one. Always two-way, by the nature of identity; what flows is
+  decided by whether the receiving variable is a transducer. Identify an action node or an emission
+  of one component with a modality or a control node of another and the flow is one way, since the
+  receiving variable is a transducer: a coupling. Identify two latents, or two parameter variables,
+  inside one model and the flow is both ways: a merge. Today's `SharedParameter`, `Wire`, and the
+  same-step `ActionControl` (from the driver's *action node*, realised, to the driven control node:
+  the driven regime) are all this. Identification collapses the two names to one variable, named by
+  `a`, as it already does for parameter variables: every factor that read `b` reads `a`, the
+  document writes the variable once, the MDL counts it once, and no alias survives; a leaf's view
+  maps the variable back to the leaf's own local name as it strips prefixes today (Alex,
+  2026-11-08). Designers should give the two ends the same local name; the identification joins the
+  models at that node.
 
-`TargetEmission` folds into `Link` with the target spelled `"terminal:<factor>"` (chunk A design,
-2026-11-07). Three times exist in the language: a
-transition reads the previous round by definition, a read is one round late, everything else is
-same-round (a terminal target at the plan's horizon, not at a lag).
+- `realise` lives on the factor that generates the variable, nowhere else: an action node's actuator
+  kernel, an emission's `Emission(parents, realise="sample")` (the declaration is a noun,
+  `Emission`, replacing chunk A's `Emit`) (`sample`, `mode`, `stats`, N8). A belief read, the
+  scheduler reading the rover's position through the cell indicator, is an emission of the rover
+  from its belief over position with the indicator as the kernel, realised by `mode`, identified
+  with the scheduler's modality (chunk A's `emit` from a belief). `Link(source, target, realise,
+  kernel)` as chunk A built it stays as sugar for exactly that pair of declarations, and is
+  documented as sugar. An emission is realised from whatever its owner carries, a point for a
+  sampled leaf and a belief for a planning leaf, so nothing declares which; the regime decides.
 
-**`merge` and `couple`.** `merge(subsystems, params, bindings) -> (System, SystemParams)` as
-today, taking the three kinds. `couple(components, links, fixed) -> (System, SystemParams)` is
-`merge` specialised to separate particles: every binding is a `Link` from a realised port (an
-action node or an emission) to a modality or a control node's input; a belief read, a structural
-link or an identification is refused, naming `merge`. Both
-return a merged System with the `subsystems` metadata, so a coupling can be merged, coupled,
-described, priced and nested like any System. `Wiring` goes.
+- `Link(parents, potential)`: a structural edge inside one model, a potential gaining parents
+  (today's `ObservationLink`, the relay form of `ActionControl` from a state factor to a control
+  node's latent, and `TargetEmission` with the potential spelled `"terminal:<factor>"`). Not
+  sameness of variables: an edge. Two-way, since it lives inside one model.
+
+- `Clamp(node, level)`: a control latent no planner chooses and nothing is identified with, held at
+  a constant: a level, or a probability vector averaged over once at merge time (today's
+  `BoundaryPrior`, and `couple`'s `fixed`). An identification with a constant, given its own name
+  since a literal reads differently from a variable.
+
+Three times exist in the language: a transition reads the previous round by definition, an
+identified port is read as it stands at the reader's turn under the orders (section "The orders"),
+everything else is same-round (a terminal target at the plan's horizon, not at a lag).
+
+**`merge` and `couple`.** `merge(subsystems, params, bindings) -> (System, SystemParams)` is the
+splice (namespacing, concatenation of tables, bindings rewritten into the graph) with the three
+kinds above, and nothing more: it builds no joint planner. `couple(components, bindings, fixed) ->
+(System, SystemParams)` is `merge` restricted to identifications of an out-port of one component
+with an in-port of another, plus `Clamp`s for `fixed`; a structural `Link` or an identification of
+latents or variables is refused, naming `merge`. Both return a System with the `subsystems`
+metadata, which records the partition (whose internal states are whose: the fact a planner's view
+and `describe`'s blankets are read from), so a coupling can be merged, coupled, described, priced
+and nested like any System. `Wiring` goes. Planner-level configuration (horizon, precision, habit,
+durations, planner fields) is per component and travels in the metadata; a joint planner over
+several components exists only where elected, by a step on a non-leaf node in `run`
+(`steps={"agent": plan()}` plans the merged composite as one mind and composes the habits over the
+joint policy set; `steps={"agent.mission": plan(), "agent.rover": plan()}` plans the views), with
+its configuration from the election's arguments, the parts' values where they agree, and a refusal
+where they disagree and nothing was given. The `_agree` helper and the one-durations rule go: a
+joint planner over parts whose durations differ is refused at election, not at merge. The same-step
+identification `merge` performs today hands the driven node the sender's intended level, before its
+kernel; `couple` hands the realised one, after it; C13 says the realised value crosses, so both
+converge on the realised value. A `mirror` of a merged composite can be taken per component, each
+part a leaf with the cross-component parents of its transitions as driven inputs, which is how a
+self-modelled composite keeps within-round freshness under sequential and async (the arena of the
+driver tests); and a plain convenience couples any System with its own mirror, with no special
+properties. The joint planner's view of a node is built by `joint_planner(system, params, node,
+**config)`, which a step on a non-leaf node calls; electing one over a node that contains a leaf
+stepped by `sample()` is refused, since the joint view would take a process's tables as part of its
+model (a self-model is a model leaf and elects cleanly). A coupled leaf's view is its own System
+unsliced, so it accepts recognition and scoring as a wired mind does today; the splice carries them
+per leaf. The MDL's graph code counts variables, not names (Alex, 2026-11-08).
 
 **`run`.** `run(system, params, ticks, key, steps, clocks=None, tick_order="simultaneous",
 carries=None, record_carries=False) -> Trajectory`, over a closed System. `steps` names every
@@ -394,20 +436,22 @@ cs, cp = merge(
     subsystems={"mission": ms, "rover": rs},
     params={"mission": mp, "rover": rp},
     bindings=[
-        Link("mission.a_option", "rover.u_opt"),      # the option's action node drives u_opt
+        Identify("mission.a_option", "rover.u_opt"),  # the option, realised, drives u_opt
         Identify("rover.field", "mission.field"),
         Link(source="rover.x", target="mission.cell_obs", kernel=grid, realise="mode"),
+        # sugar: an emission of the rover from its belief over x through the cell indicator,
+        # realised by mode, identified with the scheduler's cell modality
     ],
 )
 ws, wp = wd.world_system()   # position, terrain, energy; v in; fix, img, gauge out
 system, params = couple(
     components={"agent": (cs, cp), "world": (ws, wp)},
-    links=[
-        Link("agent.rover.a_v", "world.v"),
-        Link("world.fix", "agent.rover.fix"),
-        Link("world.img", "agent.rover.img"),
-        Link("world.gauge", "agent.rover.gauge"),
-        Link("world.gauge", "agent.mission.gauge"),
+    bindings=[
+        Identify("agent.rover.a_v", "world.v"),
+        Identify("world.fix", "agent.rover.fix"),
+        Identify("world.img", "agent.rover.img"),
+        Identify("world.gauge", "agent.rover.gauge"),
+        Identify("world.gauge", "agent.mission.gauge"),
     ],
 )
 rec = run(
@@ -474,8 +518,9 @@ the reader can see, or inlined.
 
 **Open for Alex.**
 
-- `Link`, `Identify`, `Clamp` as the binding kinds (ruled 2026-11-07), and `TargetEmission`'s
-  fate in the build.
+- The binding kinds: `Identify` (two-way sameness; one-way flow follows from factor roles), the
+  structural `Link`, `Emit` with the realisation, `Clamp`; the realised `Link` as sugar (ruled
+  2026-11-08, replacing the three kinds of 2026-11-07).
 - `steps` naming every leaf component, with `plan()` and `sample()` as the default steps (revised
   2026-11-07 after Alex's questions; `planners=` dropped).
 - The key stream changes; the acceptance above replaces bitwise.

@@ -65,7 +65,7 @@ from hybrid_aif.factors import (
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives import registry
 from hybrid_aif.planning.enumerate import enumerate_policies
-from hybrid_aif.reads import REALISATIONS, Emit, Read, as_read, check_declaration
+from hybrid_aif.reads import REALISATIONS, Emission
 from hybrid_aif.system import _KEY_KINDS, Subsystem, System, SystemParams, _is_pattern
 
 SEPARATOR = NAMESPACE_SEPARATOR
@@ -103,18 +103,24 @@ class Link(NamedTuple):
       parents included, in its likelihood's axis order, with messages both ways. Arity and
       per-axis support must match the declared likelihood's parent axes. One link per modality;
     - **from one state factor to a modality, with ``realise``** (``Link("rover.x",
-      "mission.cell_obs", realise="mode", kernel=grid)``): a belief read, one way. The modality's
-      datum each round is the source's posterior of the previous round, pushed through ``kernel``
-      (the identity when ``None``, or a :class:`~hybrid_aif.cells.Grid`, the indicator of its cells
-      over a continuous source) and realised by ``realise`` (``"sample"``, ``"mode"`` or
-      ``"stats"``; see :class:`~hybrid_aif.reads.Read`), which a belief read must give. The
-      composite carries it as a :class:`~hybrid_aif.reads.Read` in ``System.lagged``;
+      "mission.cell_obs", realise="mode", kernel=grid)``): a belief read, one way. It is the pair
+      of an emission and an observation: the source's component gains the emission
+      ``rover.cell_obs`` (named by the modality's local name under the source's component),
+      ``Emission(("rover.x",), realise, kernel)`` with ``kernel="identity"`` when ``kernel`` is
+      ``None`` or ``"identity"``, or a :class:`~hybrid_aif.cells.Grid`, the indicator of its cells
+      over a continuous source, and the composite's ``observes`` maps the modality to it
+      (``{"mission.cell_obs": "rover.cell_obs"}``). A second read of the same source with the same
+      kernel and realisation under the same name reuses the emission (one out-port, many
+      in-ports); a name that is already another variable of the composite is refused. The
+      modality's datum each round is the emission
+      realised from the source's posterior of the previous round (``"sample"``, ``"mode"`` or
+      ``"stats"``; see :class:`~hybrid_aif.reads.Emission`), which a belief read must give.
       :func:`subsystem` leaves the modality an ordinary observation of the reading component's
       view, and :func:`~hybrid_aif.composition.driver.run` supplies it each round from the source
       component's carry. The source and the modality lie in different components (a read inside
-      one is ``System.lagged``). A level count that is not the source's under the identity kernel,
-      nor the grid's cell count under an indicator, a categorical modality reading a continuous
-      source with no grid and ``"stats"`` of a Gaussian source are refused;
+      one is an emission and ``System.observes``). A level count that is not the source's under
+      the identity kernel, nor the grid's cell count under an indicator, a categorical modality
+      reading a continuous source with no grid and ``"stats"`` of a Gaussian source are refused;
     - **from state factors to ``"terminal:<factor>"``** (``Link(("a.x", "b.y"), "terminal:a.z")``,
       the spelling ``terminal:agent.z`` under a prefix): the terminal target of the factor, already
       a ``ConditionalCategorical`` in the component's ``terminal_targets``, resolved against the
@@ -175,8 +181,8 @@ Binding = Link | Identify | Clamp
 
 
 class _BeliefRead(NamedTuple):
-    """A belief read a :class:`Link` declares, in the field order of
-    :class:`~hybrid_aif.reads.Read`."""
+    """A belief read a :class:`Link` declares: the reading modality, the source state factor, the
+    kernel (``"identity"`` or a :class:`~hybrid_aif.cells.Grid`) and the realisation."""
 
     modality: str
     source: str
@@ -610,16 +616,19 @@ def merge(
       under the component's prefix, the control node following a same-step identification to the
       driver's; a node a relay or ``Clamp`` removed raises. A view carries the entries of
       its own tables and raises where the node is another component's.
-    - ``lagged`` (a modality's datum read from a source's posterior of the previous round, a
-      pair or a :class:`~hybrid_aif.reads.Read`) carries under the component's prefix, the
-      source following its name and the kernel and realisation unchanged; a
-      :class:`Link` with a ``realise`` adds a read whose source is in another component. A
-      component whose every binding across its boundary is such a belief read or a link from an
-      action node into a control node is nested (:func:`nested`). An action node a read names
-      must stay one its component chooses. Design: nesting-and-coupling.md N2, N3.
+    - ``observes`` (a slot's variable: a modality that observes an emission or an action node of
+      its component, which is how a component reads its own belief or its previous action)
+      carries under the component's prefix, slot and variable alike, an action-node variable
+      following its node through a same-step identification; a :class:`Link` with a ``realise``
+      adds an emission to the source's component and a modality's entry, whose variable is in
+      another component. A component whose every binding across its boundary is such a belief
+      read or a link from an action node into a control node is nested (:func:`nested`). An
+      action node an entry names must stay one its component chooses. Design:
+      nesting-and-coupling.md N2, N3.
     - ``emissions`` (a component's outputs drawn from its state factors, with their kernels in
-      ``params.emission``) carry under the component's prefix, a control parent following its node
-      through a same-step identification; a parent a relay or a ``Clamp`` removed raises.
+      ``params.emission`` or declared static) carry under the component's prefix, a control
+      parent following its node through a same-step identification; a parent a relay or a
+      ``Clamp`` removed raises.
     - ``params.durations`` carries under the component's prefix; a round has one clock, so two
       components that both declare durations, or a binding that removes the node carrying them,
       raise (design: step-durations.md T1).
@@ -686,8 +695,8 @@ def merge(
     durations: dict[str, object] = {}
     parameters: dict[str, object] = {}  # the named parameter variables, by composite name
     reads: dict[tuple[str, int], str] = {}  # (slot, composite index) -> the variable it reads
-    own_reads: list[tuple[str, System, object]] = []  # a component's lagged entries
-    emissions: list[tuple[str, Emit]] = []  # composite names, parents namespaced
+    own_reads: list[tuple[str, System, tuple[str, str]]] = []  # a component's observes entries
+    emissions: list[tuple[str, Emission]] = []  # composite names, parents namespaced
     emission_kernels: dict[str, object] = {}  # composite name -> kernel (or its reference)
     emission_reads: dict[str, str] = {}  # composite name -> the parameter variable it reads
 
@@ -720,11 +729,11 @@ def merge(
                 f"likelihood(s) for {len(system._B)} factor(s) and "
                 f"{len(system.A_deps)} modality/ies — the pair is mismatched"
             )
-        if set(p.emission) != set(system._emission_names):
+        if set(p.emission) != {n for n, e in system.emissions if e.kernel is None}:
             raise ValueError(
                 f"subsystem {name!r}: params hold emission kernels for {sorted(p.emission)} and "
-                f"the System declares the emissions {list(system._emission_names)}: the pair is "
-                "mismatched"
+                f"the System declares the emissions {list(system._emission_names)} (the ones "
+                "with kernel=None take a kernel in the params): the pair is mismatched"
             )
         table = system._table
         f_off, m_off, k_off = len(factor_names), len(modality_names), len(nodes)
@@ -775,9 +784,15 @@ def merge(
             emissions.append(
                 (
                     composite_name,
-                    Emit(tuple(f"{name}{SEPARATOR}{q}" for q in emit.parents), emit.realise),
+                    Emission(
+                        tuple(f"{name}{SEPARATOR}{q}" for q in emit.parents),
+                        emit.realise,
+                        emit.kernel,
+                    ),
                 )
             )
+            if emit.kernel is not None:
+                continue
             kernel = p.emission[emission]
             if isinstance(kernel, Parameter):
                 emission_reads[composite_name] = f"{name}{SEPARATOR}{kernel.name}"
@@ -812,7 +827,8 @@ def merge(
         terms.extend(namespaced_term(name, key) for key in system.terms)
         dims.extend((f"{name}{SEPARATOR}{factor}", names) for factor, names in system.dims)
         cells.extend((f"{name}{SEPARATOR}{factor}", grid) for factor, grid in system.cells)
-        own_reads.extend((name, system, entry) for entry in system.lagged)
+        for slot, variable in system.observes:
+            own_reads.append((name, system, (slot, variable)))
         readings.extend(
             (f"{name}{SEPARATOR}{table}", f"{name}{SEPARATOR}{node}")
             for table, node in system.readings
@@ -1055,9 +1071,9 @@ def merge(
                 crossing[entry].add(kind)
 
     sibling: list[_BeliefRead] = []
-    own_read_modalities = {
-        f"{name}{SEPARATOR}{as_read(entry).modality}" for name, _, entry in own_reads
-    }
+    belief_emissions: list[tuple[str, Emission]] = []  # the emissions a belief read declares
+    belief_observes: list[tuple[str, str]] = []  # and the modalities that observe them
+    own_read_modalities = {f"{name}{SEPARATOR}{slot}" for name, _, (slot, _) in own_reads}
     emission_names = {e for e, _ in emissions}
     action_to_node = {node.action: node.name for node in nodes}
     node_to_action = {node.name: node.action for node in nodes}
@@ -1198,8 +1214,8 @@ def merge(
                     raise ValueError(
                         f"{label}: the modality and the source are both in component "
                         f"{target.split(SEPARATOR)[0]!r}; a read inside one component is declared "
-                        "on that System, in System.lagged (a belief read crosses a component "
-                        "boundary)"
+                        "on that System, as an emission and System.observes (a belief read "
+                        "crosses a component boundary)"
                         + (
                             "; for components of an inner composite, declare the link in the "
                             "inner merge"
@@ -1207,13 +1223,43 @@ def merge(
                             else ""
                         )
                     )
-                belief = _BeliefRead(target, source, binding.kernel or "identity", binding.realise)
-                check_declaration(Read(*belief))
+                kernel = binding.kernel
+                if not (kernel is None or kernel == "identity" or isinstance(kernel, Grid)):
+                    raise ValueError(
+                        f"{label}: kernel must be 'identity', None or a Grid, got {kernel!r}"
+                    )
+                belief = _BeliefRead(target, source, kernel or "identity", binding.realise)
                 if target in {*own_read_modalities, *(b.modality for b in sibling)}:
                     raise ValueError(
-                        f"{label}: the modality already has a read (its component's "
-                        "System.lagged or another belief read); a modality's datum has one source"
+                        f"{label}: the modality already observes a variable (its component's "
+                        "System.observes or another belief read); a modality's datum has one "
+                        "source"
                     )
+                tail = target.rpartition(SEPARATOR)[2]
+                emitted = f"{source.rpartition(SEPARATOR)[0]}{SEPARATOR}{tail}"
+                declared = Emission((source,), binding.realise, kernel or "identity")
+                made = dict(belief_emissions)
+                taken = (
+                    emission_names
+                    | set(factor_index)
+                    | set(modality_index)
+                    | set(action_to_node)
+                    | set(node_index)
+                )
+                if emitted in made and made[emitted] == declared:
+                    pass  # one out-port, many in-ports: the readers share the emission
+                elif emitted in taken:
+                    raise ValueError(
+                        f"{label}: the belief read is an emission of the source's component named "
+                        f"{emitted!r} (the modality's name under the source's component), and "
+                        "the composite already has a variable of that name with another source, "
+                        "kernel or realisation; name the reading modality otherwise, or declare "
+                        "the emission on the source's System under a name of its own"
+                    )
+                else:
+                    emission_names.add(emitted)
+                    belief_emissions.append((emitted, declared))
+                belief_observes.append((target, emitted))
                 cross("blanket", target, source)
                 sibling.append(belief)
                 continue
@@ -1344,7 +1390,7 @@ def merge(
 
     #  an emission's control parent follows its node through a same-step identification; a node a
     #  relay or a Clamp removed leaves the emission nothing to read
-    composite_emissions: list[tuple[str, Emit]] = []
+    composite_emissions: list[tuple[str, Emission]] = []
     for emission, emit in emissions:
         resolved = []
         for q in emit.parents:
@@ -1371,17 +1417,18 @@ def merge(
                 f"merge: emission {emission!r} reads one control node twice after its nodes were "
                 "identified; its parents must stay distinct"
             )
-        composite_emissions.append((emission, Emit(tuple(resolved), emit.realise)))
+        composite_emissions.append((emission, Emission(tuple(resolved), emit.realise, emit.kernel)))
+    composite_emissions.extend(belief_emissions)
 
-    #  every component's own lagged entries under its prefix (an action source follows its node
-    #  through a same-step identification, to a node the component still chooses), then the
-    #  sibling reads
-    lagged_out: list[object] = []
-    for name, system, entry in own_reads:
-        read, prefix = as_read(entry), f"{name}{SEPARATOR}"
-        source = prefix + read.source
-        if read.source not in system._table.state_names:
-            node = next(n for n in nodes if n.action == source)
+    #  every component's own observes entries under its prefix (an action variable follows its
+    #  node through a same-step identification, to a node the component still chooses), then the
+    #  belief reads' entries
+    observes_out: list[tuple[str, str]] = []
+    for name, system, (slot, variable) in own_reads:
+        prefix = f"{name}{SEPARATOR}"
+        target = prefix + variable
+        if variable in (system.action_names or ()):
+            node = next(n for n in nodes if n.action == target)
             final = nodes[node_index[resolve(node.name)]]
             if not final.live or not final.name.startswith(prefix):
                 gone = (
@@ -1390,18 +1437,13 @@ def merge(
                     else f"{final.name!r}, another component's"
                 )
                 raise ValueError(
-                    f"merge: modality {prefix + read.modality!r} reads the action node {source!r} "
-                    f"in System.lagged, whose control node {node.name!r} is {gone} node; a read "
-                    "of an action node stays inside the component that chooses it"
+                    f"merge: {prefix + slot!r} observes the action node {target!r} in "
+                    f"System.observes, whose control node {node.name!r} is {gone} node; an "
+                    "observation of an action node stays inside the component that chooses it"
                 )
-            source = final.action
-        modality = prefix + read.modality
-        lagged_out.append(
-            Read(modality, source, read.kernel, read.realise)
-            if isinstance(entry, Read)
-            else (modality, source)
-        )
-    lagged_out.extend(Read(*binding) for binding in sibling)
+            target = final.action
+        observes_out.append((prefix + slot, target))
+    observes_out.extend(belief_observes)
 
     #  an observed action node, held as -(node + 1), takes its column among the live nodes: the
     #  composite's action node k sits at len(B_deps) + k
@@ -1666,7 +1708,7 @@ def merge(
         dims=tuple(dims),
         cells=tuple(cells),
         readings=tuple(pooled_over),
-        lagged=tuple(lagged_out),
+        observes=tuple(observes_out),
         emissions=tuple(composite_emissions),
         recognition=tuple(recognition_decl) or None,
         external_inputs=tuple(external_inputs),
@@ -1701,6 +1743,7 @@ def merge(
             if emission in emission_reads
             else emission_kernels[emission]
             for emission, _ in composite_emissions
+            if emission in emission_reads or emission in emission_kernels
         },
         actuator={nodes[k].action: nodes[k].kernel for k in live if nodes[k].kernel is not None},
         durations=durations,
@@ -2119,8 +2162,9 @@ def subsystem(
     composite's, and raises otherwise.
 
     A view is one component's side of one particle: the neighbours it models are stubs, not other
-    minds' beliefs. A modality that reads a state factor of this component (``System.lagged``)
-    keeps its read; one that reads another component's (a belief :class:`Link`) is left an
+    minds' beliefs. A modality that observes an emission or an action node of this component
+    (``System.observes``) keeps its entry; one that observes another component's (a belief
+    :class:`Link`) is left an
     ordinary observation, which :func:`~hybrid_aif.composition.driver.run` supplies each round
     from the source component's carry (``Subsystem.reads``).
 
@@ -2295,24 +2339,21 @@ def subsystem(
         kept = tuple(p for p in c_parents if p not in absent)
         if kept:
             C_deps.append((key, kept))
-    #  a read whose source this component holds stays on the view; a read of a sibling's belief
-    #  leaves the modality an ordinary observation, which the driver supplies from the
-    #  sibling's carry (Subsystem.reads)
-    own_factors = {c_facs[f] for f in own}
-    view_lagged = []
-    for entry in composite.lagged:
-        read = as_read(entry)
-        if read.modality not in set(view_mods):
+    #  an observation of a variable this component generates (its own emission, or an action
+    #  node it chooses) stays on the view; an observation of a sibling's emission leaves the
+    #  modality an ordinary observation, which the driver supplies from the sibling's carry
+    #  (Subsystem.reads)
+    view_observes = []
+    held_emissions = {e for e, _ in view_emissions}
+    for slot, variable in composite.observes:
+        if slot not in set(view_mods):
             continue
-        if read.source in c_facs:
-            if read.source in own_factors:
-                view_lagged.append(entry)
-        elif read.source in set(view_actions):
-            view_lagged.append(entry)
-        else:
+        if variable in held_emissions or variable in set(view_actions):
+            view_observes.append((slot, variable))
+        elif variable in set(composite.action_names):
             raise NotImplementedError(
-                f"modality {read.modality!r} of the view of {name!r} reads the action node "
-                f"{read.source!r}, which another component chooses; a view reads the action "
+                f"modality {slot!r} of the view of {name!r} observes the action node "
+                f"{variable!r}, which another component chooses; a view observes the action "
                 "nodes it chooses"
             )
     prefix = f"{name}{SEPARATOR}"
@@ -2327,14 +2368,14 @@ def subsystem(
     emission_homes = {
         params.emission[e].name
         for e, _ in view_emissions
-        if isinstance(params.emission[e], Parameter)
+        if e in params.emission and isinstance(params.emission[e], Parameter)
     }
     view_params = SystemParams(
         parameters={
             home: params.parameters[home]
             for home in dict.fromkeys([*(h for _, _, h in view_reads), *sorted(emission_homes)])
         },
-        emission={e: params.emission[e] for e, _ in view_emissions},
+        emission={e: params.emission[e] for e, _ in view_emissions if e in params.emission},
         references=tuple(sorted(view_reads)),
         recognition={e.variable: params.recognition[e.variable] for e in recognition},
         transition=tuple(transition),
@@ -2379,7 +2420,7 @@ def subsystem(
         dims=tuple((factor, names) for factor, names in composite.dims if factor in view_facs),
         cells=tuple((factor, grid) for factor, grid in composite.cells if factor in view_facs),
         readings=tuple(view_readings),
-        lagged=tuple(view_lagged),
+        observes=tuple(view_observes),
         emissions=tuple(view_emissions),
         subsystems=_view_metadata(
             composite,

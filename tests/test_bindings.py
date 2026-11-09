@@ -14,12 +14,12 @@ import jax.numpy as jnp
 import pytest
 
 import hybrid_aif.composition as composition
-from hybrid_aif import ConditionalCategorical, Grid, Read
+from hybrid_aif import ConditionalCategorical, Grid
 from hybrid_aif.composition import Clamp, Identify, Link, merge, nested, subsystem
-from hybrid_aif.reads import Emit
+from hybrid_aif.reads import Emission
 from tests.test_emissions import world as emitting_world
 from tests.test_merge import DRIVE, OBSERVATION_BINDINGS, agent_and_world, merged
-from tests.test_sibling_read import READ, SOURCE, _composite, _rover, _scheduler
+from tests.test_sibling_read import EMITTED, READ, SOURCE, _composite, _rover, _scheduler
 
 
 def test_the_old_binding_names_are_gone():
@@ -182,8 +182,8 @@ def test_a_structural_link_refuses_a_wrong_arity_a_wrong_support_and_a_kernel():
 
 def test_a_link_with_a_realise_is_a_belief_read():
     composite, _ = _composite()
-    (read,) = composite.lagged
-    assert read == Read(READ, SOURCE, composition_grid(), "mode")
+    assert composite.observes == ((READ, EMITTED),)
+    assert dict(composite.emissions)[EMITTED] == Emission((SOURCE,), "mode", composition_grid())
     assert dict(composite.subsystems)["mission"].reads == (
         (READ, SOURCE, composition_grid(), "mode"),
     )
@@ -203,16 +203,18 @@ def test_a_belief_read_without_a_kernel_reads_through_the_identity():
         {"rover": pr, "mission": ps},
         [Link("rover.x", "mission.cell_obs", realise="mode", kernel=composition_grid())],
     )
-    assert composite.lagged[0].kernel == composition_grid()
+    assert dict(composite.emissions)[EMITTED].kernel == composition_grid()
     sched, sp = _scheduler()
-    rover, rp = _rover(shared=True)
+    sched = dataclasses.replace(sched, modality_names=("seen",))
+    sp = dataclasses.replace(sp, likelihood={"seen": sp.likelihood["cell_obs"]})
     categorical, cp = _scheduler(shared=True)
     composite, _ = merge(
         {"a": sched, "b": categorical},
         {"a": sp, "b": cp},
         [Link("a.visit", "b.cell_obs", realise="stats")],
     )
-    assert composite.lagged[0].kernel == "identity" and composite.lagged[0].realise == "stats"
+    (emission,) = (e for n, e in composite.emissions if n == "a.cell_obs")
+    assert emission == Emission(("a.visit",), "stats", "identity")
 
 
 def test_a_belief_read_refusals_are_named():
@@ -224,7 +226,7 @@ def test_a_belief_read_refusals_are_named():
         merge(subs, params, [Link((SOURCE, SOURCE), READ, realise="mode")])
     with pytest.raises(ValueError, match="the source is unknown"):
         merge(subs, params, [Link("mission.u_nothing", READ, realise="mode")])
-    with pytest.raises(ValueError, match="a modality's datum has one source"):
+    with pytest.raises(ValueError, match="already observes a variable"):
         merge(
             subs,
             params,
@@ -240,7 +242,7 @@ def test_a_belief_read_refusals_are_named():
 def test_a_subsystem_view_leaves_a_read_modality_an_observation():
     composite, params = _composite()
     view, _ = subsystem(composite, params, "mission")
-    assert view.lagged == ()
+    assert view.observes == ()
 
 
 # ----------------------------------------------------------------------- the terminal link
@@ -347,7 +349,7 @@ def test_a_link_between_participants_is_one_port_to_one_port():
     emitter, eparams = emitting_world()
     with pytest.raises(TypeError, match="pass Link"):
         couple(minds={}, processes={}, links=[("a.b", "c.d")])
-    assert Emit  # a link's source may name an emission once couple takes systems (chunk B)
+    assert Emission  # a link's source may name an emission once couple takes systems (chunk B)
 
 
 def test_terminal_is_a_key_kind_of_links_only_and_no_epistemic_selector():

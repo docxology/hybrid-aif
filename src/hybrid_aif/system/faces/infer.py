@@ -4,12 +4,10 @@ and ``update_empirical_prior``."""
 import math
 from collections.abc import Mapping
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from hybrid_aif.controls import LEVEL
 from hybrid_aif.distributions import Categorical, MixtureGaussian, MLPConditional
 from hybrid_aif.factors import LGObservation, TabularObservation
 from hybrid_aif.inference import amortized as _amortized
@@ -30,7 +28,6 @@ from hybrid_aif.inference.mixture_filter import (
 from hybrid_aif.objectives import continuous as _continuous
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives.discrete import expected_states
-from hybrid_aif.reads import modality_key, read_datum
 from hybrid_aif.system import keyed, validation
 from hybrid_aif.system.core import Belief, SystemParams
 
@@ -338,8 +335,6 @@ def infer_states(
     present: Mapping[str, bool | Array] | None = None,
     support_floor: float = SUPPORT_FLOOR,
     key: Array | None = None,
-    previous: Mapping[str, Belief | Array] | None = None,
-    read_key: Array | None = None,
 ) -> tuple[dict[str, Belief], InferenceDetail | None]:
     params = system._params_in(params, "infer_states")
     validation._validate_cells(system, params, system._facs)
@@ -347,29 +342,25 @@ def infer_states(
     positional_priors = (
         None if priors is None else system._beliefs_in(params, priors, "infer_states")
     )
-    prev_beliefs, prev_action = _previous_in(system, params, previous, "infer_states")
     sensed = None
     if system._sensed_columns:
-        sensed = system._sensed_priors(params, priors, "infer_states", prev_action)
+        sensed = system._sensed_priors(params, priors, "infer_states")
         if positional_priors is None:
             positional_priors = system._initial_priors(params, "infer_states")
         positional_priors = (*positional_priors, *sensed)
-    observations_in = keyed.observations_in(
-        names, system._with_lagged(observations), "infer_states"
-    )
+    observations_in = keyed.observations_in(names, observations, "infer_states")
     validation._check_observations(names.modalities, params, observations_in, "infer_states")
+    flags = None if present is None else keyed.present_in(names, present, "infer_states")
     beliefs, info = system._infer_states(
         params,
         observations_in,
         positional_priors,
         detail,
         externals,
-        None if present is None else keyed.present_in(names, present, "infer_states"),
+        _absent_unsupplied(system, observations_in, flags),
         support_floor,
         key,
         "infer_states",
-        previous=(prev_beliefs, prev_action),
-        read_key=read_key,
     )
     posteriors = None
     if sensed is not None:
@@ -392,26 +383,10 @@ def _infer_states(
     support_floor: float = SUPPORT_FLOOR,
     key: Array | None = None,
     face: str = "this face",
-    previous: tuple | None = None,
-    read_key: Array | None = None,
 ) -> tuple[tuple[Belief, ...], InferenceDetail | None]:
     """:meth:`infer_states` over positional tuples; ``present`` holds one flag per modality,
-    or is a ``(M,)`` bool array; ``previous`` is ``(prev_beliefs, prev_action, first)``,
-    the carry the lagged modalities read (``first`` a traced flag for a tick with no
-    carry)."""
+    or is a ``(M,)`` bool array."""
     params = system._p(params)
-    if system.lagged:
-        prev_beliefs, prev_action, first = (
-            (None, None, False) if previous is None else (*previous, False)[:3]
-        )
-        observations, present = system._fill_lagged(
-            observations,
-            system._present(present, len(params.likelihood)),
-            prev_beliefs,
-            prev_action,
-            first,
-            read_key,
-        )
     beliefs, info = _infer_states_expected(
         system, params, observations, priors, detail, externals, present, support_floor, face
     )
@@ -876,113 +851,24 @@ def _infer_states_expected(
     return tuple(out), _detail()
 
 
-def _previous_in(
-    system, params: SystemParams, previous: Mapping[str, Belief | Array] | None, face: str
-) -> tuple[tuple[Belief | None, ...] | None, tuple[Array | None, ...] | None]:
-    """A keyed ``previous`` as ``(prev_beliefs, prev_action)``: one belief per state factor
-    (``None`` where absent) and one entry per action node (``None`` where ``previous`` does not
-    name it), or ``None`` without any entry. A discrete node's entry is an int32 level, checked
-    against the node's level count (eagerly when concrete, by ``eqx.error_if`` when traced); a
-    continuous node's entry is its float value."""
-    if previous is None:
-        return None, None
-    facs = system._facs[: len(system.B_deps)]
-    actions = tuple(system.action_names or ())
-    unknown = sorted(set(previous) - set(facs) - set(actions))
-    if unknown:
-        raise ValueError(
-            f"{face}: previous names {unknown}, which are neither state factors nor action nodes"
-        )
-    beliefs = tuple(previous.get(name) for name in facs)
-    if not any(name in previous for name in actions):
-        return beliefs, None
-    space = system._space(params)
-    entries: list[Array | None] = []
-    for k, name in enumerate(actions):
-        if name not in previous:
-            entries.append(None)
-            continue
-        if space.kinds[k] != LEVEL:
-            entries.append(jnp.asarray(previous[name], float))
-            continue
-        given, count = jnp.asarray(previous[name]), space.levels[k]
-        if not jnp.issubdtype(given.dtype, jnp.integer):
-            raise ValueError(
-                f"{face}: previous[{name!r}] is {previous[name]!r}, and action node {name!r} "
-                f"takes a level: pass an integer in [0, {count})"
-            )
-        level = given.astype(jnp.int32)
-        bad = (level < 0) | (level >= count)
-        message = (
-            f"{face}: previous[{name!r}] is a level outside action node {name!r}'s "
-            f"{count} level(s); pass an integer in [0, {count})"
-        )
-        if isinstance(level, jax.core.Tracer):
-            level = eqx.error_if(level, jnp.any(bad), message)
-        elif bool(jnp.any(bad)):
-            raise ValueError(message)
-        entries.append(level)
-    return beliefs, tuple(entries)
-
-
-def _fill_lagged(
-    system,
-    observations: tuple[Array | None, ...],
-    present: tuple[bool | Array, ...] | None,
-    prev_beliefs: tuple[Belief | None, ...] | None,
-    prev_action: Array | tuple[Array | None, ...] | None,
-    first: Array | bool = False,
-    read_key: Array | None = None,
-) -> tuple[tuple[Array | None, ...], tuple[bool | Array, ...] | None]:
-    """The observations with every read modality's datum taken from its source's posterior of the
-    previous round (``prev_beliefs``), pushed through the kernel at the source and realised
-    (``sample``, ``mode`` or ``stats``), where none was given; the identity kernel with the pair
-    form's realisation is ``stats`` for a categorical source (its probability vector), ``mode``
-    for a Gaussian one (its mean) and the previous action's level for an action node (the entry
-    of a node ``prev_action`` does not name is absent, like a missing carry). A modality with
-    neither is absent, as is every lagged modality when ``first`` (a traced flag for the tick
-    with no carry). ``read_key`` seeds the draws of ``sample``
-    (:func:`hybrid_aif.reads.modality_key`); it is not the face's ``key``, which collapses the
-    posterior.
-
-    Design: nesting-and-coupling.md N3.
-    """
-    sources = system._lagged_reads
-    if not sources:
-        return observations, present
-    obs = list(observations)
-    flags = list(present) if present is not None else [True] * len(obs)
-    for m, (kind, index, read) in sources.items():
-        if obs[m] is not None:
-            continue
-        if kind == "factor":
-            q = None if prev_beliefs is None else prev_beliefs[index]
-            datum = (
-                None
-                if q is None
-                else read_datum(
-                    q,
-                    read.kernel,
-                    read.realise,
-                    None if read_key is None else modality_key(read_key, m),
-                    f"the read of modality {read.modality!r}",
-                )
-            )
-        else:
-            entry = None if prev_action is None else prev_action[index]
-            datum = None if entry is None else jnp.asarray(entry)
-        if datum is None:
-            obs[m], flags[m] = None, False
-            continue
-        obs[m] = datum
-        if first is not False:
-            flag = flags[m]
-            flags[m] = (
-                jnp.logical_not(first)
-                if flag is True
-                else jnp.logical_and(jnp.asarray(flag, bool), jnp.logical_not(first))
-            )
-    return tuple(obs), tuple(flags)
+def _absent_unsupplied(
+    system, observations: tuple, present: tuple[bool | Array, ...] | None
+) -> tuple[bool | Array, ...] | None:
+    """``present`` (one flag per modality, or ``None`` for all) with every modality that observes
+    a variable the System generates (an emission or an action node) and was given no datum
+    flagged absent: its slot is not clamped and learns nothing that tick."""
+    generated = set(system.action_names or ()) | set(system._emission_names)
+    unsupplied = [
+        m
+        for m, variable in enumerate(system._modality_variables)
+        if variable in generated and observations[m] is None
+    ]
+    if not unsupplied:
+        return present
+    flags = list(system._present(present, len(observations)) or [True] * len(observations))
+    for m in unsupplied:
+        flags[m] = False
+    return tuple(flags)
 
 
 def _present(

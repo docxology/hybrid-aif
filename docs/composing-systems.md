@@ -44,7 +44,8 @@ numeric leaf: it is hashable, closed over by `jit`, and patched with
 | `factor_names` | `tuple[str, ...]` | generated | One name per factor, in node order; the `epistemic`/`state_targets`/rate keys. `None` at construction fills in `factor_{i}`. No node may be named after a key's reserved first segment (`obs` or a slot word). |
 | `dims` | `tuple[tuple[str, tuple[str, ...]], ...]` | `()` | Names for a continuous state factor's dimensions, given as `{factor: (name, ...)}` and stored as pairs in factor order; `dict(system.dims)` to read. `epistemic` selects a dimension as `<factor>:<name>`; an undeclared factor's dimensions are `dim0`, `dim1`, … by position. One unique name per dimension, each a single key segment (no `:`, `.`, `*` or brackets); `dimN` may name position `N` only. |
 | `action_names` | `tuple[str, ...]` | from the sugar | One action node per control node, in `controls` order: the actuator channel, a child of its control node. A native declaration (`controls=`) names them, paired with the control nodes by position, both names free; the sugar names the pair `u_<f>` / `a_<f>`. A modality may observe an action node: `A_deps` names action node `k` as `len(B_deps) + k`. |
-| `emissions` | `tuple[tuple[str, Emit], ...]` | `()` | The outputs the System draws from its state factors, **by name**: `{"fix": ("x",), "img": Emit(("x", "terrain"), realise="mode")}` at construction (a tuple of parents is a draw), stored as `(name, Emit)` pairs in the order given. An emission is the action node of a state factor: its parents are state factors and control nodes (a control parent reads the node's realised level), its kernel is `SystemParams.emission[name]` (a likelihood of any family, in the parent order given) and its port type is read off that kernel as a modality's is. It has no node index: nothing in a model reads or scores it, so no `lagged` source, `C_deps` key or parent, `readings` entry, `branch_on` modality, target key or `epistemic` key may name it, and no inference, planning or learning face reads the field. `Emit.realise` is `"sample"` (a draw from the kernel), `"mode"` (its most probable level or mean) or `"stats"` (its probabilities, or its mean and covariance). `names.emissions` lists them; `emit` realises them. |
+| `emissions` | `tuple[tuple[str, Emission], ...]` | `()` | The outputs the System realises from its state factors, **by name**: `{"fix": ("x",), "img": Emission(("x", "terrain"), realise="mode"), "cell": Emission(("x",), realise="mode", kernel=GRID)}` at construction (a tuple of parents is a draw), stored as `(name, Emission)` pairs in the order given. An emission is the action node of a state factor: its parents are state factors and control nodes (a control parent reads the node's realised level), its kernel is `SystemParams.emission[name]` (a likelihood of any family, in the parent order given) or the static kernel the declaration names, and its port type is read off the kernel as a modality's is. `kernel=None` means the kernel is the entry `params.emission[name]`, which must be there; a static kernel is declared on the emission: `kernel="identity"` (the **identity** of its one state factor: a categorical factor's level, or under `stats` its probability vector; a continuous factor's mean under `mode` and a draw under `sample`, `stats` being deferred) or a `Grid` (an indicator over the cells of one continuous factor: from a point the cell it falls in, from a belief `cell_mass`, of which `mode` is the largest cell). It has no node index: nothing in a model scores it, so no `C_deps` key or parent, `readings` entry, `branch_on` modality, target key or `epistemic` key may name it; the one way a model reads it is `observes`. `Emission.realise` is `"sample"` (a draw from the kernel), `"mode"` (its most probable level or mean) or `"stats"` (its probabilities, or its mean and covariance). `names.emissions` lists them; `emit` realises them. |
+| `observes` | `tuple[tuple[str, str], ...]` | `()` | Which variable each slot observes, given as `{"cell_obs": "cell"}` and stored as `(slot, variable)` pairs. A slot is a modality (a control node driven by a variable is not yet supported) and a variable an action node or emission of this System; the slot's port type must equal the variable's. A slot the map does not name observes the variable of its own name and is an in-port (`ports`). The datum of an observed variable is an observation like any other: `infer_states`, `learn` and `replay` take observations **keyed by variable** (one datum feeds every slot observing it, a key naming a renamed slot is refused naming the variable), and the datum of a variable the System generates may be left out, the slot then being absent. An own-belief read is an emission of the System that one of its own modalities observes; `replay` and `run` realise the emissions after a round and feed them back as the next round's observation. |
 | `recognition` | `tuple[Recognition, ...] \| None` | `None` | Which variables are inferred by an amortized module and what each conditions on. Parameters live in `SystemParams.recognition`. |
 | `terms` | `tuple[str, ...]` | `()` | Which estimator-registry rows G carries beyond the infogain rows. Grammar: `<row>`, `<row>:<slot>:<name>`, `<row>:obs:<modality>`. The row segment is always literal. |
 | `scoring` | `tuple[tuple[str, object], ...]` | `()` | Structural half of the scoring slot, keyed by row name. `dict(system.scoring)` to read. |
@@ -549,7 +550,7 @@ Separate minds that exchange only action and sensation are joined by `couple`, n
 | an action node (`"agent.a_location"`) | a control node (`"world.u_location"`) | none | the driver's decision drives the node at the same step (below) |
 | a state factor (`"agent.location"`) | a control node | none | the relay: read a step later (below) |
 | state factors, one name or a tuple | a modality | none | structural: the modality's complete parent list, in its likelihood's axis order, one link per modality |
-| one state factor of another component | a modality | `"sample"`, `"mode"` or `"stats"` | a belief read (below); `kernel` is the identity when `None`, or a `Grid` |
+| one state factor of another component | a modality | `"sample"`, `"mode"` or `"stats"` | a belief read (below); `kernel` is the identity when `None` or `"identity"`, or a `Grid` |
 | state factors | `"terminal:<factor>"` | none | the factor's terminal target is conditioned on these factors (its `H_deps`) |
 
 A link from a realised port (an action node, an emission) takes no `realise`: the port is
@@ -635,22 +636,49 @@ table avoids adding its predictions to the counts.
 A binding that rewrites a reader's control axis (a `Clamp`, a relay) refuses a
 reader of a shared variable, since the table is not the reader's alone.
 
+**Observing a variable (`System.observes`).** A modality may observe
+a variable the System generates, an action node or an emission: `System(...,
+emissions={"cell": Emission(("x",), realise="mode", kernel=GRID)}, observes={"cell_obs":
+"cell"})` is a System that reads its own position belief as the cell it falls in. The variable
+set (state factors, control nodes, action nodes, emissions, and the modalities and control nodes
+`observes` does not name) is derived from the declarations. Four things read the map and nothing
+else does: `ports` (the slots the map names are no in-ports, and each emission is an out-port
+typed by its kernel: the identity's is its parent's, a `Grid`'s is a level per cell), the keyed
+faces (`infer_states`, `learn` and `replay` take observations and `present` flags keyed by
+variable, fan one datum out to every slot observing it, refuse a key that names a renamed slot,
+naming the variable, and take the datum of a variable the System generates as optional, the slot
+being absent when it is left out), `describe` and `build` (a likelihood record carries an
+`observes` entry where its variable differs from the slot's name, and an emission with a static
+kernel is a record of its kernel and realisation under the label `actuator`, with no family) and
+the description length (a slot the map names is no variable of its own, so a coupling of `A` and
+`B` with `k` identified variables counts `|A| + |B| - k`). Nothing computes the datum inside the
+faces: a hand loop realises the emissions after a round, `system.emit(fold_in(key, EMIT_TAG),
+params, {**beliefs, <control levels>})`, and passes them to the next round's `infer_states` and
+`learn`; `replay` does that after each tick and records them (`Replay.emitted`); the composite
+`run` takes them from the source's carry (`MindCarry.emitted`, filled by `agent_step`), one round
+behind. `mirror` drops every emission of the System (an out-port: the mirror models what the System
+senses) with the `observes` entries.
+
 **A belief read, `Link(source, modality, realise=..., kernel=...)`,** makes a modality of
 one component take its datum from a state factor of another: sensing inside one particle, with
-no action node. `realise` is required: a read has no default. The datum is the source's posterior of the previous round, pushed
-through `kernel` (the identity, or a `Grid`, the indicator of its cells over a continuous
-source) and realised by `realise` (`"sample"`, a draw; `"mode"`, the argmax of a categorical
-belief or the mean of a continuous one; `"stats"`, a categorical belief's probability vector, the
-filter's soft observation). The modality's own parents explain the datum, as for any
-observation. `merge` carries the read into the composite's `System.lagged` as a
-`hybrid_aif.Read`, and records it on the reader's `Subsystem.reads`; a component's own
-`System.lagged` entries carry too, under its prefix. `subsystem` leaves the reading
-component's modality an ordinary observation, and `run`'s composite form supplies every read
-of a minded component (its own pairs and reads inside it as well) each round, in place of the
-world's sample of that modality: a read of a state takes the source mind's
-`MindCarry.posterior` (the posterior of its last round, which `agent_step` keeps beside the
-pushed prior), a draw keyed by the round's key, and `None` (absent) on the first round, before
-the source has a posterior. `agent_step` treats a `None` observation as absent.
+no action node. `realise` is required: a read has no default. It is sugar for a pair: an
+`Emission` of the source's component, named by the modality's local name under the source's
+component (`rover.cell_obs` for `mission.cell_obs`), and an `observes` entry of the composite
+mapping the modality to it (a name the source's component already uses is refused, naming the
+explicit form: an `Emission` declared on the source's System and `observes` on the reader's). The
+emission is the source's posterior of the previous round, pushed through `kernel` (the identity,
+or a `Grid`, the indicator of its cells over a continuous source) and realised by `realise`
+(`"sample"`, a draw; `"mode"`, the argmax of a categorical belief or the mean of a continuous
+one; `"stats"`, a categorical belief's probability vector, the filter's soft observation). The
+modality's own parents explain the datum, as for any observation. `merge` records the read on
+the reader's `Subsystem.reads` and carries a component's own `observes` entries too, under its
+prefix. `subsystem` leaves the reading component's modality an ordinary observation, and `run`'s
+composite form supplies every read of a minded component (its own emissions and reads inside it
+as well) each round, in place of the world's sample of that modality: a read of an emission takes
+the value the source mind's step realised from its posterior of the round before
+(`MindCarry.emitted`, which `agent_step` fills with `System.emit` and a custom step fills the same
+way), a draw keyed by the step's key folded with `EMIT_TAG`, and `None` (absent) on the first
+round, before the source has realised one. `agent_step` treats a `None` observation as absent.
 
 ```python
 from hybrid_aif import Grid
@@ -664,8 +692,8 @@ composite, params = merge(
 nested(composite, "mission")  # True: its only binding across the boundary is a sibling read
 ```
 
-Refused: a modality and a source in one component (a read inside a component is
-`System.lagged`); a modality whose level count is not the source's under the identity kernel,
+Refused: a modality and a source in one component (a read inside a component is an emission and
+`System.observes`); a modality whose level count is not the source's under the identity kernel,
 nor the grid's cell count under an indicator; a categorical modality reading a continuous
 source with no grid; `"stats"` of a Gaussian source, which is deferred. `nested(composite, name)`
 (also `Subsystem.nested`) is true when at least one binding crosses the component's boundary

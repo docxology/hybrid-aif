@@ -108,7 +108,9 @@ class FaceNames(NamedTuple):
     may also carry a discrete control node's entry (``node_beliefs``) and the entry of an action
     node a modality observes (``sensed``). ``gone`` pairs each control
     or action node a ``merge()`` binding removed with the sentence that refuses a key naming it.
-    ``emissions`` lists the System's emission names.
+    ``emissions`` lists the System's emission names; ``observes`` pairs each slot the System's
+    ``observes`` names with its variable, and ``generated`` lists the variables the System
+    generates (its action nodes and emissions), whose datum an observation mapping may leave out.
     """
 
     factors: tuple[str, ...]
@@ -122,6 +124,18 @@ class FaceNames(NamedTuple):
     actions: tuple[str, ...] = ()
     sensed: tuple[str, ...] = ()
     emissions: tuple[str, ...] = ()
+    observes: tuple[tuple[str, str], ...] = ()
+    generated: tuple[str, ...] = ()
+
+    def variable_of(self, slot: str) -> str:
+        """The variable ``slot`` observes: the one ``observes`` names, else its own name."""
+        return dict(self.observes).get(slot, slot)
+
+    @property
+    def variables(self) -> tuple[str, ...]:
+        """The variables the modalities observe, each once, in modality order: the keys an
+        observation mapping carries."""
+        return tuple(dict.fromkeys(self.variable_of(m) for m in self.modalities))
 
     def kind(self, k: int) -> str:
         """Node ``k``'s kind (discrete when the params were not read)."""
@@ -187,15 +201,21 @@ def check_mapping(
     label: str | None = None,
     optional: tuple[str, ...] = (),
     partial: bool = False,
+    by_variable: bool = False,
 ) -> None:
     """Raise unless ``mapping`` is a Mapping with exactly the expected keys for ``kind``.
 
     ``label`` names the argument in the sentence when it is not ``kind`` itself (``"present"``,
     ``"state"``); it has ``kind``'s structure and converts as ``kind``. Keys in ``optional`` may
     be present or absent; with ``partial`` every key may be absent (a mapping that restricts or
-    selects), and only unknown keys raise.
+    selects), and only unknown keys raise. With ``by_variable`` an observation mapping is keyed
+    by the variables the modalities observe (``System.observes``): a variable the System
+    generates may be left out, and a key naming a slot the map renames raises, naming the
+    variable.
     """
-    expected = names.expected(kind)
+    expected = names.variables if by_variable else names.expected(kind)
+    if by_variable:
+        optional = (*optional, *(v for v in names.generated if v in expected))
     what = kind if label is None else label
     if not isinstance(mapping, Mapping):
         positional = isinstance(mapping, tuple | list) or hasattr(mapping, "shape")
@@ -208,8 +228,17 @@ def check_mapping(
             f"{face} takes {what} as a mapping keyed by {_noun(kind)} name "
             f"({list(expected)}); {how}"
         )
-    missing = [] if partial else [k for k in expected if k not in mapping]
+    missing = [] if partial else [k for k in expected if k not in mapping and k not in optional]
     unknown = [k for k in mapping if k not in expected and k not in optional]
+    if by_variable:
+        renamed = dict(names.observes)
+        for k in unknown:
+            if k in renamed and k in names.modalities:
+                what = kind if label is None else label
+                raise ValueError(
+                    f"{face}: {what} names {k!r}, a modality that observes the variable "
+                    f"{renamed[k]!r}; key its datum by {renamed[k]!r}"
+                )
     gone = dict(names.gone)
     removed = [k for k in unknown if k in gone]
     if removed:
@@ -275,9 +304,11 @@ def node_beliefs_in(names: FaceNames, mapping: Mapping[str, Any]) -> dict:
 
 
 def observations_in(names: FaceNames, mapping: Any, face: str) -> tuple:
-    """``{modality: observation}`` as the positional observation tuple."""
-    check_mapping(names, "observations", mapping, face)
-    return tuple(mapping[n] for n in names.modalities)
+    """``{variable: observation}`` as the positional observation tuple, one entry per modality:
+    a variable's datum goes to every modality that observes it, and ``None`` where a generated
+    variable's datum is left out."""
+    check_mapping(names, "observations", mapping, face, by_variable=True)
+    return tuple(mapping.get(names.variable_of(n)) for n in names.modalities)
 
 
 def observations_out(names: FaceNames, observations) -> dict:
@@ -290,14 +321,19 @@ def present_in(names: FaceNames, present: Any, face: str, absent: Any = True) ->
     partial: a modality it leaves out is observed, its flag ``absent`` (default the static
     ``True``). An entry that is itself a mapping (a per-level availability under a control node)
     raises."""
-    check_mapping(names, "observations", present, face, label="present", partial=True)
+    check_mapping(
+        names, "observations", present, face, label="present", partial=True, by_variable=True
+    )
     for name, flag in present.items():
         if isinstance(flag, Mapping):
             raise ValueError(
                 f"{face}: present[{name!r}] under the levels of a control node is a planning "
                 "form (infer_policies, planner_context); at this face pass the flag for this tick"
             )
-    return tuple(present[n] if n in present else absent for n in names.modalities)
+    return tuple(
+        present[names.variable_of(n)] if names.variable_of(n) in present else absent
+        for n in names.modalities
+    )
 
 
 def legal_list(legal: list, face: str, form: str = "(P,)") -> Any:

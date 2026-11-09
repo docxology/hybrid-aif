@@ -50,26 +50,32 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   **A growable factor**: a memoryless categorical factor whose weights (its transition
   column) carry a growth propensity `growth`; its cap is its size, a level with zero weight
   is dead, and `learn` wakes a level for a datum no live level explains better than the prior
-  does. **A lagged datum** (`System(lagged=(("modality", "source"), ...))`): a modality reads
-  its datum from the carry, a state factor's previous belief or the previous action, so a
-  factor can emit what the model just believed (`design/structure-learning.md` S8). The datum
-  is the source's posterior of the previous round, by source: for a categorical source its probability vector
-  (a soft observation), for a Gaussian source its location, for an action-node source the level
-  taken; a pair declared this way keeps that behaviour. **A belief read**
-  (`Read(modality, source, kernel, realise)`, in the same `lagged` tuple, beside pairs, and
-  `Link(source, modality, realise=..., kernel=...)` in a merge, `design/nesting-and-coupling.md`
-  N3) generalises it three ways: the datum is the source's belief pushed through a kernel, the
-  identity or a cell indicator over a `Grid` (so a categorical modality over the grid's cells
-  reads a continuous position factor); the realisation is declared, `sample` (a draw, the
-  default of a `Read`; `infer_states` and `learn` take it as `read_key=`, `replay` from its `key`), `mode` (the argmax, or the
-  mean of a continuous belief) or `stats` (a categorical belief's probability vector, a soft
-  observation; not built for a Gaussian source); and the source may be a state factor of
-  another component of a merge, whose posterior of the previous round (`MindCarry.posterior`) `run`'s composite form supplies as the
-  modality's observation each round, one tick behind, absent on the first. `merge` carries a
-  component's own reads under its prefix, `Subsystem.reads` records the sibling ones, and a
-  component bound only by such reads and links from an action node into a control node is nested
-  (`nested`).
-  The description document records a read in `options.datum`.
+  does. **A recurrent datum** (an own-belief read): a modality takes as its datum a state
+  factor's previous belief or the previous action, so a factor can emit what the model just
+  believed (`design/structure-learning.md` S8). It is declared as an emission of the System that
+  one of its own modalities observes: `System(emissions={"x_mean": Emission(("x",),
+  realise="mode")}, observes={"prev_x": "x_mean"})`. The datum is the emission realised from the
+  posterior of the previous round, by what the emission is: for a categorical factor under the
+  identity kernel its probability vector under `stats` (a soft observation), for a Gaussian
+  factor its location under `mode`, and for an action node the level taken (a modality that
+  observes the action node). **A belief read** (`Emission(parents, realise, kernel)` with
+  `observes`, and `Link(source, modality, realise=..., kernel=...)` in a merge as the sugar for the
+  pair, `design/nesting-and-coupling.md` N3) generalises it three ways: the datum is the source's
+  belief pushed through a static kernel, the identity or a cell indicator over a `Grid` (so a
+  categorical modality over the grid's cells reads a continuous position factor); the realisation
+  is declared, `sample` (a draw; `replay` takes its key from the tick's, a hand call supplies the
+  draw itself), `mode` (the argmax, or the mean of a continuous belief) or `stats` (a categorical
+  belief's probability vector, a soft observation; not built for a Gaussian source); and the
+  source may be a state factor of another component of a merge, whose emission `run`'s composite
+  form supplies as the modality's observation each round (`MindCarry.emitted`), one tick behind,
+  absent on the first. `merge` carries a component's own entries under its prefix,
+  `Subsystem.reads` records the sibling ones, and a component bound only by such reads and links
+  from an action node into a control node is nested (`nested`). The faces take the datum as any
+  observation, keyed by the emission's or action node's name (`System.observes`, section
+  "Observing a variable" of `composing-systems.md`); `replay` realises and records the emissions
+  (`Replay.emitted`) and feeds each tick's back as the next tick's datum. The description
+  document records the pair: an `observes` entry on the modality's likelihood record and a
+  record of the static kernel on the emission.
 
 - **A categorical field over a continuous state** (`design/terrain-field.md`): a tabular
   factor may name a Gaussian or mixture-carried factor as a parent when the System declares a
@@ -613,7 +619,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
     (`design/per-variable-infogain.md` V10).
   New: structure learning (`design/structure-learning.md`): `gaussian_emission` over
   categorical parents, growable factors whose levels are born in `learn` and merged by
-  `System.reduce` or `reduction_period`, a lagged modality (`System.lagged`).
+  `System.reduce` or `reduction_period`, a modality that observes an emission of its own System
+  (`System.observes`).
   `System.carry(fresh, learned)` keeps learned posteriors across a params rebuild. Novelty over
   a matrix-normal inverse-Wishart emission over a continuous state, which `epistemic` mounts
   where selecting it raised (`design/parameter-learning.md` D10).
@@ -928,9 +935,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   identification with another node and is sliced at a pinned level; averaging over the node's
   levels is a mixture and is refused.
   **A sensed node's prior.** `infer_states` reads the prior over an action node a modality
-  observes from, in order, the entry in `priors`, the realised action `previous=` carries for
-  that node (as a one-hot), and the uniform default, so a mind that passes its previous action
-  need not seed the node by hand; with neither an entry nor a previous action the point-prior
+  observes from the entry in `priors`, else the uniform default; a mind that knows its previous
+  action passes it as the node's point prior (a one-hot), and with no entry the point-prior
   refusal stands, with its hint.
   **An unread control node.** A discrete control node no transition reads is admitted when
   something else sizes it: a `C_deps` target conditional on it, a modality observing its action
@@ -1001,6 +1007,23 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
 
 ## In the field / in flight
 
+- **Observing a variable (unreleased)**: `System.observes` names, per modality, the variable it observes, an action node or an emission of the System, and
+  `Emission(parents, realise="sample", kernel=None)` replaces `Emit`, with `kernel="identity"` or
+  a `Grid` indicator as its static kernel beside the kernels of `params.emission` (`kernel=None`
+  takes its kernel from there and refuses when it is missing). A read of a belief is such a pair: `System.lagged`, `reads.Read`,
+  `read_datum`, the `previous=` and `read_key=` arguments of the faces and
+  `MindCarry.posterior` are gone, and the datum reaches inference like any observation, keyed by
+  the variable: from the caller for a hand `infer_states` and `learn`, from the emissions `replay`
+  realises after each tick and records (`Replay.emitted`), and in the composite `run` from the
+  emission the source's step carries (`MindCarry.emitted`, filled by `agent_step`). A slot the
+  map names is no in-port (`ports`), one datum feeds every slot observing a variable, and the
+  description records an `observes` entry on the likelihood and the static kernel on the
+  emission. `mirror` drops an emission only its own System observes, so `as_env` is unchanged.
+  Upgrading: a sampled read draws from `fold_in(step key, EMIT_TAG)` rather than the retired
+  `read_key`, so a seeded run that sampled a read draws differently; a read of a categorical
+  factor's probabilities or of a mean or a cell by `mode`, and everything that does not read a
+  belief, is bitwise unchanged (`design/engine-consolidation.md` chunk B;
+  `composing-systems.md`).
 - **Params flow through the runner (unreleased)**: one participant shape,
   `Step = step(key, obs, carry, params) -> (action, carry', params')`, for
   every mind of `run`. `agent_step(system, planner=None, **act_kwargs)`,

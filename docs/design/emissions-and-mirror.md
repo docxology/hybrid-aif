@@ -123,6 +123,11 @@ likelihood variables under `param_key`), also exact over thirty ticks.
 
 ## 3. The three bindings
 
+*Superseded in part on 2026-11-08 (`engine-consolidation.md`, "The bindings: identify, link,
+emit"): `Identify` is the only binding that joins variables and is always two-way, one-way flow
+following from factor roles; a realised `Link` is sugar for an emission identified with a modality;
+the structural `Link` stays. What follows is the code as chunk A left it, which chunk B rewrites.*
+
 Replacing `ObservationLink`, `SiblingRead`, `Wire`, `ActionControl`, `SharedParameter`,
 `BoundaryPrior` and `TargetEmission`, removed without aliases (a test asserts they are gone):
 

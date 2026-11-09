@@ -31,6 +31,7 @@ from hybrid_aif.objectives import TermTree
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives.amortized import features as _amortized_features
 from hybrid_aif.planning.enumerate import sample_action
+from hybrid_aif.reads import EMIT_TAG
 from hybrid_aif.system import Belief, LearnState, System, SystemParams, keyed
 
 __all__ = ["Replay", "replay", "replay_document", "stack_traces"]
@@ -76,19 +77,31 @@ class Replay(NamedTuple):
     unsupported: dict[str, Array | None]
     params: SystemParams | None
     learn_state: LearnState | None
+    emitted: dict[str, Array] = {}
 
 
 _select = _hybrid.where_tree  # shape-checked: a carry must select between equal shapes
+
+
+def _fed(system: System) -> dict[int, str]:
+    """Each modality that observes a variable the System generates, by index, with the variable:
+    its datum is the previous tick's emission (or action), unless the trace supplies one."""
+    generated = set(system.action_names or ()) | set(system._emission_names)
+    return {
+        m: variable
+        for m, variable in enumerate(system._modality_variables)
+        if variable in generated
+    }
 
 
 def _check_shapes(
     system: System, observations: tuple[Array, ...], actions: Array, amortized: bool
 ) -> int:
     present = [o for o in observations if o is not None]
-    lagged = set(system._lagged_sources)
+    fed = _fed(system)
     if len(present) < len(observations) and not amortized:
         mods = system._names().modalities
-        missing = [mods[m] for m, o in enumerate(observations) if o is None and m not in lagged]
+        missing = [mods[m] for m, o in enumerate(observations) if o is None and m not in fed]
     else:
         missing = []
     if missing:
@@ -143,9 +156,6 @@ def _positional_trace(
             "control nodes are of one kind, or score the recorded plan with "
             "System.score_policies"
         )
-    lagged = {read.modality for read in system._reads}
-    if lagged:  # a lagged modality's trace may be left out: its datum comes from the carry
-        observations = {**{name: None for name in lagged}, **dict(observations)}
     obs = keyed.observations_in(names, observations, "replay")
     keyed.check_mapping(names, "actions", actions, "replay")
     acts = {k: jnp.asarray(v) for k, v in actions.items()}
@@ -224,6 +234,15 @@ def replay(
     ``metrics=False`` drops the per-tick term trees. On the amortized path the
     belief half is the per-tick faces (``infer_states``,
     ``update_empirical_prior``).
+
+    ``observations`` is keyed by variable (:meth:`System.infer_states`). A modality that
+    observes an emission or an action node of the System (``System.observes``) may leave its
+    variable out of ``observations``, or give ``None``: its datum is then the value of the
+    previous tick, the emission realised from that tick's posterior and recorded in
+    ``Replay.emitted`` (a draw by ``sample`` takes a key folded from the tick's ``key``, which
+    every sampled emission needs; the
+    kernel of an emission that has one lives in ``params.emission``) or that tick's recorded
+    action, and the modality is absent at the first tick. A datum the trace supplies wins.
     """
     system._refuse_sensed("replay")
     view = system._params_in(params, "replay")  # the positional view the scan carries
@@ -243,6 +262,13 @@ def replay(
         if mask.shape != (T, n_mods):
             raise ValueError(f"replay: present entries are ({T},) bool, one flag per tick")
     legal = _check_legal(system, view, legal, T)
+    drawn = [n for n, e in system.emissions if e.realise == "sample"]
+    if key is None and drawn and not amortized:
+        raise ValueError(
+            f"replay: the emission {drawn[0]!r} is realised by 'sample', which draws and needs a "
+            "key, whether or not a modality observes it; pass key=, or declare realise='mode' "
+            "or 'stats'"
+        )
     externals = None if externals is None else {k: jnp.asarray(v) for k, v in externals.items()}
     for name, x in (externals or {}).items():
         if int(x.shape[0]) != T:
@@ -360,25 +386,37 @@ def _replay_core(
     T = int(actions.shape[0])
     ts = jnp.arange(T, dtype=jnp.int32)
     select_key = jax.random.PRNGKey(0)  # deterministic selection never reads it
-    carry_prev = learn or bool(system.lagged)  # the previous beliefs and action ride the carry
+    fed = {m: v for m, v in _fed(system).items() if observations[m] is None}
+    emitting = bool(system.emissions) and not system._is_amortized(params)
+    carry_prev = learn or bool(fed)  # the previous beliefs, action and emissions ride the carry
+    names = system._names(params)
+
+    def realised(params_t, beliefs, act_t, plan_key_t):
+        """Every emission realised from this tick's posterior and recorded action: a belief per
+        state factor, the realised level per control node."""
+        values = dict(keyed.beliefs_out(names, beliefs))
+        levels = keyed.actions_out(names, act_t)
+        values.update({u: levels[a] for u, a in zip(names.controls, names.actions, strict=True)})
+        key = jax.random.PRNGKey(0) if plan_key_t is None else plan_key_t
+        return system._emit(jax.random.fold_in(key, EMIT_TAG), params_t, values)
 
     def step(carry, xs):
         if carry_prev:
-            priors_t, prev_beliefs, prev_action, params_t, ls_t = carry
+            priors_t, prev_beliefs, prev_action, params_t, ls_t, prev_emitted = carry
         else:
             priors_t, params_t, ls_t = carry, params, None
         obs_t, act_t, mask_t, valid_t, plan_key_t, legal_t, ext_t, t = xs
-        if system.lagged:
-            #  a lagged modality reads the carry, pushed through its kernel and realised (a draw
-            #  takes the tick's key); the first tick has none, so it is absent
-            obs_t, mask_t = system._fill_lagged(
-                obs_t,
-                system._present(mask_t, len(obs_t)),
-                prev_beliefs,
-                prev_action,
-                t == 0,
-                plan_key_t,
-            )
+        if fed:
+            #  a modality that observes an emission or an action node reads the previous tick's
+            #  value; the first tick has none, so it is absent
+            obs = list(obs_t)
+            flags = list(system._present(mask_t, len(obs)) or [True] * len(obs))
+            last = keyed.actions_out(names, prev_action)
+            for m, variable in fed.items():
+                obs[m] = last[variable] if variable in last else prev_emitted[variable]
+                seen = jnp.logical_not(t == 0)
+                flags[m] = seen if flags[m] is True else jnp.logical_and(flags[m], seen)
+            obs_t, mask_t = tuple(obs), tuple(flags)
         beliefs, detail = system._infer_states(
             params_t,
             obs_t,
@@ -432,7 +470,10 @@ def _replay_core(
         free_energy = None if detail is None else detail.free_energy
         log_evidence = None if free_energy is None else -free_energy
         priors_next = system._update_empirical_prior(params_t, beliefs, act_t, face="replay")
-        new_carry = (priors_next, beliefs, act_t, params_t, ls_t) if carry_prev else priors_next
+        emitted = realised(params_t, beliefs, act_t, plan_key_t) if emitting else {}
+        new_carry = (
+            (priors_next, beliefs, act_t, params_t, ls_t, emitted) if carry_prev else priors_next
+        )
         carry = _select(valid_t, new_carry, carry)
         flags = tuple(
             None if f is None else f & valid_t for f in (detail.unsupported if detail else ())
@@ -447,14 +488,25 @@ def _replay_core(
             log_evidence,
             free_energy,
             flags,
+            emitted,
         )
 
+    shapes = jax.eval_shape(lambda: realised(params, start, actions[0], None)) if emitting else {}
     carry0 = (
-        (start, start, jnp.zeros_like(actions[0]), params, learn_state0) if carry_prev else start
+        (
+            start,
+            start,
+            jnp.zeros_like(actions[0]),
+            params,
+            learn_state0,
+            jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, x.dtype), shapes),
+        )
+        if carry_prev
+        else start
     )
     xs = (observations, actions, mask, valid, plan_keys, legal, externals, ts)
     carry_final, out = jax.lax.scan(step, carry0, xs)
-    params_final, ls_final = carry_final[3:] if learn else (None, None)
+    params_final, ls_final = carry_final[3:5] if learn else (None, None)
     (
         beliefs,
         priors_out,
@@ -465,6 +517,7 @@ def _replay_core(
         log_evidence,
         free_energy,
         flags,
+        emitted,
     ) = out
     return Replay(
         beliefs=beliefs,
@@ -480,6 +533,7 @@ def _replay_core(
         unsupported=tuple(flags),
         params=params_final,
         learn_state=ls_final,
+        emitted=emitted,
     )
 
 

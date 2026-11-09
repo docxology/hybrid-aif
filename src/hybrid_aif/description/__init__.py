@@ -48,7 +48,7 @@ from hybrid_aif.objectives import registry as _registry
 from hybrid_aif.objectives.base import INFOGAIN
 from hybrid_aif.objectives.closed_loop import FEEDBACK
 from hybrid_aif.planning.base import planner_branches
-from hybrid_aif.reads import LEGACY, REALISATIONS, Emit, Read, as_read
+from hybrid_aif.reads import Emission
 from hybrid_aif.system import _KEY_KINDS, System, SystemParams
 from hybrid_aif.system.core import Subsystem
 from hybrid_aif.system.validation import _check_dim_names
@@ -1186,7 +1186,9 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     states, nodes = table.state_names, table.control_names
     actions, mods = tuple(system.action_names), tuple(system.modality_names)
     emitted = system._emission_names
+    kernelled = system._kernelled(params) if emitted else ()
     emission_decls = system._emission_decls(params) if emitted else ()
+    emission_types = system._emission_types(params) if emitted else {}
     recognition = tuple(system.recognition or ())
     aux = [r.variable for r in recognition if r.variable not in states]
     externals = [name for name, _ in system.external_inputs]
@@ -1241,9 +1243,12 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         w.variables[a] = (
             _real(space.sizes[k]) if space.kinds[k] == FLOAT else _categorical(space.sizes[k])
         )
-    for e, decl in zip(emitted, emission_decls, strict=True):
-        w.variables[e] = _observation_domain(decl, f"{where}emission:{e}")
+    for e in emitted:
+        kind, size = emission_types[e]
+        w.variables[e] = _real(size) if kind == FLOAT else _categorical(size)
     for m, o in enumerate(mods):
+        if o in system._observed:
+            continue  # a modality that observes a variable is no variable of its own
         w.variables[o] = _observation_domain(params.likelihood[m], f"{where}likelihood:{o}")
     for v in aux:
         w.variables[v] = _output_domain(params.recognition[v])
@@ -1271,7 +1276,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         return states[g] if g < len(states) else actions[g - n_nodes]
 
     reading = {(slot, i): home for slot, i, home in params.references}
-    for i, e in enumerate(emitted):
+    for i, (e, _) in enumerate(kernelled):
         if isinstance(params.emission[e], _factors.Parameter):
             reading[("emission", i)] = params.emission[e].name
     homes: dict[str, dict[str, Any]] = {}
@@ -1326,7 +1331,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         record = _with_readings(record, system, params, s)
         w.record(s, "transition", _with_parents(record, b_parents))
 
-    reads = {read.modality: read for read in system._reads}
+    observed = system._observed
     for m, o in enumerate(mods):
         a = params.likelihood[m]
         if ("likelihood", m) in reading:
@@ -1340,13 +1345,11 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
                 f"{where}likelihood:{o}",
                 ("likelihood", o),
             )
-        read = reads.get(o)
-        if read is not None:
-            #  the datum read from a source's belief in the carry, through a kernel, realised
-            #  (design: structure-learning.md S8; nesting-and-coupling.md N3, The format)
-            record = {**record, "options": {**record.get("options", {}), "datum": _datum(read)}}
         record = _with_readings(record, system, params, o)
-        w.record(o, "likelihood", _with_parents(record, [parent_name(g) for g in system.A_deps[m]]))
+        record = _with_parents(record, [parent_name(g) for g in system.A_deps[m]])
+        if observed.get(o, o) != o:  # the variable the modality observes, where it is not its own
+            record = {**record, "observes": observed[o]}
+        w.record(o, "likelihood", record)
 
     for k, a_name in enumerate(actions):
         if a_name not in params.actuator:
@@ -1357,7 +1360,7 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         record = _record("ConditionalCategorical", [nodes[k]], {"log_table": var})
         w.record(a_name, "actuator", record)
 
-    for i, ((e, emit), decl) in enumerate(zip(system.emissions, emission_decls, strict=True)):
+    for i, ((e, emit), decl) in enumerate(zip(kernelled, emission_decls, strict=True)):
         if ("emission", i) in reading:
             record = reference("emission", i, e)
         else:
@@ -1372,6 +1375,19 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         if emit.realise != "sample":
             record = {**record, "options": {**record.get("options", {}), "realise": emit.realise}}
         w.record(e, "actuator", _with_parents(record, list(emit.parents)))
+
+    for e, emit in system.emissions:
+        if emit.kernel is None:
+            continue
+        #  a static kernel has no family or parameters: the record names the kernel
+        options: dict[str, Any] = {
+            "kernel": "identity" if emit.kernel == "identity" else "indicator"
+        }
+        if emit.kernel != "identity":
+            options["grid"] = _grid_record(emit.kernel)
+        if emit.realise != "sample":
+            options["realise"] = emit.realise
+        w.record(e, "actuator", {"parents": list(emit.parents), "options": options})
 
     for r in recognition:
         module = params.recognition[r.variable]
@@ -1987,7 +2003,16 @@ class _Learned(NamedTuple):
     address: str
 
 
-_RECORD_KEYS = ("family", "parameter", "parents", "parameters", "options", "steps", "readings")
+_RECORD_KEYS = (
+    "family",
+    "parameter",
+    "parents",
+    "parameters",
+    "options",
+    "steps",
+    "readings",
+    "observes",
+)
 _LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
 _TERM_KEYS = ("term", "on", "parameters", "options", "model")
 _RELATIONS = ("controls", "observed", "external")
@@ -2189,22 +2214,6 @@ def _grid_record(grid: Grid) -> dict[str, Any]:
     }
 
 
-def _datum(read: Read) -> str | dict[str, Any]:
-    """A modality's ``datum`` option for its read: the pair form's ``"<source>[t-1]"`` for a
-    pair, else a record of the source, the kernel (``identity``, or ``indicator`` with its grid)
-    and the realisation (design: nesting-and-coupling.md N3, the format)."""
-    if read.kernel == "identity" and read.realise == LEGACY:
-        return f"{read.source}[t-1]"
-    record: dict[str, Any] = {"source": f"{read.source}[t-1]"}
-    if isinstance(read.kernel, Grid):
-        record["kernel"] = "indicator"
-        record["grid"] = _grid_record(read.kernel)
-    else:
-        record["kernel"] = "identity"
-    record["realise"] = read.realise
-    return record
-
-
 def _grid_of(record: Mapping[str, Any]) -> Grid:
     """The :class:`~hybrid_aif.cells.Grid` a variable's ``cells`` record describes."""
     return Grid(
@@ -2263,9 +2272,8 @@ class _Model:
     def __init__(self, reader: _Reader, document: Mapping[str, Any], where: str) -> None:
         self.reader, self.doc, self.where = reader, document, where
         self.faults: list[str] = []
-        self.lagged: dict[
-            str, str | Read
-        ] = {}  # modality → its datum's source (a pair) or its read
+        self.observes: dict[str, str] = {}  # modality → the variable it observes, where renamed
+        self.statics: dict[str, tuple[str, Grid | None]] = {}  # emission → its static kernel
 
     def fail(self, sentence: str) -> DescriptionError:
         return DescriptionError(f"{self.where}{sentence}")
@@ -2323,7 +2331,15 @@ class _Model:
         return value
 
     def _variables(self) -> None:
-        self.variables: Mapping[str, Any] = self._section("variables")
+        variables = dict(self._section("variables"))
+        #  a modality that observes a variable is no variable of its own: its likelihood record
+        #  names the variable, whose domain it takes
+        for child, block in dict(self.doc.get("factors") or {}).items():
+            record = block.get("likelihood") if isinstance(block, Mapping) else None
+            observed = record.get("observes") if isinstance(record, Mapping) else None
+            if isinstance(observed, str) and child not in variables and observed in variables:
+                variables[child] = variables[observed]
+        self.variables: Mapping[str, Any] = variables
         for name, record in self.variables.items():
             address = f"variables[{name!r}]"
             with self.noting():
@@ -2521,6 +2537,16 @@ class _Model:
             raise self.fail(
                 f"{address} has key(s) {unknown}; a factor record has {list(_RECORD_KEYS)}"
             )
+        observed = record.get("observes")
+        if observed is not None:
+            if label != "likelihood":
+                raise self.fail(
+                    f"{address}: only a likelihood record names the variable its observation "
+                    f"observes, and this one is under {label!r}"
+                )
+            if not isinstance(observed, str) or not observed:
+                raise self.fail(f"{address}.observes is the name of a variable, got {observed!r}")
+            self.observes[child] = observed
         pooled = record.get("readings")
         if pooled is not None:
             if label not in ("transition", "likelihood"):
@@ -2567,9 +2593,22 @@ class _Model:
                 **{k: v for k, v in record.items() if k != "parameter"},
             }
         family = record.get("family")
-        if family not in FAMILIES:
+        static = (
+            label == "actuator"
+            and family is None
+            and named is None
+            and "kernel" in (record.get("options") or {})
+        )
+        if static:  # an emission's static kernel: the identity or an indicator over a grid
+            family = "Static"
+        elif family not in FAMILIES:
             raise self.fail(f"{address}: unknown family {family!r}; the menu is {sorted(FAMILIES)}")
-        if label in LABELS and label != "prior" and label not in FAMILIES[family].labels:
+        if (
+            not static
+            and label in LABELS
+            and label != "prior"
+            and label not in FAMILIES[family].labels
+        ):
             raise self.fail(
                 f"{address}: a {family} record is not written under the label {label!r}; it "
                 f"appears under {list(FAMILIES[family].labels)}"
@@ -2640,10 +2679,9 @@ class _Model:
         if label == "actuator" and "realise" in options:
             #  how an emission is realised each round (an emission's record only: _slots)
             self.realised[child] = options.pop("realise")
-        if label == "likelihood" and "datum" in options:
-            #  the datum read from a source's belief in the carry, through a kernel, realised
-            #  (design: nesting-and-coupling.md N3, The format)
-            self.lagged[child] = self._read_of(child, options.pop("datum"), address)
+        if static:
+            self.statics[child] = self._static_kernel(options, address)
+            options = {}
         return _Factor(
             child,
             label,
@@ -2655,52 +2693,30 @@ class _Model:
             address,
         )
 
-    def _read_for(self, modality: str) -> Read:
-        """The :class:`~hybrid_aif.reads.Read` of ``modality``, a pair stood for by its form."""
-        entry = self.lagged[modality]
-        return entry if isinstance(entry, Read) else as_read((modality, entry))
-
-    def _read_of(self, child: str, datum: Any, address: str) -> str | Read:
-        """A modality's ``datum`` option as the source of a pair (``"name[t-1]"``) or as a
-        :class:`~hybrid_aif.reads.Read` (a record of ``source``, ``kernel``, ``grid`` and
-        ``realise``)."""
-        where = f"{address}.options.datum"
-        pair = isinstance(datum, str)
-        if not pair and not isinstance(datum, Mapping):
-            raise self.fail(f"{where} is {datum!r}; write name[t-1] or a record of a read")
-        if not pair:
-            unknown = sorted(set(datum) - {"source", "kernel", "grid", "realise"})
-            if unknown or "source" not in datum:
-                raise self.fail(
-                    f"{where} holds {sorted(datum)}; a read has a source and, optionally, a "
-                    "kernel, a grid and a realise"
-                )
-        source, offset = _parse_parent(datum if pair else datum["source"], where)
-        if offset != 1 or source not in self.variables:
+    def _static_kernel(self, options: dict[str, Any], address: str) -> tuple[str, Grid | None]:
+        """An emission's static kernel from its record's options: ``("identity", None)`` or
+        ``("indicator", grid)``; ``realise`` is read apart (:attr:`realised`)."""
+        where = f"{address}.options"
+        unknown = sorted(set(options) - {"kernel", "grid", "realise"})
+        if unknown:
             raise self.fail(
-                f"{where} is {datum!r}; a lagged datum names a state or an action node at the "
-                "previous tick, as name[t-1]"
+                f"{where} holds {unknown}; an emission's static kernel has a kernel, an optional "
+                "grid (an indicator's cells) and an optional realise"
             )
-        if pair:
-            return source
-        kernel = datum.get("kernel", "identity")
+        kernel = options["kernel"]
         if kernel not in ("identity", "indicator"):
             raise self.fail(f"{where}.kernel is {kernel!r}; it is 'identity' or 'indicator'")
-        if (kernel == "indicator") != ("grid" in datum):
+        if (kernel == "indicator") != ("grid" in options):
             raise self.fail(f"{where}: an indicator kernel has a grid, and no other kernel does")
-        realise = datum.get("realise", "sample")
-        if realise not in REALISATIONS:
-            raise self.fail(f"{where}.realise is {realise!r}; it is one of {list(REALISATIONS)}")
-        grid: str | Grid = "identity"
-        if kernel == "indicator":
-            record = datum["grid"]
-            if not isinstance(record, Mapping) or not {"shape", "low", "high"} <= set(record):
-                raise self.fail(f"{where}.grid must be a mapping with shape, low and high")
-            try:
-                grid = _grid_of(record)
-            except (ValueError, TypeError) as exc:
-                raise self.fail(f"{where}.grid: {exc}") from None
-        return Read(child, source, grid, realise)
+        if kernel == "identity":
+            return kernel, None
+        record = options["grid"]
+        if not isinstance(record, Mapping) or not {"shape", "low", "high"} <= set(record):
+            raise self.fail(f"{where}.grid must be a mapping with shape, low and high")
+        try:
+            return kernel, _grid_of(record)
+        except (ValueError, TypeError) as exc:
+            raise self.fail(f"{where}.grid: {exc}") from None
 
     def _check_target_parents(self, fac: _Factor, states: set[str], nodes: set[str]) -> None:
         """A ``target``'s parents are its conditioning variables, discrete control nodes or
@@ -3003,6 +3019,8 @@ class _Model:
         self.nodes = [v for v in self.per_step if v in self.controls]
         self.actions = [self.controls[u] for u in self.nodes]
         self.mods = [v for v in self.per_step if v in self.observed]
+        if self.observes:  # an observing modality is listed last among the variables
+            self.mods.sort(key=self.observed.index)
         self.aux = [
             v
             for v in self.per_step
@@ -4943,7 +4961,9 @@ class _Model:
             for v in self.rec_order
         }
         actuator = {a: decode(fac, "actuator") for a, fac in self.actuator.items()}
-        emission = {e: decode(self.emission[e], "likelihood") for e in self.emitted}
+        emission = {
+            e: decode(self.emission[e], "likelihood") for e in self.emitted if e not in self.statics
+        }
         policy_prior = None
         if self.policy_prior is not None:
             policy_prior = decode(self.policy_prior, "policy_prior")
@@ -5034,16 +5054,16 @@ class _Model:
             reduction_period=self.config["reduction_period"],
             reduction_pairs=self.config["reduction_pairs"],
             emissions={
-                e: Emit(
-                    tuple(p for p, _ in self.emission[e].parents), self.realised.get(e, "sample")
+                e: Emission(
+                    tuple(p for p, _ in self.emission[e].parents),
+                    self.realised.get(e, "sample"),
+                    "identity"
+                    if e in self.statics and self.statics[e][1] is None
+                    else (self.statics[e][1] if e in self.statics else None),
                 )
                 for e in self.emitted
             },
-            lagged=tuple(
-                (o, self.lagged[o]) if isinstance(self.lagged[o], str) else self.lagged[o]
-                for o in mods
-                if o in self.lagged
-            ),
+            observes=tuple((o, self.observes[o]) for o in mods if o in self.observes),
             readings=tuple((child, node) for child, (node, _) in self.pooled.items()),
             D_deps=D_deps,
             H_deps=H_deps,
@@ -5166,8 +5186,8 @@ class _Model:
         for o in self.mods:
             for p, _ in self.likelihood[o].parents:
                 cross("shared" if p in states else "blanket", o, p)
-            if o in self.lagged:
-                cross("blanket", o, self._read_for(o).source)
+            if o in self.observes:
+                cross("blanket", o, self.observes[o])
         for (child, _), home in self.reads.items():
             cross("shared", child, home)
         return {
@@ -5189,13 +5209,18 @@ class _Model:
             action_of = dict(zip(self.nodes, self.actions, strict=True))
             #  an action node a modality observes is no state factor of any component
             state_deps = [tuple(g for g in deps if g < len(self.states)) for deps in A_deps]
-            #  a modality whose read has its source in another component
+            #  a modality that observes a static-kernel emission of another component reads a
+            #  belief of it: the emission's parent, through its kernel, realised
             reads = tuple(
-                (self.mods[m], read.source, read.kernel, read.realise)
+                (
+                    self.mods[m],
+                    self.emission[e].parents[0][0],
+                    "identity" if self.statics[e][1] is None else self.statics[e][1],
+                    self.realised.get(e, "sample"),
+                )
                 for m in mods
-                if self.mods[m] in self.lagged
-                for read in (self._read_for(self.mods[m]),)
-                if read.source in self.states and not read.source.startswith(prefix)
+                for e in (self.observes.get(self.mods[m]),)
+                if e in self.statics and not e.startswith(prefix)
             )
             out.append(
                 (
@@ -5260,6 +5285,7 @@ def schema() -> dict[str, Any]:
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/names"}},
         "options": {"type": "object"},
         "parameter": {"type": "string", "minLength": 1},
+        "observes": {"type": "string", "minLength": 1},
         "readings": {
             "type": "object",
             "required": ["control", "counts"],
@@ -5281,7 +5307,11 @@ def schema() -> dict[str, Any]:
             properties["steps"] = steps
         return {
             "type": "object",
-            "anyOf": [{"required": ["family"]}, {"required": ["parameter"]}],
+            "anyOf": [
+                {"required": ["family"]},
+                {"required": ["parameter"]},
+                {"required": ["options"], "properties": {"options": {"required": ["kernel"]}}},
+            ],
             "additionalProperties": False,
             "properties": properties,
             "dependentSchemas": {

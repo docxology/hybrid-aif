@@ -362,6 +362,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -406,6 +418,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -466,6 +482,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -510,6 +538,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -570,6 +602,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -614,6 +658,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -674,6 +722,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -718,6 +778,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -778,6 +842,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -822,6 +898,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -882,6 +962,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -926,6 +1018,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -983,6 +1079,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -1027,6 +1135,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -1084,6 +1196,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -1128,6 +1252,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -1185,6 +1313,18 @@
               "required": [
                 "parameter"
               ]
+            },
+            {
+              "required": [
+                "options"
+              ],
+              "properties": {
+                "options": {
+                  "required": [
+                    "kernel"
+                  ]
+                }
+              }
             }
           ],
           "additionalProperties": false,
@@ -1229,6 +1369,10 @@
               "type": "object"
             },
             "parameter": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observes": {
               "type": "string",
               "minLength": 1
             },
@@ -1287,6 +1431,18 @@
             "required": [
               "parameter"
             ]
+          },
+          {
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": {
+                "required": [
+                  "kernel"
+                ]
+              }
+            }
           }
         ],
         "additionalProperties": false,
@@ -1331,6 +1487,10 @@
             "type": "object"
           },
           "parameter": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observes": {
             "type": "string",
             "minLength": 1
           },

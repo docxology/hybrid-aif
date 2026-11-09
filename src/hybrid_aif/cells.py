@@ -122,6 +122,18 @@ def cell_mass(belief: Gaussian | MixtureGaussian, grid: Grid) -> Array:
     )
 
 
+def cell_index(point: Array, grid: Grid) -> Array:
+    """The cell of ``grid`` that ``point`` (a state of shape ``(..., dim)``) falls in, as an
+    ``int32`` index into the cells in :class:`Grid`'s order (``(...)``): the first and last cell
+    on each axis absorb the tail beyond the extent, as :func:`cell_mass` does."""
+    index = jnp.zeros(point.shape[:-1], jnp.int32)
+    for a, n, low, high in zip(grid.axes, grid.shape, grid.low, grid.high, strict=True):
+        edges = jnp.linspace(low, high, n + 1)[1:-1]
+        along = jnp.sum(point[..., a, None] > edges, axis=-1).astype(jnp.int32)
+        index = index * n + along
+    return index
+
+
 def with_cell_parents(beliefs: tuple, grids: dict) -> tuple:
     """``beliefs`` with each factor in ``grids`` (factor index to :class:`Grid`) replaced by a
     :class:`~hybrid_aif.distributions.Categorical` over its cells, so a tabular reader sees a

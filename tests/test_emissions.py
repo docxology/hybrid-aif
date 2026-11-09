@@ -21,7 +21,7 @@ import pytest
 from hybrid_aif import (
     Categorical,
     ConditionalCategorical,
-    Emit,
+    Emission,
     Gaussian,
     LinearGaussianObservation,
     MLPConditional,
@@ -64,7 +64,7 @@ def world(**emissions):
     and over the control node (``gauge``)."""
     declared = emissions or {
         "fix": ("x",),
-        "img": Emit(("x", "terrain"), realise="mode"),
+        "img": Emission(("x", "terrain"), realise="mode"),
         "gauge": ("v",),
     }
     system = System(
@@ -99,16 +99,18 @@ POINT = {"x": jnp.asarray(1), "terrain": jnp.asarray(0), "v": jnp.asarray(2)}
 def test_a_mapping_and_pairs_of_parents_or_emits_normalise_to_one_declaration():
     by_tuple, _ = world(fix=("x",), img=("x", "terrain"), gauge=("v",))
     by_emit, _ = world(
-        fix=Emit(("x",)), img=Emit(("x", "terrain"), "sample"), gauge=Emit(("v",), "sample")
+        fix=Emission(("x",)),
+        img=Emission(("x", "terrain"), "sample"),
+        gauge=Emission(("v",), "sample"),
     )
     by_pairs, _ = world(
         **{}
     )  # the default declaration, with img realised by its mode, differs only there
     assert by_tuple == by_emit
     assert by_tuple.emissions == (
-        ("fix", Emit(("x",), "sample")),
-        ("img", Emit(("x", "terrain"), "sample")),
-        ("gauge", Emit(("v",), "sample")),
+        ("fix", Emission(("x",), "sample")),
+        ("img", Emission(("x", "terrain"), "sample")),
+        ("gauge", Emission(("v",), "sample")),
     )
     assert dict(by_pairs.emissions)["img"].realise == "mode"
     assert by_tuple != by_pairs
@@ -139,7 +141,7 @@ def test_an_emission_is_no_action_and_no_node():
         ({"e": ("nowhere",)}, "not a node of this System"),
         ({"e": ("a_v",)}, "an action node; an emission reads the control node 'v'"),
         ({"e": ("x",), "f": ("e",)}, "an emission, an output that nothing reads"),
-        ({"e": Emit(("x",), "median")}, "realise must be one of"),
+        ({"e": Emission(("x",), "median")}, "realise must be one of"),
         ({"e": 3}, "emissions must map"),
     ],
 )
@@ -152,6 +154,8 @@ def test_the_kernels_are_checked_against_the_declaration():
     system, params = world()
     with pytest.raises(ValueError, match="one kernel per emission"):
         system._validate(dataclasses.replace(params, emission={"fix": params.emission["fix"]}))
+    with pytest.raises(ValueError, match="which are not emissions of this System"):
+        system._validate(dataclasses.replace(params, emission={**params.emission, "ghost": 1}))
     bad_axes = dict(params.emission, fix=_cc(np.eye(3)[..., None] * np.ones((3, 3, 2)), 2))
     with pytest.raises(ValueError, match="parent axis/es and the emission names 1"):
         system._validate(dataclasses.replace(params, emission=bad_axes))
@@ -214,7 +218,10 @@ def test_emit_samples_from_a_point_state_as_the_forward_process_does():
     system, params = world()
     out = system.emit(KEY, params, POINT)
     assert list(out) == ["fix", "img", "gauge"]
-    process, pp, order = system._emission_observer(system._emission_decls(system._p(params)))
+    positional = system._p(params)
+    process, pp, order = system._emission_observer(
+        system._kernelled(positional), system._emission_decls(positional)
+    )
     drawn = process._observe(KEY, tuple(POINT[p] for p in order), pp)
     #  `img` is realised by its mode, the others by the draw the process makes
     assert int(out["fix"]) == int(drawn[0]) and int(out["gauge"]) == int(drawn[2])
@@ -225,7 +232,7 @@ def test_emit_samples_from_a_point_state_as_the_forward_process_does():
 
 
 def test_emit_mode_and_stats_from_a_point_state():
-    system, params = world(fix=Emit(("x",), "stats"), img=Emit(("x", "terrain"), "mode"))
+    system, params = world(fix=Emission(("x",), "stats"), img=Emission(("x", "terrain"), "mode"))
     params = dataclasses.replace(
         params, emission={k: v for k, v in params.emission.items() if k != "gauge"}
     )
@@ -263,7 +270,7 @@ def test_emit_from_a_belief_draws_the_parents_then_the_kernel():
 
 
 def test_emit_mode_and_stats_from_a_belief_are_the_predictives():
-    system, params = world(fix=Emit(("x",), "stats"), img=Emit(("x", "terrain"), "mode"))
+    system, params = world(fix=Emission(("x",), "stats"), img=Emission(("x", "terrain"), "mode"))
     params = dataclasses.replace(
         params, emission={k: v for k, v in params.emission.items() if k != "gauge"}
     )
@@ -280,7 +287,7 @@ def test_emit_mode_and_stats_from_a_belief_are_the_predictives():
 
 
 def test_a_linear_gaussian_emission_realises_its_mean_and_covariance():
-    system = dataclasses.replace(hill_system(), emissions={"gps": Emit(("state",), "stats")})
+    system = dataclasses.replace(hill_system(), emissions={"gps": Emission(("state",), "stats")})
     H = jnp.asarray([[1.0, 0.5]])
     R = jnp.asarray([[0.3]])
     params = dataclasses.replace(
@@ -303,7 +310,7 @@ def test_a_linear_gaussian_emission_realises_its_mean_and_covariance():
 
 
 def test_a_neural_kernel_is_realised_by_a_draw_only():
-    system = dataclasses.replace(hill_system(), emissions={"net": Emit(("state",), "mode")})
+    system = dataclasses.replace(hill_system(), emissions={"net": Emission(("state",), "mode")})
     net = MLPConditional.from_shapes((2,), 1, key=KEY, width=4, depth=1)
     params = dataclasses.replace(hill_params(), emission={"net": net})
     with pytest.raises(NotImplementedError, match="neural kernel has no closed-form"):
@@ -332,7 +339,6 @@ def test_no_read_target_or_selector_may_name_an_emission():
     agent, agent_params = tmaze_system()
     both = dataclasses.replace(agent, emissions={"seen": ("location",)})
     for field, value in (
-        ("lagged", (("cue", "seen"),)),
         ("C_deps", (("seen", ("context",)),)),
         ("C_deps", (("reward", ("seen",)),)),
         ("readings", (("seen", "u_location"),)),
@@ -418,8 +424,8 @@ def test_merge_namespaces_emissions_and_their_kernels():
     cs, cp = _two_worlds()
     assert cs.names.emissions == ("a.fix", "a.img", "a.gauge", "b.fix", "b.img", "b.gauge")
     emitted = dict(cs.emissions)
-    assert emitted["a.img"] == Emit(("a.x", "a.terrain"), "mode")
-    assert emitted["b.gauge"] == Emit(("b.v",), "sample")
+    assert emitted["a.img"] == Emission(("a.x", "a.terrain"), "mode")
+    assert emitted["b.gauge"] == Emission(("b.v",), "sample")
     system, params = world()
     assert set(cp.emission) == set(cs.names.emissions)
     for name in ("fix", "img", "gauge"):
@@ -544,7 +550,7 @@ def test_a_linear_gaussian_and_a_reference_emission_survive_the_round_trip():
     from hybrid_aif import Parameter
     from hybrid_aif.distributions import ConditionalDirichlet
 
-    system = dataclasses.replace(hill_system(), emissions={"gps": Emit(("state",), "mode")})
+    system = dataclasses.replace(hill_system(), emissions={"gps": Emission(("state",), "mode")})
     params = dataclasses.replace(
         hill_params(),
         emission={"gps": LinearGaussianObservation(H=jnp.eye(2), c=jnp.zeros(2), noise=jnp.eye(2))},

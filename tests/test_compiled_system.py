@@ -146,7 +146,7 @@ def test_the_learning_face_traces_once_and_matches_the_eager_face(traces):
     assert compiled.trace_counts["learn"] == 1
 
 
-def test_a_python_float_rate_and_a_python_int_previous_cause_no_second_trace(traces):
+def test_a_python_float_rate_causes_no_second_trace(traces):
     (system, params), _ = _learnable_tmaze()
     compiled = system.compiled()
     env, env_params = system.as_env(params)
@@ -157,13 +157,6 @@ def test_a_python_float_rate_and_a_python_int_previous_cause_no_second_trace(tra
     for lr in (1.0, 0.5, 0.25, np.float64(0.125)):
         compiled.learn(params, obs, beliefs, prev_beliefs=prev_beliefs, action=action, lr=lr)
     assert traces["learn"] == 1
-    node = next(iter(system.names.actions))
-    with pytest.warns(RetraceWarning, match="'previous' was None and is now a value"):
-        compiled.infer_states(params, obs, previous={node: 0})
-    first = traces["infer_states"]
-    for level in (1, 0, 1, 0):
-        compiled.infer_states(params, obs, previous={node: level})
-    assert traces["infer_states"] == first
 
 
 def test_a_changed_observation_shape_warns_once_and_names_the_observation():
@@ -368,10 +361,10 @@ def test_typed_and_raw_prng_keys_share_a_trace():
     assert compiled.trace_counts["act"] == 1
 
 
-def test_priors_none_and_incomplete_priors_share_the_pushed_structure():
-    """A modality that observes an action node, and a prior without a control node's entry:
-    ``priors=None`` and the incomplete prior are completed to the keys the push returns."""
-    from tests.test_noise_map_mixture import _levelled, _showcase
+def test_incomplete_priors_share_the_pushed_structure():
+    """A modality that observes an action node, and a prior without a control node's entry: the
+    incomplete prior is completed to the keys the push returns."""
+    from tests.test_noise_map_mixture import _levelled, _sensor, _showcase
 
     system, params = _showcase(_levelled(), planner="mixed", policy_len=1)
     compiled = system.compiled()
@@ -380,12 +373,13 @@ def test_priors_none_and_incomplete_priors_share_the_pushed_structure():
     obs, state = env.reset(key, env_params)
     with warnings.catch_warnings():
         warnings.simplefilter("error", RetraceWarning)
-        priors = None
+        #  the first tick's prior names the observed node's level, as a pushed prior does
+        priors = {**system.initial_priors(params), "sensor": _sensor(0)}
         for tick in range(3):
             key, ka, ke = jax.random.split(key, 3)
             if tick == 1:  # a prior that leaves out the control node's entry
-                priors = {n: q for n, q in priors.items() if n in ("terrain", "x")}
-            beliefs, _ = compiled.infer_states(params, obs, priors, previous={"sensor": 0})
+                priors = {n: q for n, q in priors.items() if n in ("terrain", "x", "sensor")}
+            beliefs, _ = compiled.infer_states(params, obs, priors)
             action, _, _ = compiled.act(ka, params, beliefs, metrics=False)
             priors = compiled.update_empirical_prior(params, beliefs, action)
             obs, state = env.step(ke, state, action, env_params)

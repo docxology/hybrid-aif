@@ -17,7 +17,7 @@ import pytest
 from hybrid_aif import (
     Categorical,
     ConditionalCategorical,
-    Emit,
+    Emission,
     Parameter,
     System,
     SystemParams,
@@ -59,7 +59,7 @@ def test_every_modality_becomes_an_emission_of_the_same_name_and_the_dynamics_ar
     assert world.names.emissions == system.modality_names
     for m, deps in zip(system.modality_names, system.A_deps, strict=True):
         parents = tuple(system.factor_names[g] for g in deps)
-        assert dict(world.emissions)[m] == Emit(parents, "sample")
+        assert dict(world.emissions)[m] == Emission(parents, "sample")
     for name in ("B_deps", "D_deps", "controls", "factor_names", "action_names", "dims", "cells"):
         assert getattr(world, name) == getattr(system, name)
     for m in system.modality_names:
@@ -77,7 +77,7 @@ def test_the_planner_the_learner_and_the_posterior_side_are_dropped():
     system = dataclasses.replace(system, epistemic=("context",))
     world, wp = mirror(system, params)
     assert world.epistemic is False and world.terms == () and world.C_deps == ()
-    assert world.H_deps is None and world.lagged == () and world.readings == ()
+    assert world.H_deps is None and world.observes == () and world.readings == ()
     assert wp.obs_targets == {} and wp.state_targets == {} and wp.terminal_targets == {}
     assert wp.recognition == {} and wp.scoring == {} and wp.readings == {}
     assert world.subsystems is None
@@ -86,8 +86,8 @@ def test_the_planner_the_learner_and_the_posterior_side_are_dropped():
 def test_an_action_node_a_modality_reads_becomes_the_control_node_an_emission_reads():
     system, params = maze_with_cue_by_node()
     world, wp = mirror(system, params)
-    assert dict(world.emissions)["cue"] == Emit(("context", "u_act"), "sample")
-    assert dict(world.emissions)["reward"] == Emit(("context", "arm"), "sample")
+    assert dict(world.emissions)["cue"] == Emission(("context", "u_act"), "sample")
+    assert dict(world.emissions)["reward"] == Emission(("context", "arm"), "sample")
     assert world.ports(wp).outs["cue"] == ("level", 2)
     assert world.ports(wp).ins == {"u_act": ("level", 3)}
     assert world.names.actions == system.names.actions
@@ -151,12 +151,11 @@ def test_parameter_variables_are_kept_as_they_are_and_lowering_is_an_option():
         mirror(system, params, param_key=KEY)
 
 
-def test_a_system_that_declares_emissions_has_no_mirror():
+def test_the_mirror_of_a_system_with_emissions_drops_them_as_its_out_ports():
     system, params = emitting_world()
-    with pytest.raises(ValueError, match="declares emissions"):
-        mirror(system, params)
-    with pytest.raises(ValueError, match="declares emissions"):
-        system.as_env(params)
+    world, _ = mirror(system, params)
+    assert world.names.emissions == system.modality_names
+    system.as_env(params)
 
 
 def test_the_refusals_of_as_env_are_the_mirrors():

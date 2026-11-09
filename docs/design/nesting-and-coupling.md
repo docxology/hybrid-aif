@@ -479,6 +479,18 @@ being the record and not the source of truth; a `SiblingRead` of an action node 
 planner's scoring of a read is as N3 says, the hard-outcome estimate under `stats` documented as
 an upper bound and not otherwise built.
 
+*2026-11-09, on A11's timing and mechanism: the fixed lag is retired and reads are read as they
+stand. Under the orders a reader sees the value standing at its turn and never a value that does
+not yet exist: a reader listed before its source sees the previous round's realisation (the survey
+scheduler's case, which keeps the lag), one listed after sees this round's (the composite
+`run` keeps the one-round lag under every order until chunk B rebuilds it over a closed System).
+The datum of a read
+is an emission of the source's System that the reader's modality observes (`observes`), realised
+from the source's posterior and carried (`MindCarry.emitted`) where A11 has `MindCarry.posterior`
+and `lagged`; `read_key`, `previous=` and `System.lagged` are retired, a sampled emission drawing
+from `fold_in(step key, EMIT_TAG)`. The `Link` with a `realise` stays as sugar for the pair
+(`design/engine-consolidation.md`, chunk B). The classification of a read as blanket is unchanged.*
+
 **A12. N4 built as a particle respond, not as a change to `run`'s composite form (2026-11-06).**
 The survey runner is the wired form: the true world is a hand-written process under `couple`,
 and `run`'s composite form has no outside world, its world being the composite's own model run

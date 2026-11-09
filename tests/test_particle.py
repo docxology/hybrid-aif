@@ -366,8 +366,11 @@ def test_a_modality_the_particle_supplies_needs_no_wire_and_any_other_mind_does(
     )
     rec = run(wiring, ticks=3, key=KEY)
     assert set(rec["m"].observations) == {"rover.obs"}
+    # a modality the composite's own emission feeds is no in-port, so no link is asked for it
+    plain = couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=links)
+    assert "mission.cell_obs" not in plain.minds["m"].system.ports(cp).ins
     with pytest.raises(ValueError, match="fed by no link"):
-        couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=links)
+        couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=[])
 
 
 def test_hold_inside_a_particle_under_the_wired_run():
@@ -455,7 +458,7 @@ def test_a_wire_into_a_modality_the_particle_supplies_is_refused():
     rover, mission = subsystem(comp, cp, "rover"), subsystem(comp, cp, "mission")
     minds = {"rover": agent_step(rover[0]), "mission": agent_step(mission[0])}
     links = [Link("w.obs", "m.rover.obs"), Link("src.mission.cell_obs", "m.mission.cell_obs")]
-    with pytest.raises(ValueError, match="mission.cell_obs.*supplied inside the particle"):
+    with pytest.raises(ValueError, match="m.mission.cell_obs. is not an in-port"):
         couple(
             minds={"m": (comp, cp, particle(comp, cp, minds))},
             processes={"w": rs.as_env(rp), "src": mission[0].as_env(mission[1])},
@@ -611,9 +614,9 @@ def test_a_slow_mind_under_hold_and_a_fast_learner_sharing_a_parameter():
 
     def fast(key, obs, carry, params):
         fast_seen.append(params)
-        priors = rview.initial_priors(params)
         action = {"rover.a_v": jnp.zeros(2, jnp.float32)}
-        return action, carry._replace(posterior=priors), _bump(rview, params)
+        emitted = {"rover.cell_obs": jnp.asarray(0, jnp.int32)}
+        return action, carry._replace(emitted=emitted), _bump(rview, params)
 
     minds = {"mission": hold(slow, 3 / ss.SURVEY_TICKS, system=mview), "rover": fast}
     p = particle(comp, cp, minds)

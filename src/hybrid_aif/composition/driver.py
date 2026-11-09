@@ -38,8 +38,8 @@ node carries it for the rest of the round; no other step's choice redraws it.
 
 A belief is internal: each participant's posterior lives in its own carry and never crosses as a
 distribution. Participants reach each other only through the wires (in the composite form, through
-the world, or through a sibling-belief read: a modality that declares a state factor of another
-component as its source and takes its datum from that component's carry, realised by ``sample``,
+the world, or through a sibling-belief read: a modality that observes an emission of another
+component, which that component's step realised from its posterior and carries, by ``sample``,
 ``mode`` or ``stats``), and what a wire carries is the realised value of an action node, which
 may be the belief's statistics.
 
@@ -78,7 +78,7 @@ from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical
 from hybrid_aif.envs.generative import ACTUATOR_TAG
 from hybrid_aif.planning.base import Planner
-from hybrid_aif.reads import modality_key, read_datum
+from hybrid_aif.reads import EMIT_TAG
 from hybrid_aif.system import Belief, LearnState, System, SystemParams, keyed
 
 TickOrder = Literal["simultaneous", "sequential", "async"]
@@ -89,10 +89,11 @@ class MindCarry(NamedTuple):
 
     ``beliefs`` is ``None`` before the first tick (use the declared initial priors): the empirical
     prior the next tick filters from, the last posterior pushed through its transition under the
-    chosen action. ``posterior`` is that last posterior itself, before the push, which is what a
-    read of this mind's state takes as its datum (a custom step that keeps none, or a carry
-    seeded through ``carries=`` without one, is read as absent on the next round).
-    ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
+    chosen action. ``emitted`` maps each emission of the mind's System to the value its last round
+    realised from the posterior (``System.emit``, with the step's key folded by ``EMIT_TAG``), which
+    is what a modality that observes the emission takes as its datum on the next round (a custom
+    step that keeps none, or a carry seeded through ``carries=`` without one, is read as absent on
+    the next round). ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
     Carries are never merged, so two minds share no leaf.
 
     Design: nesting-and-coupling.md N1.
@@ -100,7 +101,7 @@ class MindCarry(NamedTuple):
 
     beliefs: Mapping[str, Belief] | None = None
     learn_state: LearnState | None = None
-    posterior: Mapping[str, Belief] | None = None
+    emitted: Mapping[str, Array] | None = None
 
 
 #: One participant's round: ``obs`` is its own modalities keyed by name, ``action`` an int32 level
@@ -127,8 +128,9 @@ def agent_step(system: System, planner: Planner | None = None, **act_kwargs) -> 
 
     ``system`` is the participant's System (typically
     :func:`hybrid_aif.composition.merge.subsystem`'s view): ``infer_states`` with the carried
-    beliefs as priors, ``act``, then ``update_empirical_prior`` under the chosen action. The
-    params come with each call and are returned as given, since this step never learns; a
+    beliefs as priors, ``act``, then ``update_empirical_prior`` under the chosen action, and the
+    emissions of the System realised from the posterior into the carry (``MindCarry.emitted``).
+    The params come with each call and are returned as given, since this step never learns; a
     learner is a hand-written step. ``act_kwargs`` pass through to :meth:`System.act`; a ``legal``
     among them (keyed by control node, or one bool per policy) is checked on the first call,
     where the params are concrete. A System with no designations gives a Bayesian perceiver (flat
@@ -160,7 +162,15 @@ def _agent_tick(system, params, planner, kwargs, key, obs, carry):
     beliefs, _ = system.infer_states(params, obs, priors=carry.beliefs, present=absent or None)
     action, _, _ = system.act(key, params, beliefs, planner=planner, metrics=False, **dict(kwargs))
     pushed = system.update_empirical_prior(params, beliefs, action)
-    return action, carry._replace(beliefs=pushed, posterior=beliefs)
+    if not system.emissions:
+        return action, carry._replace(beliefs=pushed)
+    names = system._names()
+    values = {
+        **beliefs,
+        **{u: action[a] for u, a in zip(names.controls, names.actions, strict=True) if a in action},
+    }
+    emitted = system._emit(jax.random.fold_in(key, EMIT_TAG), params, values)
+    return action, carry._replace(beliefs=pushed, emitted=emitted)
 
 
 def ancestral_step(system: System) -> Step:
@@ -521,19 +531,18 @@ class _Round:
         home: SystemParams,
         standing: dict[str, int],
         last: Mapping[str, Array] | None,
-        read_key: Array,
         frozen: bool = False,
     ):
         self.body, self.live, self.home, self.standing = body, live, home, standing
         #  the levels the views are taken at: those standing when the round began if ``frozen``
         #  (every step reads the round's boundary), else as they stand at each turn
         self.levels = dict(standing) if frozen else standing
-        self.last, self.read_key = last, read_key
-        #  the posteriors the sources held when the round began (a read is one tick behind)
+        self.last = last
+        #  the emissions the sources carried when the round began (a read is one tick behind)
         self.begun = {
-            holder: _posterior(live[holder])
+            holder: _emitted(live[holder])
             for reads in body.layout.reads_in.values()
-            for _, holder, _, _, _ in reads
+            for _, holder, _ in reads
             if holder is not None
         }
 
@@ -542,13 +551,13 @@ class _Round:
         and its view; returns its checked action."""
         body, layout = self.body, self.body.layout
         mods, ports = layout.routes[name]
-        seen = {m: obs[m] for m in mods if m in obs}
-        seen.update(
-            _supplied(
-                layout.reads_in[name], self.begun, self.last, self.read_key, layout.modality_at
-            )
-        )
         system, given = body.view(name, self.home, self.levels)
+        #  a modality the view feeds from its own variable is keyed by the variable, and the
+        #  world's sample of it is not the datum
+        renamed = dict(system.observes)
+        seen = {m: obs[m] for m in mods if m in obs and m not in renamed}
+        for m, datum in _supplied(layout.reads_in[name], self.begun, self.last).items():
+            seen[renamed.get(m, m)] = datum
         chosen, self.live[name], learned = body.minds[name](key, seen, self.live[name], given)
         if learned is not given:
             _check_parameters_only(system, name, given, learned)
@@ -575,8 +584,8 @@ def particle(
     ``minds`` (a step listed later sees an earlier step's decision of this round; the order is the
     particle's own, not a tick order):
 
-    - every read of a minded component is supplied from the carries: a state factor's posterior
-      of the round before pushed through the read's kernel and realised, an action node's level
+    - every read of a minded component is supplied from the carries: the emission its observed
+      variable names, as the holder's step realised it the round before, an action node's level
       of the round before, ``None`` where nothing is carried yet (the modality is absent that
       round);
     - each step is handed the view of its component taken from the home (the composite's params
@@ -594,13 +603,13 @@ def particle(
       composite params.
 
     A step's key is the particle's for the first step in ``minds`` and ``fold_in(key, i)`` for the
-    ``i``-th after it; a read's draw is keyed by ``modality_key(key, m)``. Every component needs a
-    step (a component that chooses nothing takes :func:`ancestral_step` or a step returning no
-    action), and every control node must be chosen by a listed step. A view that reads a control
-    node another component chooses, and whose targets are conditional on it, has no view before
-    that component has chosen: list the chooser first, which this checks at construction. A step
-    wrapped in :func:`hold` composes as in the composite form. ``params`` types the composite and
-    is used to check the order; each step's carry is ``carry.minds[name]``.
+    ``i``-th after it. Every component needs a step (a component that chooses nothing takes
+    :func:`ancestral_step` or a step returning no action), and every control node must be chosen
+    by a listed step. A view that reads a control node another component chooses, and whose
+    targets are conditional on it, has no view before that component has chosen: list the chooser
+    first, which this checks at construction. A step wrapped in :func:`hold` composes as in the
+    composite form. ``params`` types the composite and is used to check the order; each step's
+    carry is ``carry.minds[name]``.
 
     Design: nesting-and-coupling.md N4, N9.
     """
@@ -618,7 +627,7 @@ def particle(
         if not isinstance(carry, ParticleCarry):
             carry = ParticleCarry()
         live = {n: carry.minds.get(n, MindCarry()) for n in order}
-        this = _Round(body, live, home, dict(carry.standing), carry.last, key)
+        this = _Round(body, live, home, dict(carry.standing), carry.last)
         action: dict[str, Array] = {}
         for i, name in enumerate(order):
             mind_key = key if i == 0 else jax.random.fold_in(key, i)
@@ -694,42 +703,42 @@ def _durations_node(system: System, params: SystemParams) -> str:
     return node
 
 
-def _posterior(carry) -> Mapping[str, Belief] | None:
-    """The posterior of a mind's last round, by factor name: a :class:`MindCarry`'s, or the wrapped
-    mind's under :func:`hold`; ``None`` before the mind has one (or for a mind whose carry keeps
-    none)."""
-    while carry is not None and not hasattr(carry, "posterior"):
+def _emitted(carry) -> Mapping[str, Array] | None:
+    """The emissions a mind realised in its last round, by name: a :class:`MindCarry`'s, or the
+    wrapped mind's under :func:`hold`; ``None`` before the mind has any (or for a mind whose
+    carry keeps none)."""
+    while carry is not None and not hasattr(carry, "emitted"):
         carry = getattr(carry, "inner", None)
-    return None if carry is None else carry.posterior
+    return None if carry is None else carry.emitted
 
 
 def _driven_reads(
     composite: System,
     minds: Mapping[str, Step],
     routes: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]],
-    factors_of: Mapping[str, tuple[str, ...]],
-) -> dict[str, list[tuple[str, str | None, str, "str | object", str]]]:
-    """Every read the driver supplies, by reading mind: ``(modality, source mind, source,
-    kernel, realise)``. The source mind is the mind whose factors hold the source state factor
-    (the reader itself for a read inside its view), and ``None`` for an action node, whose datum
-    is the previous round's chosen level. A step's view never fills its own reads (it takes
-    no carry of past rounds), so the driver supplies all of them."""
+    emitters: Mapping[str, tuple[str, ...]],
+) -> dict[str, list[tuple[str, str | None, str]]]:
+    """Every read the driver supplies, by reading mind: ``(modality, holder mind, variable)``. The
+    holder is the mind whose component declares the emission the modality observes (the reader
+    itself for an emission of its own view), and ``None`` for an action node, whose datum is the
+    previous round's chosen level. A step's view never fills its own reads (it takes no carry of
+    past rounds), so the driver supplies all of them."""
     out: dict[str, list] = {name: [] for name in minds}
-    c_facs = set(composite._table.state_names)
-    for read in composite._reads:
-        reader = next((n for n in minds if read.modality in routes[n][0]), None)
+    actions = set(composite.names.actions)
+    for modality, variable in composite.observes:
+        reader = next((n for n in minds if modality in routes[n][0]), None)
         if reader is None:
             continue
         holder = None
-        if read.source in c_facs:
-            holder = next((n for n in minds if read.source in factors_of[n]), None)
+        if variable not in actions:
+            holder = next((n for n in minds if variable in emitters[n]), None)
             if holder is None:
                 raise ValueError(
-                    f"modality {read.modality!r} reads {read.source!r}, a state factor of a "
-                    "component that has no mind, so there is no carried belief to read; give "
-                    "that component a step"
+                    f"modality {modality!r} observes {variable!r}, an emission of a component "
+                    "that has no mind, so there is no carried emission to read; give that "
+                    "component a step"
                 )
-        out[reader].append((read.modality, holder, read.source, read.kernel, read.realise))
+        out[reader].append((modality, holder, variable))
     return out
 
 
@@ -744,7 +753,6 @@ class _Layout(NamedTuple):
     factors_of: dict[str, tuple[str, ...]]
     unminded: tuple[str, ...]
     reads_in: dict[str, list]
-    modality_at: dict[str, int]
 
 
 def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout:
@@ -798,40 +806,25 @@ def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout
         claimed,
         factors_of,
         unminded,
-        _driven_reads(composite, minds, routes, factors_of),
-        {m: i for i, m in enumerate(c_mods)},
+        _driven_reads(composite, minds, routes, {n: table[n].emissions for n in minds}),
     )
 
 
 def _supplied(
     reads: list,
-    begun: Mapping[str, Mapping[str, Belief] | None],
+    begun: Mapping[str, Mapping[str, Array] | None],
     last: Mapping[str, Array] | None,
-    key: Array,
-    modality_at: Mapping[str, int],
 ) -> dict[str, Array | None]:
-    """The data of one mind's reads this round, by composite modality: a state factor's posterior
-    of the round before (``begun``, by source mind) through the read's kernel, realised, drawn
-    with ``modality_key(key, m)``; an action node's level of the round before (``last``); ``None``
-    where the source has nothing yet."""
+    """The data of one mind's reads this round, by composite modality: the emission its variable
+    names as the holder's carry held it when the round began (``begun``, by holder mind), an action
+    node's level of the round before (``last``); ``None`` where the source has nothing yet."""
     out: dict[str, Array | None] = {}
-    for modality, holder, source, kernel, realise in reads:
+    for modality, holder, variable in reads:
         if holder is None:
-            out[modality] = None if last is None else last[source]
+            out[modality] = None if last is None else last[variable]
             continue
         carried = begun[holder]
-        belief = None if carried is None else carried.get(source)
-        out[modality] = (
-            None
-            if belief is None
-            else read_datum(
-                belief,
-                kernel,
-                realise,
-                modality_key(key, modality_at[modality]),
-                f"the read of modality {modality!r}",
-            )
-        )
+        out[modality] = None if carried is None else carried.get(variable)
     return out
 
 
@@ -931,19 +924,15 @@ def run(
     action order, and the world is stepped on the realised action with an ``env_params`` whose
     actuator mapping is empty, so the world draws nothing.
 
-    Every read of a minded component (``System.lagged`` of the composite: a component's own pairs,
-    a belief :class:`~hybrid_aif.composition.merge.Link`, a read inside an inner composite that
-    is one mind) is supplied to its mind each round, as an ordinary observation, in place of the
-    world's sample of that modality. A read of a state factor takes the source mind's posterior
-    of the previous round (``MindCarry.posterior``, as it stood when the round began, so a read
-    is one tick behind whatever the order; the reader's own for a source in its own view),
-    pushed through the read's kernel and realised (:func:`hybrid_aif.reads.read_datum`), a draw
-    keyed by ``modality_key(k_tick, m)`` for the composite's modality ``m``, the round's key
-    folded rather than split, so a composite with no read draws what it drew before. A read of
-    an action node takes the level chosen the round before. On the first round, or when the
-    source has no posterior, the entry is ``None`` (the modality is absent;
-    :func:`agent_step` filters on it); a source mind must exist. Design:
-    nesting-and-coupling.md N3.
+    Every read of a minded component (``System.observes`` of the composite: a component's own
+    emission or action node, a belief :class:`~hybrid_aif.composition.merge.Link`, a read inside
+    an inner composite that is one mind) is supplied to its mind each round, as an ordinary
+    observation, in place of the world's sample of that modality. A read of an emission takes the
+    value the holder's step realised from its posterior the round before (``MindCarry.emitted``,
+    as it stood when the round began, so a read is one tick behind whatever the order); a read of
+    an action node takes the level chosen the round before. On the first round, or when the source
+    carries no emission, the entry is ``None`` (the modality is absent; :func:`agent_step` filters
+    on it); a holder mind must exist. Design: nesting-and-coupling.md N3.
     """
     if isinstance(composite, Wiring):
         if any(v is not None for v in (params, minds, state, param_key)):
@@ -1070,7 +1059,6 @@ def _run_composite(
             home,
             standing,
             action_log[-1] if action_log else None,
-            k_tick,
             frozen=tick_order == "simultaneous",
         )
         if tick_order == "async":

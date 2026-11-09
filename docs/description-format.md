@@ -176,6 +176,7 @@ that child:
 | `options` | the family's configuration (activation, head, loss, ...); absent options take the family's defaults |
 | `steps` | the steps the record applies at: `"0"`, `"1+"` or `"all"` (section 3.4) |
 | `readings` | on a `transition` or `likelihood` record of a learnable table: `{"control": "<node>", "counts": [...]}`, the fast readings one reading of the table pools under each level of that control node (its novelty term is scaled by the count at the step's level); the description length prices nothing for it |
+| `observes` | on a `likelihood` record: the variable the modality observes, an emission or an action node of the model, where it is not the modality's own name (section 3.3, "A read") |
 
 Layout is never written: the number of parent axes, the parents' widths and the child's size are
 derived from `parents` and the variables' domains, and every array's shape is checked against
@@ -195,7 +196,7 @@ states its time structure itself.
 | `initial` | generative | a latent | the same step | the first step only (`"0"`) | the initial-state prior; its parents are the latents it is conditional on (earlier in variable order) |
 | `transition` | generative | a latent | the step before | every step after the first (`"1+"`) | the transition |
 | `likelihood` | generative | an observed variable | the same step | every step (`"all"`) | the observation model; parents are latents or action nodes |
-| `actuator` | generative | an action node, or an emission | the same step | every step | the kernel of an out-port. Under an action node: `P(a \| u)` of a stochastic actuator, its one parent the action node's control node, omitted when the action realises the decision exactly. Under an emission (a variable that is neither a latent, a control node, an action node nor observed, whose one record this is): a likelihood of any family from the menu, its parents latents and control nodes at the same step, `options.realise` (`sample`, `mode` or `stats`) when not the default draw, or a `parameter` reference to a named variable. Nothing may read an emission |
+| `actuator` | generative | an action node, or an emission | the same step | every step | the kernel of an out-port. Under an action node: `P(a \| u)` of a stochastic actuator, its one parent the action node's control node, omitted when the action realises the decision exactly. Under an emission (a variable that is neither a latent, a control node, an action node nor observed, whose one record this is): a likelihood of any family from the menu, its parents latents and control nodes at the same step, `options.realise` (`sample`, `mode` or `stats`) when not the default draw, or a `parameter` reference to a named variable; or a static kernel with no family, `options.kernel` `identity` or `indicator` (with a `grid`), one latent as its parent. Only an `observes` entry of a likelihood record may read an emission |
 | `prior` | generative | a parameter variable | — | — | the prior the parameter is learned under (section 4.2) |
 | `policy_prior` | generative | the first control node | — | plan time | E: one distribution over the joint policy set of every control node, across the horizon |
 | `target` | objective | a latent, an observation or a control node | the same step | every step of a plan | the preference the planner scores: C under an observation, the risk target under a latent, a cost under a control node; its parents, if any, are discrete control nodes or latents it is conditional on (a conditional family, one distribution per configuration) |
@@ -298,7 +299,7 @@ the variable's name, with the same encoding as a record's family part (`family`,
 }
 ```
 
-A reader's record carries its own `parents` (and `options`, such as a lagged `datum`) and
+A reader's record carries its own `parents` (and `options`) and
 `"parameter"` in place of `family` and `parameters`; a record that writes both is refused. Each
 reader's table shape is checked against the variable's, as against its own table. A transition
 or likelihood record that holds its own table keeps the form above, with no `parameters` entry,
@@ -306,32 +307,35 @@ so a document without shared tables is unchanged. Only tabular families are acce
 variables. The variable's own parameters are named `P_<name>` by default (section 10), and its
 learned prior is written once, under that name.
 
-**A read.** A likelihood record whose modality takes its datum from a belief of the model, not
-from an observation, carries it in `options.datum`. The pair form of `System.lagged` is the
-string `"<source>[t-1]"`, the source's belief at the previous tick: its probability vector for a
-categorical source, its location for a Gaussian one, the level for an action node. The form of a
-declared `Read` (and of a belief `Link`, whose source is a factor of another component, named
-with its component prefix) is a record:
+**A read.** A modality takes its datum from a belief of the model by observing an emission of it,
+a variable with a record of its own. The likelihood record names the variable with `observes`,
+omitted where the variable has the modality's own name:
 
 ```json
-"options": {"datum": {
-  "source": "rover.x[t-1]",
+"cell_obs": {"likelihood": {"family": "ConditionalCategorical", "parents": ["visit"],
+                            "parameters": {"log_table": "A_cell_obs"}, "observes": "cell"}},
+"cell": {"actuator": {"parents": ["x"], "options": {
   "kernel": "indicator",
   "grid": {"shape": [2, 2], "low": [0.0, 0.0], "high": [2.0, 2.0], "axes": [0, 1]},
   "realise": "sample"
-}}
+}}}
 ```
 
-`source` names a state factor or an action node at the previous tick (`name[t-1]`); `kernel` is
-`identity` (the default) or `indicator`, which needs a `grid` written as a variable's `cells`
-record is, and reads a continuous source as the cell it falls in; `realise` is `sample` (the
-default), `mode` or `stats` (`stats` of a Gaussian source is refused). A source in another
-component of a composite document makes a sibling-belief read, which `build` records on the
-reader's `Subsystem.reads`. The reading modality's table has as many levels as the source (identity
-kernel) or the grid has cells (indicator). The description length prices the read as it prices a
-pair: the kernel, the realisation and the source are not yet priced (open:
-`design/description-length.md`, the 2026-11-06 note, which prices the source as a parent choice
-when the format records it).
+An emission with a static kernel has no `family` and no `parameters`: its `actuator` record names
+the kernel in `options.kernel`, `identity` (the emission is its one parent, a latent: a
+categorical's level or under `stats` its probability vector, a continuous latent's location or a
+draw) or `indicator`, which needs a `grid` written as a variable's `cells` record is, and reads a
+continuous parent as the cell it falls in (a point's cell, or a belief's cell mass); `realise` is
+`sample` (the default), `mode` or `stats` (`stats` of a Gaussian parent is refused). The observing modality is not listed under `variables`: its likelihood record names the variable and it takes the variable's domain, so each variable is written once (the modality is still listed in `relations.observed`). An emission
+whose kernel is a family from the menu keeps the record described under `actuator`. `observes` may
+also name an action node, the level taken at the previous tick. The variable has the domain the
+kernel gives it: the parent's levels or width under the identity, one level per cell under an
+indicator, and the observing modality's table has as many levels as the variable (checked by
+`build`). A variable in another component of a composite document makes a sibling-belief read,
+which `build` records on the reader's `Subsystem.reads`. The description length prices the read as
+it prices a pair of records: the likelihood by its family, and the emission by its parents and
+size (its kernel and realisation are not yet priced; open: `design/description-length.md`, the
+2026-11-06 note).
 
 *2026-11-06: planned, under the format's revision rule, and not yet written: a merged component
 is marked `nested` when every binding across its boundary is a belief read or a `Link` from an

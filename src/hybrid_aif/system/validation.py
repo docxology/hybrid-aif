@@ -19,7 +19,6 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from hybrid_aif.cells import Grid
 from hybrid_aif.controls import (
     FLOAT,
     LEVEL,
@@ -250,7 +249,7 @@ def _validate(
     _validate_propagation_slots(system, params)
     system._term_targets(params, planning=False)  # one namespace, V1/V5.3
     system._dim_selections(params)  # a sub-block of a mixture-carried factor raises
-    _validate_lagged(system, params)
+    _validate_observes(system, params)
     deps_all = system._effective_D_deps()
     if len(deps_all) != len(system._B):
         raise ValueError(f"D_deps has {len(deps_all)} entries for {len(system._B)} factors")
@@ -485,17 +484,49 @@ def _validate_likelihood_parents(
 
 
 def _validate_emissions(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:
-    """The emission kernels against the declaration: one per emission, each a likelihood of a
-    family (a table, a linear-Gaussian or neural conditional, in point or learnable form), typed
-    as a port, with one parent axis per parent and one entry per level of a discrete parent (a
-    grid parent: one per cell)."""
+    """The emission kernels against the declaration: one per emission that has no static kernel,
+    each a likelihood of a family (a table, a linear-Gaussian or neural conditional, in point or
+    learnable form), typed as a port, with one parent axis per parent and one entry per level of
+    a discrete parent (a grid parent: one per cell); and each static kernel over a parent it can
+    read: the identity of one state factor, a Grid over a continuous one, within its
+    coordinates."""
     if not system.emissions and not params.emission:
         return
     decls = system._emission_decls(params)
     table = system._table
     grids = system._cell_grids
     space = system._space(params) if table.controls else None
-    for (name, emit), decl in zip(system.emissions, decls, strict=True):
+    families = None
+    for name, emit in system.emissions:
+        if emit.kernel is None:
+            continue
+        system._static_type(params, emit, name)
+        families = families or system._families(params)
+        (parent,) = emit.parents
+        f = table.state_names.index(parent)
+        if emit.kernel == "identity":
+            if emit.realise == "stats" and families[f] != _hybrid.CATEGORICAL:
+                raise ValueError(
+                    f"emission {name!r} is the identity of the continuous factor {parent!r} "
+                    "with realise='stats', the sufficient statistics of a Gaussian belief, "
+                    "which are deferred; declare 'sample' or 'mode', or read the factor through "
+                    "an indicator over a Grid"
+                )
+            continue
+        if families[f] == _hybrid.CATEGORICAL:
+            raise ValueError(
+                f"emission {name!r} reads the categorical factor {parent!r} through an indicator "
+                "kernel, which is the cell a continuous factor falls in; read a categorical "
+                "factor through the identity (kernel='identity')"
+            )
+        dim = _factor_dim(params, f)
+        if max(emit.kernel.axes) >= dim:
+            raise ValueError(
+                f"emission {name!r} reads the continuous factor {parent!r} ({dim}-dimensional) "
+                f"through a grid over coordinate(s) {list(emit.kernel.axes)}; every axis must be a "
+                "coordinate of the factor"
+            )
+    for (name, emit), decl in zip(system._kernelled(params), decls, strict=True):
         where = f"emission {name!r}"
         if not isinstance(
             decl, ConditionalCategorical | ConditionalDirichlet | LGObservation | MLPConditional
@@ -611,96 +642,40 @@ def _refuse_shared_controls(
             )
 
 
-def _validate_lagged(system: System, params: SystemParams) -> None:
-    """A lagged modality's datum has the shape its read gives it: a categorical source (or an
-    action node) is read by a tabular modality over as many levels, a continuous one under the
-    identity kernel by a linear-Gaussian modality of its dimension, and through an indicator over
-    a grid by a tabular modality over the grid's cells. A Gaussian source has no ``stats``.
-
-    Design: nesting-and-coupling.md N3.
-    """
-    sources = system._lagged_reads
-    if not sources:
+def _validate_observes(system: System, params: SystemParams) -> None:
+    """A slot's port type is the type of the variable it observes (``System.observes``): a
+    modality's likelihood gives it ``(LEVEL, levels)`` or ``(FLOAT, dimension)``, a control node
+    its level count or width, and the variable's is the emission's or the action node's. The
+    amortized path has its own recurrent carry and observes none."""
+    if not system.observes:
         return
     if system._is_amortized(params):
         raise NotImplementedError(
-            "lagged modalities read the carry of the structured filter; the amortized path "
-            "has its own recurrent carry and reads none"
+            "observes: a modality observing an emission or an action node reads a datum the "
+            "caller supplies, and the amortized path has its own recurrent carry and reads none"
         )
-    mods, facs = system.modality_names, system._facs
-    families = system._families(params)
-    for m, (kind, index, read) in sources.items():
-        decl = params.likelihood[m]
-        grid = read.kernel if isinstance(read.kernel, Grid) else None
-        if kind == "action":
-            levels = system._control_levels(params)[index]
-            what = f"the action node {system.action_names[index]!r} ({levels} levels)"
-            width = None
-        elif grid is not None:
-            if families[index] == _hybrid.CATEGORICAL:
-                raise ValueError(
-                    f"modality {mods[m]!r} reads the categorical factor {facs[index]!r} through "
-                    "an indicator kernel, which is the cell a continuous factor falls in; read "
-                    "a categorical factor through the identity kernel"
-                )
-            dim = params.initial_state_prior[index].dim
-            if max(grid.axes) >= dim:
-                raise ValueError(
-                    f"modality {mods[m]!r} reads the continuous factor {facs[index]!r} "
-                    f"({dim}-dimensional) through a grid over coordinate(s) {list(grid.axes)}; "
-                    "every axis must be a coordinate of the factor"
-                )
-            levels = grid.n_cells
-            what = (
-                f"the continuous factor {facs[index]!r} through an indicator over a grid of "
-                f"{levels} cells"
+    space = system._space(params) if system._table.controls else None
+    nodes = system._table.control_names
+    types = {
+        **system._modality_types(params),
+        **{u: (space.kinds[k], int(space.sizes[k])) for k, u in enumerate(nodes)},
+    }
+    generated = {
+        **system._emission_types(params),
+        **{
+            a: (space.kinds[k], int(space.sizes[k]))
+            for k, a in enumerate(system.action_names or ())
+        },
+    }
+    for slot, variable in system.observes:
+        got, want = types[slot], generated[variable]
+        if got != want:
+            kind = {"level": "levels", "float": "dimensions"}
+            raise ValueError(
+                f"observes: {slot!r} observes {variable!r}, whose port is {want[1]} "
+                f"{kind[want[0]]} ({want[0]}), but the slot takes {got[1]} {kind[got[0]]} "
+                f"({got[0]}); the port types must be equal"
             )
-            width = None
-        elif families[index] == _hybrid.CATEGORICAL:
-            levels = _factor_levels(params, index)
-            what = f"the categorical factor {facs[index]!r} ({levels} levels)"
-            width = None
-        else:
-            levels = None
-            width = params.initial_state_prior[index].dim
-            what = f"the continuous factor {facs[index]!r} ({width}-dimensional)"
-            if read.realise == "stats":
-                raise ValueError(
-                    f"modality {mods[m]!r} reads {what} with realise='stats', the sufficient "
-                    "statistics of a Gaussian belief, which are deferred (design: "
-                    "nesting-and-coupling.md, Deferred); declare 'sample' or 'mode', or read "
-                    "the factor through an indicator over a Grid"
-                )
-        if levels is not None:
-            if not isinstance(decl, TabularObservation):
-                raise ValueError(
-                    f"modality {mods[m]!r} reads {what} at the previous tick as its datum, a "
-                    f"level or a probability vector, so it is a tabular modality over "
-                    f"{levels} levels; it is {type(decl).__name__}"
-                )
-            if decl.num_levels != levels:
-                raise ValueError(
-                    f"modality {mods[m]!r} reads {what} at the previous tick as its datum, so "
-                    f"its table has {levels} observation levels, not {decl.num_levels}"
-                )
-        else:
-            if not isinstance(decl, LGObservation):
-                hint = (
-                    "; a categorical modality reads a continuous factor through an indicator "
-                    "kernel, Read(modality, source, kernel=Grid(...))"
-                    if isinstance(decl, TabularObservation)
-                    else ""
-                )
-                raise ValueError(
-                    f"modality {mods[m]!r} reads {what} at the previous tick as its datum, the "
-                    f"belief's mean, so it is a linear-Gaussian modality over {width} "
-                    f"dimensions; it is {type(decl).__name__}{hint}"
-                )
-            if decl.obs_dim != width:
-                raise ValueError(
-                    f"modality {mods[m]!r} reads {what} at the previous tick as its datum, so "
-                    f"its observation is {width}-dimensional, not {decl.obs_dim}"
-                )
 
 
 def _validate_H_deps(system: System, params: SystemParams, facs: tuple[str, ...]) -> None:

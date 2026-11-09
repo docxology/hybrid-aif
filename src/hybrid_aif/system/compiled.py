@@ -7,7 +7,7 @@ are canonicalised, so the input-type differences that make a loop retrace cannot
 
 - parameters, beliefs, priors and the learn carries: NumPy leaves become JAX arrays and weak
   types become strong, each leaf keeping its dtype;
-- observations, ``previous``, ``externals`` and ``action``: a Python or NumPy number or array
+- observations, ``externals`` and ``action``: a Python or NumPy number or array
   becomes a strong array; an integer becomes the default integer dtype (int32 unless x64 is
   enabled), a float keeps its dtype unless it is narrower than float32, and a Python float
   becomes the default float dtype;
@@ -25,8 +25,8 @@ are canonicalised, so the input-type differences that make a loop retrace cannot
 - PRNG keys: typed keys become raw ``uint32`` key data;
 - ``priors``: ``None`` becomes :meth:`System.initial_priors`, and the result is completed to
   the key set :meth:`System.update_empirical_prior` returns: a discrete control node's entry
-  (uniform), and an observed action node's entry (the one-hot at ``previous[name]`` when
-  ``previous`` names it, else uniform), so the first tick shares a compile with the later ones.
+  (uniform), and an observed action node's entry (uniform), so the first tick shares a compile
+  with the later ones.
   A mixture prior declared with fewer components than ``mixture_k`` still differs from a pushed
   one, as it does eagerly; pad it with :func:`hybrid_aif.objectives.hybrid.pad_mixture` to
   remove the extra trace.
@@ -200,10 +200,10 @@ def _legal(system, params, legal, planner, face: str):
     return legal
 
 
-def _complete_priors(system, params, priors, previous, face: str):
+def _complete_priors(system, params, priors, face: str):
     """``priors`` (``None`` for the initial priors) with every key ``update_empirical_prior``
     returns: each discrete control node's entry, uniform when absent, and each observed action
-    node's entry, the one-hot at ``previous[name]`` when ``previous`` names it, else uniform."""
+    node's entry, uniform when absent."""
     out = dict(system.initial_priors(params) if priors is None else priors)
     params = system._params_in(params, face)
     for name, q in system._node_priors(params).items():
@@ -212,14 +212,8 @@ def _complete_priors(system, params, priors, previous, face: str):
         system._check_sensed_kinds(params, face)
         levels = system._control_levels(params)
         for k, name in zip(system._sensed_columns, system._sensed, strict=True):
-            if name in out:
-                continue
-            level = None if previous is None else previous.get(name)
-            if level is None:
+            if name not in out:
                 out[name] = Categorical(logits=jnp.zeros((levels[k],)))
-            elif jnp.issubdtype(jnp.asarray(level).dtype, jnp.integer):
-                out[name] = Categorical.from_probs(jax.nn.one_hot(level, levels[k]))
-            # a non-integer level is left for the face to refuse
     return out
 
 
@@ -256,10 +250,8 @@ def _infer_states(
     externals,
     present,
     key,
-    previous,
     detail,
     support_floor,
-    read_key,
 ):
     return system.infer_states(
         params,
@@ -270,8 +262,6 @@ def _infer_states(
         present=present,
         support_floor=support_floor,
         key=key,
-        previous=previous,
-        read_key=read_key,
     )
 
 
@@ -345,7 +335,6 @@ def _learn(
     prior,
     priors,
     externals,
-    read_key,
 ):
     return system.learn(
         params,
@@ -362,7 +351,6 @@ def _learn(
         prior=prior,
         priors=priors,
         externals=externals,
-        read_key=read_key,
     )
 
 
@@ -419,7 +407,7 @@ class CompiledSystem:
         system = self.system
         params = system._params_in(params, face)
         names = system._names(params)
-        raw = keyed.observations_in(names, system._with_lagged(observations), face)
+        raw = keyed.observations_in(names, observations, face)
         validation._check_observations(names.modalities, params, raw, face)
         return _values(observations)
 
@@ -435,13 +423,10 @@ class CompiledSystem:
         present: Mapping[str, bool | Array] | None = None,
         support_floor: float = SUPPORT_FLOOR,
         key: Array | None = None,
-        previous: Mapping[str, Any] | None = None,
-        read_key: Array | None = None,
     ):
         """:meth:`System.infer_states`, compiled: ``(beliefs, detail)``."""
         observations = self._observations(params, observations, "infer_states")
-        previous = _values(previous)
-        priors = _complete_priors(self.system, params, priors, previous, "infer_states")
+        priors = _complete_priors(self.system, params, priors, "infer_states")
         return self._call(
             "infer_states",
             _tree(_strong, params),
@@ -450,10 +435,8 @@ class CompiledSystem:
             _values(externals),
             _tree(_flag, present, seq_leaf=True),
             _key(key),
-            previous,
             detail,
             support_floor,
-            _key(read_key),
         )
 
     def infer_policies(
@@ -544,7 +527,6 @@ class CompiledSystem:
         prior: SystemParams | None = None,
         priors: Mapping[str, Any] | None = None,
         externals: Mapping[str, Array] | None = None,
-        read_key: Array | None = None,
     ):
         """:meth:`System.learn`, compiled: the parameters, or ``(parameters, LearnState)``."""
         observations = self._observations(params, observations, "learn")
@@ -564,7 +546,6 @@ class CompiledSystem:
             _tree(_strong, prior),
             _tree(_strong, priors),
             _values(externals),
-            _key(read_key),
         )
 
     def __getattr__(self, name: str):

@@ -1204,12 +1204,13 @@ def test_an_initial_prior_keeps_its_family_link_under_a_learning_replay():
     assert length.per_address["initial_state_prior:s0"].n == 1.0
 
 
-def test_a_lagged_modality_is_counted_from_an_episodes_second_tick():
-    """A lagged modality reads its datum from the carry, so an episode's first tick has none:
-    its default resolution is the valid ticks less one per episode."""
-    from tests.test_structure_learning import _lagged_system
+def test_a_modality_observing_an_emission_is_counted_from_an_episodes_second_tick():
+    """A modality that observes an emission of the System reads its datum from the previous tick,
+    so an episode's first tick has none: its default resolution is the valid ticks less one per
+    episode."""
+    from tests.test_structure_learning import _own_read_system
 
-    system, params = _lagged_system()
+    system, params = _own_read_system()
     ticks = 7
     rng = np.random.default_rng(2)
     observations = {
