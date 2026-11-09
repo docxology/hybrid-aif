@@ -2356,6 +2356,12 @@ class System(eqx.Module):
         process, pp = self._forward(lowered)
         names = self._names(params)._replace(
             modalities=tuple(name for name, _ in self._kernelled(lowered)),
+            #  the action keys of the forward process: a driven node, having no action node, is
+            #  keyed by its control node
+            actions=tuple(
+                u if a is None else a
+                for u, a in zip(self._table.control_names, self.action_names, strict=True)
+            ),
             sensed=(),
             observes=(),
             generated=(),
@@ -2474,13 +2480,43 @@ class System(eqx.Module):
                 f"nodes are {list(self._table.control_names)}"
             )
         env, ep = self._forward_env(params)
-        controls = {**inputs, **self._free_controls(key, params, inputs)}
+        controls = self._sample_controls(key, params, inputs)
         action = {
-            a: controls[u]
+            u if a is None else a: controls[u]
             for u, a in zip(self._table.control_names, self.action_names, strict=True)
         }
         emitted, nxt = env.step(key, state, action, ep, factors)
         return {**emitted, **self._unsampled(key, params, nxt, controls)}, nxt
+
+    def _sample_controls(
+        self, key: Array, params: SystemParams, inputs: Mapping[str, Array]
+    ) -> dict[str, Array]:
+        """The value of every control node of one sampled round: ``inputs``, a node whose driver
+        is an action node of this System taking that action node's level, and each remaining node
+        drawn freely (:meth:`_free_controls`). A driven node that ``inputs`` does not supply and no
+        action node of this System drives is refused."""
+        table = self._table
+        observed = dict(self.observes)
+        pairs = list(zip(table.control_names, self.action_names, strict=True))
+        action_node = {a: u for u, a in pairs if a}
+        internal = {
+            u: action_node[observed[u]]
+            for u, a in zip(table.control_names, self.action_names, strict=True)
+            if a is None and u not in inputs and observed.get(u) in action_node
+        }
+        lone = [
+            u
+            for u, a in zip(table.control_names, self.action_names, strict=True)
+            if a is None and u not in inputs and u not in internal
+        ]
+        if lone:
+            raise ValueError(
+                f"sample_step: control node {lone[0]!r} is driven (it has no action node) and "
+                "inputs does not supply it; pass its value in inputs, keyed by its control node"
+            )
+        controls = {**inputs, **self._free_controls(key, params, {**inputs, **internal})}
+        controls.update({u: controls[d] for u, d in internal.items()})
+        return controls
 
     def _emission_observer(self, kernelled: tuple, decls: tuple) -> tuple:
         """A positional process whose observation side is the ``kernelled`` emissions (pairs of

@@ -21,23 +21,29 @@ particles by links, and the clock that runs them.
   ``links=`` join separate particles through their blankets, a :class:`Link` from an action node
   to a process input or a mind's modality, or from a process observation to a mind's modality,
   typed and checked into a :class:`Wiring`.
-- :mod:`~hybrid_aif.composition.driver`: :func:`run` closes the loop under a declared tick
-  order, over a :class:`Wiring` (one :class:`MindRecord` or :class:`ProcessRecord` per
-  participant) or over a merged composite, each :data:`Step` acting through its own view of the
-  composite's params, which learning is written back to (a :class:`Trajectory`).
+- :mod:`~hybrid_aif.composition.runner`: :func:`run` steps a closed System (a merge or a coupling
+  whose every modality is fed by an identification) for a number of rounds and records a
+  :class:`Trajectory`. Each leaf, or a non-leaf node planned jointly, takes a :data:`Step`:
+  :func:`plan` for a planning mind, :func:`sample` for a process, or a function of the same shape.
+  :func:`with_mirror` couples a System to its own mirror, which closes it.
+- :mod:`~hybrid_aif.composition.driver`: the wired form of :func:`run` (a :class:`Wiring`, one
+  :class:`MindRecord` or :class:`ProcessRecord` per participant) and its composite form (a merged
+  composite, each :data:`MindStep` acting through its own view of the composite's params, which
+  learning is written back to, a :class:`CompositeTrajectory`), with :func:`particle`,
+  :func:`hold`, :func:`agent_step` and :func:`ancestral_step`.
 
 Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
 """
 
-from hybrid_aif.composition.couple import Wiring, couple
+from hybrid_aif.composition.couple import Wiring, couple, with_mirror
 from hybrid_aif.composition.driver import (
+    CompositeTrajectory,
     HoldCarry,
     MindCarry,
     MindRecord,
+    MindStep,
     ParticleCarry,
     ProcessRecord,
-    Step,
-    Trajectory,
     agent_step,
     ancestral_step,
     hold,
@@ -58,17 +64,21 @@ from hybrid_aif.composition.merge import (
     subsystem_factors,
     write_back,
 )
+from hybrid_aif.composition.runner import Step, Trace, Trajectory, plan, sample
 
 __all__ = [
     "Clamp",
+    "CompositeTrajectory",
     "HoldCarry",
     "Identify",
     "Link",
     "MindCarry",
     "MindRecord",
+    "MindStep",
     "ParticleCarry",
     "ProcessRecord",
     "Step",
+    "Trace",
     "Trajectory",
     "Wiring",
     "agent_step",
@@ -81,9 +91,12 @@ __all__ = [
     "namespaced_key",
     "nested",
     "particle",
+    "plan",
     "resolved_epistemic",
     "run",
+    "sample",
     "subsystem",
     "subsystem_factors",
+    "with_mirror",
     "write_back",
 ]

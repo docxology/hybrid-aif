@@ -165,10 +165,10 @@ def mind(
     return system, params
 
 
-def world(n: int = 4, slip: float = 0.2):
-    """The arena as a process: both positions, moved by two action inputs, emitting the two
-    positions and their binned distance; the prey starts in the first cell, the predator in
-    the last."""
+def world_model(n: int = 4, slip: float = 0.2) -> tuple[System, SystemParams]:
+    """The arena as a System that perceives: both positions, moved by two control nodes, observed
+    through the two positions and their binned distance; the prey starts in the first cell, the
+    predator in the last. Its mirror is the world a run couples the minds to."""
     k = n * n
     start = (0, k - 1)
     system = System(
@@ -190,6 +190,14 @@ def world(n: int = 4, slip: float = 0.2):
         transition={"prey": _cc(own_moves(n, slip), 2), "predator": _cc(own_moves(n, slip), 2)},
         initial_state_prior={"prey": _one_hot(start[0], k), "predator": _one_hot(start[1], k)},
     )
+    return system, params
+
+
+def world(n: int = 4, slip: float = 0.2):
+    """The arena as a process: both positions, moved by two action inputs, emitting the two
+    positions and their binned distance; the prey starts in the first cell, the predator in
+    the last."""
+    system, params = world_model(n, slip)
     env, ep = system.as_env(params)
     return env, dataclasses.replace(ep, actuator={})
 

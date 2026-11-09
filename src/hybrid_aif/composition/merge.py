@@ -2656,9 +2656,8 @@ def subsystem(
         if kept:
             C_deps.append((key, kept))
     #  an observation of a variable this component generates (its own emission, or an action
-    #  node it chooses) stays on the view; an observation of a sibling's emission leaves the
-    #  modality an ordinary observation, which the driver supplies from the sibling's carry
-    #  (Subsystem.reads)
+    #  node it chooses) stays on the view; an observation of a sibling's emission or action node
+    #  leaves the modality an ordinary observation, which the driver supplies
     view_observes = []
     held_emissions = {e for e, _ in view_emissions}
     for slot, variable in composite.observes:
@@ -2666,12 +2665,6 @@ def subsystem(
             continue
         if variable in held_emissions or variable in set(view_actions):
             view_observes.append((slot, variable))
-        elif variable in set(composite.action_names):
-            raise NotImplementedError(
-                f"modality {slot!r} of the view of {name!r} observes the action node "
-                f"{variable!r}, which another component chooses; a view observes the action "
-                "nodes it chooses"
-            )
     prefix = f"{name}{SEPARATOR}"
     recognition = tuple(e for e in composite.recognition or () if e.variable.startswith(prefix))
     external = tuple((n, w) for n, w in composite.external_inputs if n.startswith(prefix))

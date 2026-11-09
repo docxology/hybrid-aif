@@ -1,11 +1,13 @@
 """The driver: participants on a clock, in either of two forms.
 
-A participant of a round is a :data:`Step`, ``step(key, obs, carry, params) -> (action, carry',
+A participant of a round is a :data:`MindStep`, ``step(key, obs, carry, params) -> (action, carry',
 params')``: it is handed its parameters each round and returns them, the very same object when it
 did not learn, so a learner and a non-learner are one shape and the runner keeps what comes back.
 A step that holds a planner is informally a mind. :func:`agent_step` and :func:`ancestral_step`
 build the two ends of that spectrum, and :func:`hold` slows a step to one decision per option.
-:func:`run` closes the loop in one of two forms:
+:func:`run`, given a Wiring or the minds of a composite, closes the loop in one of two forms (a
+closed System is run by :func:`hybrid_aif.composition.runner.run`, whose steps are
+:func:`~hybrid_aif.composition.runner.plan` and :func:`~hybrid_aif.composition.runner.sample`):
 
 - **Wired** (:func:`~hybrid_aif.composition.couple.couple`): separate particles, minds and
   processes joined by typed wires, from an action node to a process input or a mind's modality,
@@ -25,7 +27,8 @@ build the two ends of that spectrum, and :func:`hold` slows a step to one decisi
   the home, with each control node another component chooses set to the level it last chose, a
   learner's returned parameter variables are written back to the home
   (:func:`~hybrid_aif.composition.merge.write_back`) and the next view is taken from the new
-  home. The record is a :class:`Trajectory`, whose ``params`` is the home after the last round.
+  home. The record is a :class:`CompositeTrajectory`, whose ``params`` is the home after the last
+  round.
 
 A merged composite is also one participant of the wired form: :func:`particle` turns it, with one
 step per view, into a single step for :func:`~hybrid_aif.composition.couple.couple`, so a particle
@@ -94,7 +97,11 @@ class MindCarry(NamedTuple):
     is what a modality that observes the emission takes as its datum on the next round (a custom
     step that keeps none, or a carry seeded through ``carries=`` without one, is read as absent on
     the next round). ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
-    Carries are never merged, so two minds share no leaf.
+    ``previous`` is the posterior of the last round and ``action`` the action it chose, the pair
+    ``System.learn`` takes as ``prev_beliefs`` and ``action`` (:func:`~hybrid_aif.composition.
+    runner.plan` keeps them, ``None`` before the first round); ``trace`` holds the last round's
+    :class:`~hybrid_aif.composition.runner.Trace` under ``plan(trace=True)``. Carries are never
+    merged, so two minds share no leaf.
 
     Design: nesting-and-coupling.md N1.
     """
@@ -102,13 +109,16 @@ class MindCarry(NamedTuple):
     beliefs: Mapping[str, Belief] | None = None
     learn_state: LearnState | None = None
     emitted: Mapping[str, Array] | None = None
+    previous: Mapping[str, Belief] | None = None
+    action: Mapping[str, Array] | None = None
+    trace: object | None = None
 
 
 #: One participant's round: ``obs`` is its own modalities keyed by name, ``action`` an int32 level
 #: per action node (a float vector for a continuous one), keyed by action-node name as
 #: :meth:`System.act` returns it. The params returned are the very same object as the ones given
 #: unless the step learned; the runner treats identity as "did not learn".
-Step = Callable[
+MindStep = Callable[
     [Array, Mapping[str, Array], MindCarry, SystemParams],
     tuple[Mapping[str, Array], MindCarry, SystemParams],
 ]
@@ -123,8 +133,8 @@ def _check_legal(system: System, params: SystemParams, legal, who: str) -> None:
         system._legal_logits(system._params_in(params, who), legal, system.policies(params), who)
 
 
-def agent_step(system: System, planner: Planner | None = None, **act_kwargs) -> Step:
-    """A full agent as a :data:`Step`: infer, act, carry the empirical prior, hand the params back.
+def agent_step(system: System, planner: Planner | None = None, **act_kwargs) -> MindStep:
+    """A full agent as a :data:`MindStep`: infer, act, carry the empirical prior, return params.
 
     ``system`` is the participant's System (typically
     :func:`hybrid_aif.composition.merge.subsystem`'s view): ``infer_states`` with the carried
@@ -173,8 +183,8 @@ def _agent_tick(system, params, planner, kwargs, key, obs, carry):
     return action, carry._replace(beliefs=pushed, emitted=emitted)
 
 
-def ancestral_step(system: System) -> Step:
-    """An env-like component as a carry-free :data:`Step`.
+def ancestral_step(system: System) -> MindStep:
+    """An env-like component as a carry-free :data:`MindStep`.
 
     The action is drawn from the declared prior over the participant's own control nodes and
     emitted keyed by their action nodes: ``policy_prior``'s first step if declared, else uniform
@@ -236,8 +246,8 @@ def ancestral_step(system: System) -> Step:
     return step
 
 
-class Trajectory(NamedTuple):
-    """What :func:`run` produced, recorded at tick boundaries.
+class CompositeTrajectory(NamedTuple):
+    """What the composite form of :func:`run` produced, recorded at tick boundaries.
 
     ``states``/``observations`` carry ``ticks + 1`` rows per composite factor/modality, keyed by
     name (row 0 is the reset); ``actions`` maps each composite action node (by name) to its
@@ -295,11 +305,11 @@ class HoldCarry(NamedTuple):
 
 
 def hold(
-    step: Step,
+    step: MindStep,
     ticks_per_unit: numbers.Real | Array = 1,
     *,
     system: System | None = None,
-) -> Step:
+) -> MindStep:
     """A step that decides once per option: ``step`` held for the option's duration.
 
     On a decision round the wrapper calls ``step``, stores its action and reads the duration with
@@ -436,7 +446,7 @@ class _Body:
         self,
         composite: System,
         params: SystemParams,
-        minds: Mapping[str, Step],
+        minds: Mapping[str, MindStep],
         who: str,
         in_order: bool = True,
         tick_order: str = "sequential",
@@ -579,8 +589,8 @@ class _Round:
 def particle(
     composite: System,
     params: SystemParams,
-    minds: Mapping[str, Step],
-) -> Step:
+    minds: Mapping[str, MindStep],
+) -> MindStep:
     """A merged composite with one step per view, as one step for :func:`couple`.
 
     The composite is one particle: its modalities are the participant's in-ports and its action
@@ -719,7 +729,7 @@ def _emitted(carry) -> Mapping[str, Array] | None:
 
 def _driven_reads(
     composite: System,
-    minds: Mapping[str, Step],
+    minds: Mapping[str, MindStep],
     routes: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]],
     emitters: Mapping[str, tuple[str, ...]],
 ) -> dict[str, list[tuple[str, str | None, str]]]:
@@ -840,10 +850,35 @@ def _supplied(
     return out
 
 
-def run(
+def run(system=None, params=None, *args, composite=None, **kwargs):
+    """Close the loop over a System for a number of rounds, and record a :class:`Trajectory`.
+
+    ``run(system, params, ticks, key, steps, clocks=None, tick_order="simultaneous",
+    carries=None, record_carries=False) -> Trajectory``; the full contract is
+    :func:`~hybrid_aif.composition.runner.run`'s. A call that names a :class:`Wiring`, or gives
+    the minds of a merged composite (``run(composite, params, minds, ticks, key, ...)``, or any of
+    the keywords ``composite``, ``minds``, ``state``, ``param_key``, ``states``), is the wired or
+    composite form this module describes and returns that form's record.
+    """
+    old_form = composite is not None
+    system = system if composite is None else composite
+    old_form = (
+        old_form
+        or isinstance(system, Wiring)
+        or (len(args) > 0 and isinstance(args[0], Mapping))
+        or bool({"minds", "state", "param_key", "states"} & set(kwargs))
+    )
+    if old_form:
+        return _run_composite_or_wired(system, params, *args, **kwargs)
+    from hybrid_aif.composition.runner import _run
+
+    return _run(system, params, *args, **kwargs)
+
+
+def _run_composite_or_wired(
     composite: "System | Wiring",
     params: SystemParams | None = None,
-    minds: Mapping[str, Step] | None = None,
+    minds: Mapping[str, MindStep] | None = None,
     ticks: int | None = None,
     key: Array | None = None,
     tick_order: TickOrder = "simultaneous",
@@ -853,7 +888,7 @@ def run(
     *,
     states: Mapping[str, Mapping[str, Array]] | None = None,
 ):
-    """Run steps and processes for a number of ticks; see the module docstring.
+    """The wired form and the composite form of :func:`run`; see the module docstring.
 
     **Wired form**, ``run(wiring, ticks=..., key=..., tick_order="simultaneous", carries=None,
     states=None) -> dict[str, MindRecord | ProcessRecord]``: ``wiring`` is
@@ -898,9 +933,9 @@ def run(
     ``SystemParams`` (when it does not return the params it was given) is refused naming the mind.
 
     **Composite form**, ``run(composite, params, minds, ticks, key, tick_order="simultaneous",
-    state=None, carries=None, param_key=None) -> Trajectory``: the composite's world is its own
-    model (``as_env``), run forward from ``params``. ``minds`` maps a subsystem name to its
-    :data:`Step`, in the order ``"sequential"`` follows. ``params`` is the parameter home, and
+    state=None, carries=None, param_key=None) -> CompositeTrajectory``: the composite's world is
+    its own model (``as_env``), run forward from ``params``. ``minds`` maps a subsystem name to its
+    :data:`MindStep`, in the order ``"sequential"`` follows. ``params`` is the parameter home, and
     each round a step is handed the view of its component taken from the home as it stands
     (:func:`~hybrid_aif.composition.merge.subsystem`, with each control node another component
     chooses that the view reads at the level that component last intended, uniform before any
@@ -917,7 +952,7 @@ def run(
     control node whose targets are conditional on it has no view before that node's chooser has
     chosen, so it is supported only where the chooser has chosen before the reader responds in
     every round: under ``"sequential"`` with the chooser listed first (checked up front); under
-    ``"simultaneous"`` and ``"async"`` it is refused up front. ``Trajectory.params`` is the
+    ``"simultaneous"`` and ``"async"`` it is refused up front. ``CompositeTrajectory.params`` is the
     home after the last round. :func:`particle` is the same per-round body as one step of a
     coupling. Every control node of the composite must be chosen by a named step, or this raises
     (give the component a step, or fix the node with a
@@ -976,14 +1011,14 @@ def run(
 def _run_composite(
     composite: System,
     params: SystemParams,
-    minds: Mapping[str, Step],
+    minds: Mapping[str, MindStep],
     ticks: int,
     key: Array,
     tick_order: TickOrder = "simultaneous",
     state: Mapping[str, Array] | None = None,
     carries: Mapping[str, MindCarry] | None = None,
     param_key: Array | None = None,
-) -> Trajectory:
+) -> CompositeTrajectory:
     """Run ``minds`` against the composite for ``ticks``: :func:`run`'s composite form, whose
     docstring describes it. The per-round body is :class:`_Body`'s, shared with :func:`particle`.
 
@@ -1098,7 +1133,7 @@ def _run_composite(
         action_log.append(action)
         realised_log.append(realised)
 
-    return Trajectory(
+    return CompositeTrajectory(
         states={f: jnp.stack([s[f] for s in states_log]) for f in c_facs},
         observations={m: jnp.stack([o[m] for o in obs_log]) for m in c_mods},
         actions={

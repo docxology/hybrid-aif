@@ -256,9 +256,10 @@ def merged_episode(
 # --------------------------------------------------------------- coupled: two minds
 
 
-def world(start=SYMMETRIC):
-    """The corridor as a process: both positions, each moved by its own action input,
-    emitting the two positions and the status."""
+def world_model(start=SYMMETRIC) -> tuple[System, SystemParams]:
+    """The corridor as a System that perceives: both positions, each moved by its own control
+    node, observed through the two positions and the status. Its mirror is the world a run
+    couples the robots to."""
     system = System(
         A_deps=((0,), (1,), (0, 1)),
         B_deps=((0, 2), (1, 3), (), ()),
@@ -278,6 +279,13 @@ def world(start=SYMMETRIC):
         transition={"a": _cc(own_moves(), 2), "b": _cc(own_moves(), 2)},
         initial_state_prior={"a": _one_hot(start[0], N), "b": _one_hot(start[1], N)},
     )
+    return system, params
+
+
+def world(start=SYMMETRIC):
+    """The corridor as a process: both positions, each moved by its own action input,
+    emitting the two positions and the status."""
+    system, params = world_model(start)
     env, env_params = system.as_env(params)
     return env, dataclasses.replace(env_params, actuator={})
 

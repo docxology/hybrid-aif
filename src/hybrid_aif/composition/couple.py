@@ -37,18 +37,19 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from hybrid_aif.composition.merge import Clamp, Identify, Link, _assemble
+from hybrid_aif.composition.merge import Clamp, Identify, Link, _assemble, driven_nodes
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical
 from hybrid_aif.envs.base import Env
 from hybrid_aif.envs.generative import GenerativeEnv, GenerativeEnvParams
 from hybrid_aif.system import System, SystemParams
 from hybrid_aif.system.core import _observation_type
+from hybrid_aif.system.mirror import mirror
 
 if TYPE_CHECKING:
-    from hybrid_aif.composition.driver import Step
+    from hybrid_aif.composition.driver import MindStep
 
-__all__ = ["Wiring", "couple"]
+__all__ = ["Wiring", "couple", "with_mirror"]
 
 #: A port's type: its kind (``"level"`` or ``"float"``) and its size (a level count or a width).
 PortType = tuple[str, int]
@@ -60,7 +61,7 @@ class Mind(NamedTuple):
 
     system: System
     params: SystemParams
-    step: "Step"
+    step: "MindStep"
     kernels: dict[str, Array]
 
 
@@ -280,6 +281,72 @@ def _fixed_value(port: str, value: object, kind: str, size: int) -> Array:
             f"process input {port!r} is {want}, so pass a float vector of that width"
         )
     return value
+
+
+def with_mirror(
+    system: System,
+    params: SystemParams,
+    *,
+    per_component: bool = False,
+    lower: bool = True,
+    param_key: Array | None = None,
+    names: tuple[str, str] = ("model", "world"),
+) -> tuple[System, SystemParams]:
+    """``system`` coupled with its own mirror: the closed System of a model and the world it models.
+
+    The coupling of ``names[0]`` (``system`` as given) and ``names[1]`` (``mirror(system,
+    params, lower=lower, param_key=param_key)``, the world that generated what the model
+    perceives): each modality of ``system`` that ``System.observes`` does not name is identified
+    with the world's emission of the same name, and each action node with the world's control node
+    it realises, which is then driven by it. Any System is accepted, a merged or coupled one
+    included, and nothing is assumed of it; the result is a closed System, which
+    :func:`~hybrid_aif.composition.runner.run` steps with ``plan()`` for the model's leaves and
+    ``sample()`` for the world. A modality ``system`` feeds from its own emission is no in-port
+    and gets no emission, as :func:`~hybrid_aif.system.mirror.mirror` drops it.
+
+    ``lower=True`` (the default) gives the world each learnable declaration at its posterior
+    mean, or at one draw under ``param_key``; ``lower=False`` keeps the declarations as the
+    model has them. ``per_component=True`` is refused: the mirror is of the System as a whole.
+    """
+    if per_component:
+        raise NotImplementedError(
+            "with_mirror(per_component=True): the mirror per component is not built; mirror the "
+            "System as a whole (per_component=False)"
+        )
+    if (
+        not isinstance(names, tuple | list)
+        or len(names) != 2
+        or any(not isinstance(n, str) or not n or "." in n for n in names)
+        or names[0] == names[1]
+    ):
+        raise ValueError(
+            f"with_mirror: names={names!r} is not two distinct component names; give a pair such "
+            "as ('model', 'world'), each a non-empty string without a dot"
+        )
+    model, world = names
+    mirrored, mirrored_params = mirror(
+        system, params, lower=lower, param_key=param_key, face="with_mirror"
+    )
+    fed = {slot for slot, _ in system.observes}
+    bindings = [
+        Identify(f"{world}.{m}", f"{model}.{m}") for m in system.modality_names if m not in fed
+    ]
+    names_of = system._names()
+    bindings += [
+        Identify(f"{model}.{a}", f"{world}.{u}")
+        for u, a in zip(names_of.controls, names_of.actions, strict=True)
+        if a is not None
+    ]
+    #  a control node the model drives internally (one of its action nodes identified with it) is
+    #  driven in the world by the same action node
+    bindings += [
+        Identify(f"{model}.{variable}", f"{world}.{node}")
+        for node, variable in driven_nodes(system).items()
+        if variable in set(names_of.actions)
+    ]
+    #  the mirror shares no declaration object with the model, whatever ``lower`` says
+    mirrored_params = jax.tree.map(jnp.array, mirrored_params)
+    return couple({model: (system, params), world: (mirrored, mirrored_params)}, bindings)
 
 
 def couple(

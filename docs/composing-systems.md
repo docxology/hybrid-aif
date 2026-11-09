@@ -833,18 +833,129 @@ with the view that chooses it. A view of a nested component is that component's 
 prior over the partner's node is the component's belief about its external world inside the
 particle (`design/nesting-and-coupling.md` N2).
 
-## One step per component: `run` on a composite, and `particle`
+## Running a closed System: `run`, `plan` and `sample`
 
-Every participant of a round is a `Step`, `step(key, obs, carry, params) -> (action, carry',
-params')`: it is handed its params each round and returns them, the very same object when it did
-not learn (an identity test, no tree comparison). `agent_step(system, planner=None, **act_kwargs)`
-infers, acts and carries the empirical prior; `ancestral_step(system)` draws from the declared
-habit; `hold(step, ticks_per_unit=1)` decides once per option (it reads the option's duration
-through `step.system`, which `agent_step` and `ancestral_step` set; a hand-written step sets that
-attribute, or `hold(step, system=...)` names the System). A step that returns params
-differing from those it was given is a learner. Under `couple` a mind is `(System, params,
-step)`: the params are the starting ones, `run` hands each mind its current params every round,
-and `rec[name].params` is what the step last returned (the starting object if it never learned).
+A **closed System** is a merge or a coupling in which every modality is fed by an identification
+(`System.observes`): nothing is perceived from outside. `with_mirror(system, params)` closes any
+System by coupling it to its mirror: each modality `observes` does not name is identified with the
+world's emission of that name, each action node with the world's control node it realises,
+and the world's copy of a control node the model drives internally by the same action node
+(`names=("model", "world")` names the two components; `lower=True` gives the world each learnable
+declaration at its posterior mean, or at one draw under `param_key`; `per_component=True` is
+refused). `run(system, params, ticks, key, steps, clocks=None, tick_order="simultaneous",
+carries=None, record_carries=False)` steps a closed System and returns a `Trajectory`.
+
+**Steps.** `steps` maps each **stepped node** to its step: a leaf (a component that is not itself
+composed), or a non-leaf node, which is then planned as one mind (the step is handed
+`joint_planner(system, params, node)`). The keys are an antichain over the System's components
+that covers every leaf: naming a node and a leaf beneath it is refused, and naming a node with a
+`sample()` leaf beneath it says to step that node's other leaves instead (the joint view would
+take the process's tables as part of its model). A step is
+`step(system, key, obs, carry, params) -> (out, carry', params')`:
+
+- `system` and `params` are its view, taken from the parameter home each round (the leaf's
+  `subsystem` view, or the joint view), and equal views share one compiled program;
+- `obs` maps each modality slot, and each control node a variable drives, by the slot's own name
+  (`agent.rover.gauge`), to the value of the variable it observes, `None` where that variable has
+  no value yet; a `plan()` step is handed its driven discrete control nodes as a view sliced at
+  the realised level (`subsystem(..., inputs=)`, averaged uniformly before the driver's first
+  realisation), every other step the unsliced view and the input in `obs`;
+- `out` maps its out-ports to values: the action nodes of the control nodes it chooses (an
+  intended level, or a float vector for a continuous node) and its emissions. A step that omits an
+  emission is refused on its first round, naming it; one that omits an action node, or returns a
+  key that is no out-port of its node, a level out of range or a value of the wrong shape, is
+  refused naming the node;
+- the params returned are the very object handed in when the step did not learn. A learner's
+  parameter variables are written back to the home (`write_back`, the view as `before`) and the
+  next view is taken from the new home; params that differ outside declared parameter variables
+  are refused.
+
+`plan(planner=None, learn=None, trace=False, replace=None, **act_kwargs)` is the step of a
+planning mind: infer from the carried prior (a `None` datum is an absent modality; a modality that
+observes a variable of its own view takes that variable's datum), learn when `learn` is set and a
+previous round exists (`True`: every learnable slot; a mapping of `System.learn` keywords; a
+sequence of slot keys, which learn at rate 1 and the rest at 0), act, push the posterior through
+the transition as the next prior and realise every emission of the view from the posterior. Its
+carry is a `MindCarry` (`beliefs`, `learn_state`, `previous`, `action`, and under `trace=True` the
+round's `Trace(q_pi, tree, policies)` in `carry.trace`). `replace={"policy_len": 2}` sets view
+fields, which on a non-leaf node is also where the joint view's configuration is given. A view with
+a driven continuous control node is refused for `plan()`, naming a custom step.
+`sample()` is the step of a process: its first call is `System.sample_initial` (or the partial
+point state `carries=` seeds), each round `System.sample_step` on the unsliced view with the
+driven control nodes taken from `obs`, returning its emissions and the action node of each control
+node nothing drives, drawn from its habit or uniformly. A custom step is any function of that
+shape; the view's `emit` realises its emissions (`view.emit(fold_in(key, EMIT_TAG), params,
+{**beliefs, <control levels>})`).
+
+**Rounds and variables.** Each variable (an action node or an emission) has one value per round.
+An action node is realised from its node's `params.actuator` kernel, a draw at the intended level,
+when the node decides, and stands until realised again; an emission is realised by the step that
+owns it. A modality, or a driven control node, reads the variable it observes as it stands at its
+turn, never a value that does not yet exist: a read of an emission or an action node is the value
+realised by the owner's last step, so a reader listed before its source sees the round before's
+and one listed after sees this round's.
+
+**Timing.** A round is one tick under every order and every stepped node steps once. A stepped
+node whose control node is identified with another stepped node's action node steps after that
+action is realised in the round, carrying the realised value. `"simultaneous"` (default) steps the
+nodes none of whose control nodes is driven by an action node on the round's boundary (phase one,
+their action nodes realised together), then the others in an order that respects the rule (phase
+two), each reading its driven nodes as realised this round and every other slot at the
+boundary. `"sequential"` steps in the order of the System's components, each reading what stands,
+and refuses a node listed before the node whose action drives it. `"async"` runs phase one in a
+fresh random order each round (reproducible from the run key) and phase two as under
+simultaneous. A cycle of action-to-control identifications is refused. The actuator is applied
+only by the node that decides; a node with `params.durations` and `clocks=` are not run (a round
+decides every node).
+
+**The first call is the reset.** Before round 0 every step is called once with `obs=None`, in node
+order, with its seeded carry (`carries=`) or `None`, and the keys `k_reset` for the first node and
+`fold_in(k_reset, j)` after. What it returns stands entering round 0 and nothing is written back.
+`plan()` returns nothing and leaves the declared initial priors as the first prior; `sample()`
+returns the emissions of the initial state and the state as its carry; a custom step returns
+`{}, carry, params`.
+
+**Keys.** `key, k_reset = split(key)`; each round `key, k_tick = split(key)` and `k_tick` splits in
+`2N + 1` for `N` stepped nodes: node `j` steps with key `j`, its action nodes are realised with
+key `N + j` (the last key for the nodes of phase one under `"simultaneous"`), and node `i` of the
+`A` action nodes of the System (those of driven control nodes excluded) draws its realisation from
+`split(fold_in(k, ACTUATOR_TAG), A)[i]`; an emission draws from the step key folded with
+`EMIT_TAG`.
+
+**The record.** A `Trajectory` is a tree with one node per component. The root holds `params`
+(the home after the last round); every node holds `parts` (its components, by name relative to
+the node) and, as mappings keyed relative to the node (a non-leaf node's are the prefixed union of
+its parts'): `received` and `present` (what each modality slot and driven node held for its step,
+`ticks + 1` entries, the last what the slots hold after the last round; an absent value is zeros),
+`emitted` (the realised action nodes and emissions, `ticks` entries), `intended` (the action
+nodes as chosen), `start` (the out-ports holding a value entering round 0), `carries` (the carry
+after each round, `ticks + 1` entries, when `record_carries=True`), `carry` (after the last
+round) and
+`decided` (a bool per round). `trajectory["agent.rover"]` walks the tree by dotted path, and a
+jointly planned node is a leaf of the tree.
+
+```python
+from hybrid_aif.composition import plan, run, sample, with_mirror
+
+system, params = with_mirror(model, model_params)       # the model and the world it models
+traj = run(system, params, 100, key, {"model": plan(), "world": sample()})
+traj["world"].emitted["gauge"]      # what the world emitted, one entry per round
+traj["model"].carry.beliefs         # the mind's carried prior
+```
+
+## The composite form of `run`, the wired form and `particle`
+
+The composite form and the wired form of `run` take a `MindStep` per participant,
+`step(key, obs, carry, params) -> (action, carry', params')`: it is handed its params each round
+and returns them, the very same object when it did not learn (an identity test, no tree
+comparison). `agent_step(system, planner=None, **act_kwargs)` infers, acts and carries the
+empirical prior; `ancestral_step(system)` draws from the declared habit; `hold(step,
+ticks_per_unit=1)` decides once per option (it reads the option's duration through `step.system`,
+which `agent_step` and `ancestral_step` set; a hand-written step sets that attribute, or
+`hold(step, system=...)` names the System). A step that returns params differing from those it was
+given is a learner. Under `couple` a mind is `(System, params, step)`: the params are the starting
+ones, `run` hands each mind its current params every round, and `rec[name].params` is what the
+step last returned (the starting object if it never learned).
 
 `run(composite, params, minds, ...)` over a merged composite (the composite's own model as the
 world) takes one step per component. `params` is the *parameter home*: each round every step is
@@ -862,8 +973,9 @@ returns other than the ones it was given are written back to the home with `writ
 it was given as `before`, so a stale `before` cannot happen and the next component to respond sees
 the learning. Only declared parameter variables are written back: a step whose returned params
 differ outside them is refused, so a learned table must be a `Parameter` variable. The world does
-not learn: it runs the starting `params` forward. `Trajectory.params` is the home after the last
-round, and every belief read of a minded component is supplied from the carries as above.
+not learn: it runs the starting `params` forward. This form returns a `CompositeTrajectory`, whose
+`params` is the home after the last round, and every belief read of a minded component is supplied
+from the carries as above.
 
 `particle(composite, params, minds)` is the same per-round body as one step for `couple`: the
 composite's modalities are its in-ports, its action nodes its out-ports, and an outside world

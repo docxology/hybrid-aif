@@ -1054,8 +1054,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   params)` wherever it is planned as one mind (`run`, `particle`, `agent_step`, the faces).
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
 - **Params flow through the runner (unreleased)**: one participant shape,
-  `Step = step(key, obs, carry, params) -> (action, carry', params')`, for
-  every mind of `run`. `agent_step(system, planner=None, **act_kwargs)`,
+  `MindStep = step(key, obs, carry, params) -> (action, carry', params')`, for
+  every mind of the composite and wired forms of `run`.
+  `agent_step(system, planner=None, **act_kwargs)`,
   `ancestral_step(system)` and `hold(step, ticks_per_unit=1)` replace the
   closed-over `agent_respond`, `ancestral_respond` and `hold(system, params,
   respond, ...)`; `hold` reads the option's duration through `step.system`
@@ -1063,7 +1064,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   its params each round and returns them, the same object when it did not learn;
   the wired `run` records the last in `MindRecord.params`, and the composite
   form hands each component its view of the composite's params, writes learning
-  back and records the result in `Trajectory.params`. `ViewRespond`,
+  back and records the result in `CompositeTrajectory.params`. `ViewRespond`,
   `view_respond` and `particle_params` are gone; `particle` takes plain steps.
   Upgrading: a composite in which a view reads a control node another
   component chooses now runs that view at the chooser's level rather than the
@@ -1071,7 +1072,31 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   such a reader with no uniform view is refused up front except under
   `"sequential"` with the chooser listed first, as is a non-identity action
   kernel on the node it reads (`design/engine-consolidation.md` step 1;
-  `composing-systems.md`, "One step per component").
+  `composing-systems.md`, "The composite form of `run`").
+- **`run` over a closed System (unreleased)**: `run(system, params, ticks, key, steps, clocks=None,
+  tick_order="simultaneous", carries=None, record_carries=False)` steps a **closed System** (a merge
+  or a coupling whose every modality is fed by an identification) and returns a `Trajectory`, a
+  tree with one node per component: the params at the root, and per node `received`, `present`,
+  `emitted`, `intended`, `start`, `carries`, `carry` and `decided`, with dotted lookup
+  (`trajectory["agent.rover"]`). `steps` names a step for every leaf, or for a non-leaf node, which
+  is then planned as one mind (`joint_planner`): `plan(planner=None, learn=None, trace=False,
+  replace=None, **act_kwargs)` for a planning mind (a `MindCarry` carries `previous`, `action` and
+  `trace`; `Trace` holds `q_pi`, the term tree and the enumerated policies), `sample()` for a
+  process sampled forward from its System, or any `step(system, key, obs, carry, params)`. One
+  value per variable per round: an action node is realised from its node's `params.actuator`
+  kernel when the node decides, an emission by the step that owns it, and a reader reads a variable
+  as it stands at its turn. A node whose control node is driven by another node's action steps
+  after that action is realised in the round, so `"simultaneous"` runs the undriven nodes on the
+  round's boundary and the driven ones after them. The first call of every step has `obs=None` and
+  is its reset. `with_mirror(system, params)` couples a System to its own mirror and so closes it.
+  The wired and composite forms, `particle`, `hold`, `agent_step` and `ancestral_step` are
+  unchanged; the composite form returns a `CompositeTrajectory`. A modality may observe another
+  component's action node, which the view leaves an ordinary observation. `System.sample_step`
+  takes the value of a driven control node under its control node's name. Not run: `clocks=` and a
+  node whose view declares durations (a round decides every node), and `with_mirror(per_component=
+  True)`. Upgrading: a perceiver of another node's action node sees it as absent (`None`, handled
+  through `present=`) in round 0 under `run`, where the wired form handed it level 0.
+  `design/engine-consolidation.md` chunk B; `composing-systems.md`.
 - **Shipped to robots**: the downstream coverage agent (EFE-driven coverage
   at tuned-heuristic parity with the hand-tuned coefficients removed;
   stage-2 learns localization noise online).

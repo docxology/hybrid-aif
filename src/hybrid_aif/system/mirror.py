@@ -132,13 +132,20 @@ def mirror(
         (m, Emission(tuple(parent(g) for g in deps)))
         for m, deps in zip(system.modality_names, system.A_deps, strict=True)
     )
+    #  a control node the System drives itself (no action node) is an input of the world like any
+    #  other, and gets an action node of its own to be driven or drawn
+    taken = {a for a in system.action_names or () if a is not None}
+    actions = tuple(
+        a if a is not None else _action_name(u, taken)
+        for u, a in zip(table.control_names, system.action_names, strict=True)
+    )
     world = System(
         B_deps=system.B_deps,
         A_deps=(),
         D_deps=system.D_deps,
         controls=system.controls,
         factor_names=system.factor_names,
-        action_names=system.action_names,
+        action_names=actions,
         modality_names=(),
         emissions=emissions,
         dims=system.dims,
@@ -170,6 +177,18 @@ def mirror(
         references=references,
     )
     return world, keyed.params_keyed(world._names(), mirrored)
+
+
+def _action_name(node: str, taken: set[str]) -> str:
+    """The action node name for a control node that has none: ``u_x`` gives ``a_x`` under the same
+    namespace, any other name gets ``_action`` appended; a name already taken gets a suffix."""
+    head, _, tail = node.rpartition(".")
+    name = f"a_{tail.removeprefix('u_')}" if tail.startswith("u_") else f"{tail}_action"
+    name = f"{head}.{name}" if head else name
+    while name in taken:
+        name += "_"
+    taken.add(name)
+    return name
 
 
 def _first_step_habit(system: System, params: SystemParams, habit, face: str):
