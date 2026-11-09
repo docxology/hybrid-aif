@@ -245,6 +245,7 @@ def replay(
     action, and the modality is absent at the first tick. A datum the trace supplies wins.
     """
     system._refuse_sensed("replay")
+    system._plannable("replay", params)
     view = system._params_in(params, "replay")  # the positional view the scan carries
     amortized = system._is_amortized(view)
     names = system._names(view)

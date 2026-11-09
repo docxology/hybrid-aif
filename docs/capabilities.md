@@ -948,7 +948,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   `design/control-states.md`, amendment.
   **A view contracts a partner's node in a target.** `subsystem` carries a per-step target
   (`obs_targets`, `state_targets`) conditional on another component's control node by
-  contracting that parent axis with `partner_priors[node]`, as it terminates the node's
+  contracting that parent axis with `inputs[action node]`, as it terminates the node's
   transition axis: an int slices the level, a Categorical mixes a categorical target's
   preferences under its probabilities in probability space, as a soft step does, and a
   Gaussian target under a spread prior is refused, as is a missing entry. Design:
@@ -1024,6 +1024,23 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   factor's probabilities or of a mean or a cell by `mode`, and everything that does not read a
   belief, is bitwise unchanged (`design/engine-consolidation.md` chunk B;
   `composing-systems.md`).
+- **The splice and its bindings (unreleased)**: `couple(components, bindings, fixed)` returns a
+  `(System, SystemParams)`: the components spliced and joined by `Identify(out_port, in_port)`
+  (an action node or an emission with a modality or a control node) and `Clamp`, every other
+  binding refused naming `merge`. An identified modality or control node is written into
+  `System.observes`; a **driven** control node, the in-port that carries an out-port's realised
+  value, has no action node of its own (`action_names` entry `None`), is never chosen by a
+  planner, and is described under `relations.driven`. A leaf keeps its own planner configuration
+  (`Subsystem.config`), habit, precision, durations and scoring (`SystemParams.parts`) and
+  recognition, so a leaf with recognition or a scoring estimator is coupled where `merge` refuses
+  it; the composite states a planner field where its leaves agree and holds `UNSET` where they
+  differ, and a coupling is run leaf by leaf: `policies`, `infer_policies`, `act`, `elapsed` and
+  `replay` refuse it, and a leaf is planned through its view.
+  `subsystem(composite, params, name, inputs=None)` slices or averages a driven node and a
+  partner's node by the variable that drives it; `partner_priors` and `partner_controls` are
+  gone (a view's `inputs` are keyed by the action node, where `partner_priors` was keyed by the
+  control node). A merge of leaves that agree is unchanged, and a coupling may be merged and a
+  merge coupled (`design/engine-consolidation.md` chunk B; `composing-systems.md`).
 - **Params flow through the runner (unreleased)**: one participant shape,
   `Step = step(key, obs, carry, params) -> (action, carry', params')`, for
   every mind of `run`. `agent_step(system, planner=None, **act_kwargs)`,

@@ -29,7 +29,7 @@ from hybrid_aif.composition import (
     subsystem,
     write_back,
 )
-from hybrid_aif.composition.merge import partner_controls, retake
+from hybrid_aif.composition.merge import _partner_inputs, retake
 from tests.test_merge import OBSERVATION_BINDINGS, merged
 from tests.test_sibling_read import _composite, _rover
 from tests.test_subsystem_conditional_target import _conditional_target, _two_tier
@@ -37,6 +37,7 @@ from tests.test_subsystem_conditional_target import _rover as _target_rover
 
 KEY = jax.random.PRNGKey(0)
 NODE = "agent.u_location"
+ACTION = "agent.a_location"
 SAME_STEP = Link("agent.a_location", "world.u_location")
 
 _PATH = pathlib.Path(__file__).resolve().parents[1] / "examples" / "compose_minds.py"
@@ -71,14 +72,12 @@ def _recording(log):
 
 def test_the_view_that_reads_a_partner_s_node_names_it():
     comp, _, _ = _zoo()
-    assert partner_controls(comp, "world") == (NODE,)
-    assert partner_controls(comp, "agent") == ()
+    assert _partner_inputs(comp, "world") == (ACTION,)
+    assert _partner_inputs(comp, "agent") == ()
 
 
 def _level_view(comp, cp, level):
-    return subsystem(
-        comp, cp, "world", partner_priors={NODE: level} if level is not None else None
-    )[1]
+    return subsystem(comp, cp, "world", inputs={ACTION: level} if level is not None else None)[1]
 
 
 def test_a_driver_listed_first_is_seen_by_the_driven_view_the_same_round():
@@ -116,7 +115,7 @@ def test_one_compiled_program_serves_every_routed_level():
     for view in views:
         probe(view)
     assert len(traces) == 1  # the uniform round-0 view shares the program
-    systems = [subsystem(comp, cp, "world", partner_priors={NODE: lv})[0] for lv in (0, 3)]
+    systems = [subsystem(comp, cp, "world", inputs={ACTION: lv})[0] for lv in (0, 3)]
     assert eqx.tree_equal(*systems)
 
 
@@ -604,7 +603,7 @@ def test_a_slow_mind_under_hold_and_a_fast_learner_sharing_a_parameter():
     )
     mview = subsystem(comp, cp, "mission")[0]
     mview = dataclasses.replace(mview, policy_len=1)
-    rview = subsystem(comp, cp, "rover", partner_priors={"mission.u_option": 0})[0]
+    rview = subsystem(comp, cp, "rover", inputs={"mission.option": 0})[0]
     slow_seen, fast_seen = [], []
     slow_inner = agent_step(mview, selection="deterministic")
 
@@ -633,7 +632,7 @@ def test_a_slow_mind_under_hold_and_a_fast_learner_sharing_a_parameter():
             _field(slow_seen[decision]), base + t
         )  # the fast mind's counts so far
     for t, given in enumerate(fast_seen):
-        want = subsystem(comp, cp, "rover", partner_priors={"mission.u_option": options[t]})[1]
+        want = subsystem(comp, cp, "rover", inputs={"mission.option": options[t]})[1]
         assert _same(given.state_targets, want.state_targets)  # the level in force, held or fresh
         assert np.array_equal(_field(given), base + t)
     assert options[0] == options[1] == options[2] and options[3] == options[4] == options[5]

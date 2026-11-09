@@ -152,6 +152,17 @@ class FaceNames(NamedTuple):
         return tuple(n for k, n in enumerate(self.controls) if self.kind(k) == LEVEL)
 
     @property
+    def action_keys(self) -> tuple[str, ...]:
+        """The key each control node's action is read from: its action node's name, and for a
+        driven node (no action node) the variable that drives it, the realised value being that
+        variable's."""
+        observed = dict(self.observes)
+        return tuple(
+            a if a is not None else observed.get(u, u)
+            for u, a in zip(self.controls, self.actions, strict=True)
+        )
+
+    @property
     def public(self) -> Names:
         return Names(self.factors, self.controls, self.modalities, self.actions, self.emissions)
 
@@ -164,7 +175,7 @@ class FaceNames(NamedTuple):
         if kind == "observations":
             return self.modalities
         if kind == "actions":
-            return self.actions
+            return tuple(a for a in self.actions if a is not None)
         if kind == "controls":
             return self.controls
         raise ValueError(
@@ -186,6 +197,11 @@ def _crossed(names: FaceNames, kind: str, key: str) -> str | None:
     keyed by an action node; ``None`` for any other key."""
     if kind == "actions" and key in names.controls:
         action = names.actions[names.controls.index(key)]
+        if action is None:
+            return (
+                "a driven control node, whose level is the realised value of the variable that "
+                "drives it; key that variable's action, not the node"
+            )
         return f"the control node of action {action!r}; key the action by {action!r}"
     if kind == "controls" and key in names.actions:
         node = names.controls[names.actions.index(key)]
@@ -394,7 +410,7 @@ def factor_actions_in(names: FaceNames, mapping: Any, face: str, lead_shape: tup
     trace time).
     """
     check_mapping(names, "actions", mapping, face)
-    keys = names.actions
+    keys = names.action_keys
     _check_factor_columns(names, face)
     _refuse_mixed(names, face)
     values = [jnp.asarray(mapping[k]) for k in keys]
@@ -452,7 +468,11 @@ def factor_actions_out(names: FaceNames, action, check: bool = False) -> dict:
                 f"from_positional('actions', ...): uncontrolled factor(s) {stray} carry a "
                 "nonzero level; an uncontrolled factor has only the no-op level 0"
             )
-    return {k: action[..., f] for k, f in zip(keys, names.controlled_factors, strict=True)}
+    return {
+        k: action[..., f]
+        for k, f in zip(keys, names.controlled_factors, strict=True)
+        if k is not None
+    }
 
 
 def _check_factor_columns(names: FaceNames, face: str) -> None:
@@ -531,7 +551,9 @@ def _split_flat(names: FaceNames, action) -> dict:
             f"a continuous action is the flat (..., {want}) float vector, got dtype "
             f"{action.dtype}; this System's controls {list(keys)} take float blocks"
         )
-    return {key: names.layout.node_block(k, action) for k, key in enumerate(keys)}
+    return {
+        key: names.layout.node_block(k, action) for k, key in enumerate(keys) if key is not None
+    }
 
 
 def actions_in(names: FaceNames, mapping: Any, face: str, lead_shape: tuple | None = None):
@@ -545,7 +567,7 @@ def actions_in(names: FaceNames, mapping: Any, face: str, lead_shape: tuple | No
     are static, so the checks run at trace time).
     """
     check_mapping(names, "actions", mapping, face)
-    keys = names.actions
+    keys = names.action_keys
     values = [jnp.asarray(mapping[k]) for k in keys]
     _check_levels(names, keys, values, face)
     _check_continuous(names, keys, values, face)
@@ -569,7 +591,7 @@ def actions_out(names: FaceNames, action) -> dict:
     mixed space's :class:`~hybrid_aif.controls.ControlStep`) as ``{node: value}``."""
     keys = names.actions
     if isinstance(action, ControlStep):
-        return dict(zip(keys, action.entries, strict=True))
+        return {k: v for k, v in zip(keys, action.entries, strict=True) if k is not None}
     action = jnp.asarray(action)
     if names.layout is not None:
         return _split_flat(names, action)
@@ -584,7 +606,7 @@ def actions_out(names: FaceNames, action) -> dict:
             f"actions {list(keys)} are not integer (positional dtype {action.dtype}); a discrete "
             f"control's action is a level index (an integer array){hint}"
         )
-    return {k: action[..., i] for i, k in enumerate(keys)}
+    return {k: action[..., i] for i, k in enumerate(keys) if k is not None}
 
 
 # ------------------------------------------------------------------------------------- detail

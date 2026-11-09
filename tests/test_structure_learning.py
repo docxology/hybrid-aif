@@ -893,7 +893,7 @@ def test_observes_refusals_and_description():
 
     with pytest.raises(ValueError, match="does not generate"):
         _own_read_system(observes={"prev_x": "nowhere"})
-    with pytest.raises(ValueError, match="not a modality"):
+    with pytest.raises(ValueError, match="neither a modality"):
         _own_read_system(observes={"elsewhere": "x_mean"})
     with pytest.raises(ValueError, match="twice"):
         _own_read_system(observes=(("prev_x", "x_mean"), ("prev_x", "kind_vector")))

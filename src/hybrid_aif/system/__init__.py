@@ -17,9 +17,11 @@ Design: docs/design/system.md (the ``system`` package).
 
 from hybrid_aif.system.core import (
     ACTOR_KEY,
+    UNSET,
     AmortizedScoring,
     Belief,
     LearnState,
+    PartParams,
     Ports,
     Subsystem,
     System,
@@ -35,9 +37,11 @@ from hybrid_aif.system.selectors import (
 
 __all__ = [
     "ACTOR_KEY",
+    "UNSET",
     "AmortizedScoring",
     "Belief",
     "LearnState",
+    "PartParams",
     "Ports",
     "Subsystem",
     "System",

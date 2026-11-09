@@ -98,7 +98,8 @@ NAMES = (
 
 def _shown(system: H.System) -> H.System:
     """``system`` with each component record cut to what a document shows: no relayed,
-    terminated or identified nodes, and ``actions`` naming only the control nodes present."""
+    terminated or identified nodes, no leaf configuration or recognition record, and ``actions``
+    naming only the control nodes present."""
     if system.subsystems is None:
         return system
     present = set(system.names.controls)
@@ -109,6 +110,8 @@ def _shown(system: H.System) -> H.System:
                 relayed=(),
                 terminated=(),
                 identified=(),
+                config=(),
+                recognition=(),
                 actions=tuple(pair for pair in sub.actions if pair[0] in present),
             ),
         )

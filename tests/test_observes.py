@@ -74,7 +74,7 @@ def test_observes_is_normalised_from_a_mapping_and_validated_structurally():
     )
     with pytest.raises(TypeError, match="observes maps"):
         dataclasses.replace(system, observes={"read_x": 3})
-    with pytest.raises(ValueError, match="not a modality"):
+    with pytest.raises(ValueError, match="neither a modality"):
         dataclasses.replace(system, observes={"nowhere": "x_mean"})
     with pytest.raises(ValueError, match="twice"):
         dataclasses.replace(system, observes=(("read_x", "x_mean"), ("read_x", "cell_mass")))
@@ -98,15 +98,18 @@ def test_the_port_types_of_a_slot_and_its_variable_must_agree():
             wrong._validate(params)
 
 
-def test_a_control_node_slot_is_refused_until_driving_by_identification_is_built():
+def test_a_control_node_slot_is_driven_and_has_no_action_node():
     system, params = pusher()
-    with pytest.raises(ValueError, match="driving a control node by identification"):
-        dataclasses.replace(
-            system,
-            emissions={"x_out": Emission(("x",), "mode", kernel="identity")},
-            observes={"u_push": "x_out"},
-        )
-    with pytest.raises(ValueError, match="not a modality"):
+    emissions = {"x_out": Emission(("x",), "mode", kernel="identity")}
+    with pytest.raises(ValueError, match="its action node 'push' is named"):
+        dataclasses.replace(system, emissions=emissions, observes={"u_push": "x_out"})
+    driven = dataclasses.replace(
+        system, emissions=emissions, observes={"u_push": "x_out"}, action_names=(None,)
+    )
+    assert "u_push" not in driven.ports(params).ins and "push" not in driven.ports(params).outs
+    with pytest.raises(ValueError, match=r"control node\(s\) \['u_push'\] are driven"):
+        driven.policies(params)
+    with pytest.raises(ValueError, match="neither a modality"):
         dataclasses.replace(system, emissions={"e": ("x",)}, observes={"x": "e"})
 
 

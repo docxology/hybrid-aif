@@ -372,7 +372,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     document, arrays = describe(relay, rp)
     rebuilt = build(document, arrays=arrays)[0]
     agent, world = dict(rebuilt.subsystems)["agent"], dict(rebuilt.subsystems)["world"]
-    assert agent == dict(relay.subsystems)["agent"]
+    assert agent == dict(relay.subsystems)["agent"]._replace(config=())
     assert world.factors == (2, 3) and world.controls == () and world.relayed == ()
     (agent_s, ap), (world_s, wp) = agent_and_world()
     ended, ep = merge(
@@ -384,7 +384,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     assert "world.u_location" not in document["variables"]
     rebuilt = build(document, arrays=arrays)[0]
     assert dict(rebuilt.subsystems)["world"].terminated == ()
-    assert dict(rebuilt.subsystems)["agent"] == dict(ended.subsystems)["agent"]
+    assert dict(rebuilt.subsystems)["agent"] == dict(ended.subsystems)["agent"]._replace(config=())
 
 
 # --------------------------------------------------------------------- the actuator, further
@@ -622,14 +622,13 @@ def test_a_binding_that_would_drop_a_kernel_is_refused():
         merge({"w": a}, {"w": ap}, [Clamp("w.u_push", 0)])
 
 
-def test_partner_priors_keyed_by_an_action_node_name_the_control_node():
+def test_inputs_are_keyed_by_the_action_node_and_a_control_node_key_is_refused():
     (agent, ap), (world, wp) = agent_and_world()
     composite, cp = merge(
         {"agent": agent, "world": world},
         {"agent": ap, "world": wp},
         [Link("agent.a_location", "world.u_location"), *OBSERVATION_BINDINGS],
     )
-    with pytest.raises(ValueError, match="the action node of control node 'agent.u_location'"):
-        subsystem(composite, cp, "world", partner_priors={"agent.a_location": 0})
-    with pytest.raises(ValueError, match="partner_priors names 'world.u_location', a control node"):
-        subsystem(composite, cp, "world", partner_priors={"world.u_location": 0})
+    subsystem(composite, cp, "world", inputs={"agent.a_location": 0})
+    with pytest.raises(ValueError, match="inputs names 'world.u_location', a control node"):
+        subsystem(composite, cp, "world", inputs={"world.u_location": 0})

@@ -117,13 +117,13 @@ def _scores(view, vp):
 def test_a_point_prior_slices_the_target_as_a_hand_sliced_composite_does(level, shared_chol):
     cond_system, cond_params = _rover(_conditional_target(shared_chol), (("x", ("u_opt",)),))
     cs, cp = _two_tier(cond_system, cond_params)
-    view, vp = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": level})
+    view, vp = subsystem(cs, cp, "rover", inputs={"mission.option": level})
     assert view.C_deps == ()
     chol = TARGET_CHOL[0] if shared_chol else TARGET_CHOL[level]
     by_hand = Gaussian(loc=jnp.asarray(TARGET_LOC[level], jnp.float32), chol=jnp.asarray(chol))
     ref_system, ref_params = _rover(by_hand)
     ref_cs, ref_cp = _two_tier(ref_system, ref_params)
-    ref, rp = subsystem(ref_cs, ref_cp, "rover", partner_priors={"mission.u_option": level})
+    ref, rp = subsystem(ref_cs, ref_cp, "rover", inputs={"mission.option": level})
     got = vp.state_targets["rover.x"]
     np.testing.assert_allclose(got.loc, by_hand.loc)
     np.testing.assert_allclose(got.chol, by_hand.chol)
@@ -184,7 +184,7 @@ def test_a_soft_prior_mixes_a_categorical_targets_preferences_in_probability_spa
     (cs, cp), tab = _tabular_pair()
     weights = jnp.asarray([0.25, 0.75])
     view, vp = subsystem(
-        cs, cp, "follow", partner_priors={"lead.u_d": Categorical(logits=jnp.log(weights))}
+        cs, cp, "follow", inputs={"lead.pick": Categorical(logits=jnp.log(weights))}
     )
     assert view.C_deps == ()
     got = vp.state_targets["follow.s"]
@@ -200,7 +200,7 @@ def test_the_views_soft_target_is_the_composites_soft_step_resolution(w):
     (cs, cp), _ = _tabular_pair(table=jnp.asarray([[0.38, -0.4], [1.92, 0.31]]))
     weights = jnp.asarray(w)
     view, vp = subsystem(
-        cs, cp, "follow", partner_priors={"lead.u_d": Categorical(logits=jnp.log(weights))}
+        cs, cp, "follow", inputs={"lead.pick": Categorical(logits=jnp.log(weights))}
     )
     soft_step = resolve_step_targets(
         {"s": cp.state_targets["follow.s"]},
@@ -218,21 +218,19 @@ def test_the_views_soft_target_is_the_composites_soft_step_resolution(w):
 
 def test_a_point_prior_on_a_categorical_target_is_a_slice():
     (cs, cp), tab = _tabular_pair()
-    view, vp = subsystem(cs, cp, "follow", partner_priors={"lead.u_d": 1})
+    view, vp = subsystem(cs, cp, "follow", inputs={"lead.pick": 1})
     np.testing.assert_allclose(vp.state_targets["follow.s"].logits, tab[:, 1])
 
 
 def test_a_soft_prior_on_a_gaussian_target_is_refused_with_the_level_to_pass():
     cs, cp = _two_tier(*_rover(_conditional_target(), (("x", ("u_opt",)),)))
     with pytest.raises(NotImplementedError, match=r"mixture of Gaussians.*pass an int level"):
-        subsystem(
-            cs, cp, "rover", partner_priors={"mission.u_option": Categorical(logits=jnp.zeros(2))}
-        )
+        subsystem(cs, cp, "rover", inputs={"mission.option": Categorical(logits=jnp.zeros(2))})
 
 
 def test_a_partner_node_without_an_entry_is_refused_naming_the_entry():
     cs, cp = _two_tier(*_rover(_conditional_target(), (("x", ("u_opt",)),)))
-    with pytest.raises(ValueError, match=r"partner_priors has no entry.*partner_priors=\{'mission"):
+    with pytest.raises(ValueError, match=r"inputs has no entry.*inputs=\{'mission"):
         subsystem(cs, cp, "rover")
 
 
@@ -267,14 +265,14 @@ def test_a_target_on_a_state_factor_is_carried_unchanged():
 def test_a_contracted_axis_leaves_the_other_parents_in_their_order():
     table = jnp.asarray(np.random.default_rng(2).standard_normal((2, 2, 2)), jnp.float32)
     (cs, cp), _ = _tabular_pair(("w", "u_s"), table)
-    view, vp = subsystem(cs, cp, "follow", partner_priors={"lead.u_d": 1})
+    view, vp = subsystem(cs, cp, "follow", inputs={"lead.pick": 1})
     assert view.C_deps == (("follow.s", ("follow.w",)),)
     got = vp.state_targets["follow.s"]
     assert got.parent_ndims == 1
     np.testing.assert_allclose(got.log_table, table[:, :, 1])
     weights = jnp.asarray([0.4, 0.6])
     view, vp = subsystem(
-        cs, cp, "follow", partner_priors={"lead.u_d": Categorical(logits=jnp.log(weights))}
+        cs, cp, "follow", inputs={"lead.pick": Categorical(logits=jnp.log(weights))}
     )
     want = jnp.log(jnp.einsum("cwu,u->cw", jax.nn.softmax(table, axis=0), weights))
     np.testing.assert_allclose(vp.state_targets["follow.s"].log_table, want, rtol=1e-5)

@@ -360,7 +360,7 @@ def build_composite(decoder, setting):
     )
     mview, mparams = subsystem(cs, cp, "mission")
     mview = dataclasses.replace(mview, policy_len=2)
-    rview, _ = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": PINNED_OPTION})
+    rview, _ = subsystem(cs, cp, "rover", inputs={"mission.option": PINNED_OPTION})
     return cs, cp, mview, mparams, rview, grid
 
 

@@ -187,7 +187,7 @@ def test_the_two_tier_composite_still_builds():
 @pytest.mark.parametrize("per_level", [True, False])
 def test_a_pinned_view_agrees_with_the_rover_declared_at_that_level(level, per_level):
     cs, cp = two_tier(per_level=per_level)
-    view, vp = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": level})
+    view, vp = subsystem(cs, cp, "rover", inputs={"mission.option": level})
     ref, rp = pinned_standalone(level, per_level=per_level)
     x = vp.transition["rover.x"]
     assert x.innovations.parent_shape == (2,)
@@ -206,7 +206,7 @@ def test_the_rover_with_its_option_clamped_predicts_as_the_pinned_view_does():
     """The standalone rover, its option node clamped to a level by the caller, predicts the
     next belief as the view pinned at that level does."""
     cs, cp = two_tier()
-    view, vp = subsystem(cs, cp, "rover", partner_priors={"mission.u_option": 1})
+    view, vp = subsystem(cs, cp, "rover", inputs={"mission.option": 1})
     rs, rp = rover()
     qv, _ = view.infer_states(vp, {"rover.fix": _obs(view)["fix"]})
     q0, _ = rs.infer_states(rp, _obs(rs))

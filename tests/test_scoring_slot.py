@@ -66,6 +66,8 @@ GROUPS: dict[str, frozenset[str]] = {
             "precision",
         }
     ),
+    #  a splice's per-leaf record of the habit, precision, durations and scoring parameters above
+    "splice_parts": frozenset({"parts"}),
 }
 
 

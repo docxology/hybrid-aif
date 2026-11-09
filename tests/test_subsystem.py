@@ -132,19 +132,19 @@ def test_a_partners_control_node_becomes_an_exogenous_stub():
     assert np.isclose(marginal[CENTRE], 0.6, atol=1e-4)  # three moves are no-ops
 
 
-def test_partner_priors_declare_what_this_mind_expects_of_the_other():
+def test_inputs_declare_what_this_mind_expects_of_the_other():
     """Requirement 4's two extremes, seen from inside one mind: a delta pins the
     partner's move, a distribution marginalizes over it — different beliefs about
     the same partner, and functionally different views."""
     composite, cp = merged()
-    view, vp = subsystem(composite, cp, "world", partner_priors={"agent.u_location": CUE})
+    view, vp = subsystem(composite, cp, "world", inputs={"agent.a_location": CUE})
     pushed = view.update_empirical_prior(
         vp, view.initial_priors(vp), view.from_positional("actions", jnp.zeros(0, jnp.int32))
     )
     assert np.isclose(float(pushed[view.names.states[0]].probs[CUE]), 1.0, atol=1e-4)
 
     one_hot = jnp.zeros(5).at[CUE].set(1.0)
-    tilted, tp = subsystem(composite, cp, "world", partner_priors={"agent.u_location": one_hot})
+    tilted, tp = subsystem(composite, cp, "world", inputs={"agent.a_location": one_hot})
     assert tilted.names.controls == ()  # the partner's node is not ours
     # the delta and the one-hot distribution are the same view, as they should be:
     # slicing the control axis and averaging it against a point mass agree
@@ -363,14 +363,14 @@ def test_views_of_unknown_or_unrecorded_components_raise():
         subsystem(plain, pp, "agent")
 
 
-def test_partner_priors_must_name_a_partner_node():
+def test_inputs_must_name_a_variable_the_view_takes():
     composite, cp = merged()
-    with pytest.raises(ValueError, match="which are not control nodes the view of 'world' reads"):
-        subsystem(composite, cp, "world", partner_priors={"world.location": 0})
+    with pytest.raises(ValueError, match="which are no variable the view of 'world' takes"):
+        subsystem(composite, cp, "world", inputs={"world.location": 0})
     with pytest.raises(ValueError, match="not one of its 5 control level"):
-        subsystem(composite, cp, "world", partner_priors={"agent.u_location": 9})
+        subsystem(composite, cp, "world", inputs={"agent.a_location": 9})
     with pytest.raises(ValueError, match="one probability per level"):
-        subsystem(composite, cp, "world", partner_priors={"agent.u_location": jnp.zeros(3)})
+        subsystem(composite, cp, "world", inputs={"agent.a_location": jnp.zeros(3)})
 
 
 def test_a_joint_habit_prior_does_not_project_onto_one_mind():

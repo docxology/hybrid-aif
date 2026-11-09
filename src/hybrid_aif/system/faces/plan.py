@@ -1018,6 +1018,7 @@ def infer_policies(
     present: Mapping[str, bool | Array] | None = None,
     return_policies: bool = False,
 ):
+    system._plannable("infer_policies", params)
     params = system._params_in(params, "infer_policies")
     qs = system._beliefs_in(params, beliefs, "infer_policies")
     q_pi, tree, policies = system._plan(
@@ -1192,6 +1193,7 @@ def act(
     plan_key: Array | None = None,
     legal: "Mapping[str, Array] | Array | None" = None,
 ) -> tuple[dict[str, Array], Categorical, TermTree | None]:
+    system._plannable("act", params)
     params = system._params_in(params, "act")
     names = system._names(params)
     q_pi, tree, policies = system._plan(

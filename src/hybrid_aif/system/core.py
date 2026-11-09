@@ -201,6 +201,51 @@ def _precision_in(value):
     return _strong(arr)
 
 
+class _Unset:
+    """The value of a planner field a composite cannot state: its leaves differ on it."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        return (_Unset, ())
+
+
+UNSET = _Unset()
+#: The sentinel a composite's planner field holds where its leaves differ (``policy_len``,
+#: ``planner``, ``gamma``, ``num_iters``, ``decomposition``, ``planning_belief`` or ``feedback``):
+#: a face that needs the field refuses, as every planning face refuses a coupling. Each leaf's own
+#: value is in ``Subsystem.config``.
+
+
+class PartParams(eqx.Module):
+    """One leaf's own planner parameters inside a composite, ``SystemParams.parts[leaf]``.
+
+    ``policy_prior`` is the leaf's habit over its own policy set, ``precision`` its policy
+    precision, ``durations`` its durations (keyed by its control node, namespaced) and ``scoring``
+    the parameters of its scoring estimators (keyed by name). A leaf's view takes them from here,
+    so two leaves' critics never answer to one name and each keeps its own clock.
+    """
+
+    policy_prior: Array | Categorical | object | None = eqx.field(default=None, converter=_strong)
+    precision: Array | None = eqx.field(default=None, converter=_precision_in)
+    durations: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
+    scoring: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
+
+
 class SystemParams(eqx.Module):
     """All numeric state of a System: generative tensors, designations and loop factors.
 
@@ -236,6 +281,9 @@ class SystemParams(eqx.Module):
     positivity only. The objective never reads it; :meth:`System.elapsed` returns the realised
     action's duration for an outer loop's clock (1 when none is declared).
     Design: docs/design/step-durations.md T1, T4, T8.
+
+    ``parts`` holds each leaf's own planner parameters when the System is a splice of leaves
+    (:class:`PartParams`: habit, precision, durations and scoring parameters, by leaf name).
 
     ``parameters`` holds named parameter variables, keyed by name: a tabular declaration (a table,
     or a Dirichlet over one) that several factors or modalities may read. A ``transition`` entry
@@ -359,6 +407,10 @@ class SystemParams(eqx.Module):
     #   ``Parameter`` reference to a named parameter variable), over the emission's parents in
     #   the order ``System.emissions`` lists them. Its type is the emitted port's type, read off
     #   the kernel as a modality's is. Always keyed by name. Design: nesting-and-coupling.md N5
+    parts: dict[str, PartParams] = eqx.field(default_factory=dict)
+    #   the leaves' own planner parameters of a composite, by leaf name (:class:`PartParams`: habit,
+    #   precision, durations, scoring); empty for a System that is not a splice of leaves. A
+    #   leaf's entry holds its own, a composite node none. Design: engine-consolidation.md
 
     def __init__(self, *args, **kwargs):
         fields = [f for f in dataclasses.fields(self) if f.init]
@@ -467,6 +519,18 @@ class AmortizedScoring(NamedTuple):
     controls: ControlLayout | None
 
 
+#: The planner fields a composite states only where its leaves agree (:data:`UNSET` elsewhere).
+_PLANNER_FIELDS = (
+    "policy_len",
+    "planner",
+    "gamma",
+    "num_iters",
+    "decomposition",
+    "planning_belief",
+    "feedback",
+)
+
+
 class Subsystem(NamedTuple):
     """One component's identity inside a merged composite, carried on ``System.subsystems``.
 
@@ -499,12 +563,21 @@ class Subsystem(NamedTuple):
       the source component's carry;
     - ``emissions``: the composite names of the component's own emissions, its outputs drawn from
       its state factors (:attr:`System.emissions`);
+    - ``config``: ``(field, value)`` pairs, the leaf's own planner configuration (``policy_len``,
+      ``planner``, ``gamma``, ``num_iters``, ``decomposition``, ``planning_belief``, ``feedback``,
+      ``mixture_schedule``, ``mixture_k``, ``epistemic``, ``terms`` and ``scoring``, the static
+      declaration), with names qualified as the composite's; empty for a node that is itself a
+      composite, whose leaves each hold their own. The leaf's habit, precision, durations and
+      scoring parameters are ``SystemParams.parts[<leaf>]``;
+    - ``recognition``: the composite names of the amortized recognition variables the leaf owns
+      (``System.recognition``);
     - ``boundary``: what binds this subsystem to the others: ``"none"`` (no binding crosses
       its boundary), ``"blanket"`` (every binding across it is a belief read or a ``Link`` from
       an action node into a control node), or ``"shared"`` (some binding identifies a latent
-      outright: a relay, a structural ``Link``, a terminal ``Link``, an ``Identify``).
-      :attr:`nested` is the middle case: the subsystem keeps a blanket of its own inside the
-      particle.
+      outright: a relay, a structural ``Link``, a terminal ``Link``, an ``Identify``), or
+      ``"coupled"`` (a top-level component of a :func:`~hybrid_aif.composition.couple.couple`,
+      joined to the others by identified ports alone). :attr:`nested` is the ``"blanket"`` case:
+      the subsystem keeps a blanket of its own inside the particle.
 
     A record :func:`~hybrid_aif.description.build` reconstructs from a model description carries
     only what the document shows: the composite's names, its factors, modalities and the control
@@ -531,6 +604,8 @@ class Subsystem(NamedTuple):
     reads: tuple[tuple[str, str, "str | Grid", str], ...] = ()
     boundary: str = "none"
     emissions: tuple[str, ...] = ()
+    config: tuple[tuple[str, object], ...] = ()
+    recognition: tuple[str, ...] = ()
 
     @property
     def nested(self) -> bool:
@@ -972,10 +1047,11 @@ class System(eqx.Module):
                 "control node in controls order"
             )
         if not isinstance(self.action_names, tuple) or not all(
-            isinstance(a, str) for a in self.action_names
+            a is None or isinstance(a, str) for a in self.action_names
         ):
             raise TypeError(
-                f"action_names must be a tuple of str, got {type(self.action_names).__name__}"
+                "action_names must be a tuple of str (None for a control node that is an input, "
+                f"driven from outside), got {self.action_names!r}"
             )
 
     def _translate_sugar(self, given: Mapping[str, object]) -> None:
@@ -1096,13 +1172,13 @@ class System(eqx.Module):
             raise ValueError(f"branch_on must be a tuple of modality names, got {self.branch_on!r}")
         for name in self.branch_on:
             self._refuse_emission(name, "branch_on")
-        if self.branch_on and not planner_branches(self.planner):
+        if self.branch_on and self.planner is not UNSET and not planner_branches(self.planner):
             raise ValueError(
                 f"branch_on={self.branch_on!r} names modalities to branch on, which only a "
                 f'branching planner does (the "sophisticated" one, or one registered with '
                 f"branching=True); this System plans with {self.planner!r}"
             )
-        if self.planning_belief not in ("prior", "posterior"):
+        if self.planning_belief is not UNSET and self.planning_belief not in ("prior", "posterior"):
             raise ValueError(
                 f'planning_belief must be "prior" or "posterior", got {self.planning_belief!r}'
             )
@@ -1111,12 +1187,21 @@ class System(eqx.Module):
                 'planning_belief="posterior" conditions the plan on expected observations, and '
                 "branch_on already branches the plan on their outcomes; declare one of the two"
             )
-        if self.feedback is not None and self.feedback not in _closed_loop.FEEDBACK:
+        if (
+            self.feedback is not None
+            and self.feedback is not UNSET
+            and self.feedback not in _closed_loop.FEEDBACK
+        ):
             raise ValueError(
                 f"feedback must be None or one of {list(_closed_loop.FEEDBACK)}, got "
                 f"{self.feedback!r}"
             )
-        if self.feedback is not None and self.planning_belief != "posterior":
+        if (
+            self.feedback is not None
+            and self.feedback is not UNSET
+            and self.planning_belief is not UNSET
+            and self.planning_belief != "posterior"
+        ):
             raise ValueError(
                 f"feedback={self.feedback!r} scores targets on the closed-loop state distribution, "
                 "whose estimate spread the epistemic chain gives, and planning_belief="
@@ -1235,6 +1320,31 @@ class System(eqx.Module):
             for key, parents in self.C_deps
         }
 
+    def _plannable(self, face: str, params: "SystemParams | None" = None) -> None:
+        """Raise unless this System states one planning problem. A coupling is run leaf by leaf and
+        is not planned as one System: a leaf keeps its own habit, precision, durations or scoring in
+        ``params.parts``, or the leaves differ on a planner field (:data:`UNSET`), or several
+        top-level components are coupled. No planner chooses a control node that has no action
+        node (an input, driven from outside)."""
+        coupled = sum(sub.boundary == "coupled" for _, sub in self.subsystems or ()) > 1
+        unset = [f for f in _PLANNER_FIELDS if getattr(self, f) is UNSET]
+        if unset or coupled or (params is not None and params.parts):
+            raise ValueError(
+                f"{face}: this System is a coupling, and a coupling is run leaf by leaf: it is not "
+                "planned as one System. Plan one leaf's view, subsystem(system, params, leaf)"
+            )
+        driven = [
+            self.factor_names[c]
+            for c, a in zip(self.controls, self.action_names or (), strict=True)
+            if a is None
+        ]
+        if driven:
+            raise ValueError(
+                f"{face}: control node(s) {driven} are driven (no action node chooses them), so "
+                "no planner chooses them; slice them with subsystem(..., inputs={variable: "
+                "level}) and plan the view"
+            )
+
     def _check_action_names(self) -> None:
         """One action node per control node, paired by position with ``controls`` and named apart
         from every other node. A native declaration chooses both names freely; the sugar names
@@ -1245,16 +1355,30 @@ class System(eqx.Module):
                 f"action_names has {len(actions or ())} name(s) for {len(self.controls)} control "
                 "node(s): declare one action name per control node, in controls order"
             )
-        if len(set(actions)) != len(actions):
-            dup = sorted({a for a in actions if actions.count(a) > 1})
+        named = [a for a in actions if a is not None]
+        if len(set(named)) != len(named):
+            dup = sorted({a for a in named if named.count(a) > 1})
             raise ValueError(f"action_names repeats {dup}: every action node needs its own name")
-        clash = sorted(set(actions) & (set(self.factor_names) | set(self.modality_names)))
+        if not all(a is None or isinstance(a, str) for a in actions):
+            raise TypeError(
+                f"action_names must be a tuple of str or None, got {self.action_names!r}"
+            )
+        driven = {slot for slot, _ in self.observes if isinstance(slot, str)}
+        for c, a in zip(self.controls, actions, strict=True):
+            node = self.factor_names[c]
+            if node in driven and a is not None:
+                raise ValueError(
+                    f"control node {node!r} is a slot in observes, driven by a variable, and its "
+                    f"action node {a!r} is named: a driven node's action_names entry is None "
+                    "(nothing chooses it, so nothing realises it)"
+                )
+        clash = sorted(set(named) & (set(self.factor_names) | set(self.modality_names)))
         if clash:
             raise ValueError(
                 f"action_names {clash} are also factor or modality names: every node needs its "
                 "own name"
             )
-        empty = [a for a in actions if not a.rpartition(keyed.NAMESPACE_SEPARATOR)[2]]
+        empty = [a for a in named if not a.rpartition(keyed.NAMESPACE_SEPARATOR)[2]]
         if empty:
             raise ValueError(f"action_names {empty} have an empty name: name every action node")
 
@@ -1532,6 +1656,7 @@ class System(eqx.Module):
         it; under a stochastic actuator it is the realised level, not the decided one, that is
         looked up. Array in, array out: works under ``jit``. Design: step-durations.md T8.
         """
+        self._plannable("elapsed", params)
         params = self._params_in(params, "elapsed")
         durations = self._durations(params, "elapsed")
         if not durations:
@@ -1695,11 +1820,13 @@ class System(eqx.Module):
         under its own name (a node the System chooses is listed as well, since a link into it
         makes it driven), typed ``(LEVEL, levels)`` or ``(FLOAT, width)``, except the slots
         ``System.observes`` names: a slot that observes a variable of the System is no in-port,
-        since the System feeds it. ``outs`` are the out-ports: each action node, typed as its
-        control node, and each emission, typed by its kernel (the identity's is its parent's, a
-        Grid's is a level per cell). A type is ``(LEVEL, levels)`` for a table and ``(FLOAT,
-        dimension)`` for a linear-Gaussian or neural kernel. There is no node index for a port:
-        a port is its name.
+        since the System feeds it. A control node nothing drives is listed even where its own
+        planner chooses it, since it can be driven, so empty ``ins`` is not what closedness means:
+        that is a property of the modalities alone. ``outs`` are the out-ports: each action node,
+        typed as its control node, and each emission, typed by its kernel (the identity's is its
+        parent's, a Grid's is a level per cell). A type is ``(LEVEL, levels)`` for a table and
+        ``(FLOAT, dimension)`` for a linear-Gaussian or neural kernel. There is no node index for a
+        port: a port is its name.
         """
         params = self._params_in(params, "ports")
         ins = dict(self._modality_types(params))
@@ -1710,7 +1837,8 @@ class System(eqx.Module):
                 zip(self._table.control_names, self.action_names, strict=True)
             ):
                 ins[u] = (space.kinds[k], int(space.sizes[k]))
-                outs[a] = (space.kinds[k], int(space.sizes[k]))
+                if a is not None:
+                    outs[a] = (space.kinds[k], int(space.sizes[k]))
         outs.update(self._emission_types(params))
         fed = set(dict(self.observes))
         return Ports({slot: t for slot, t in ins.items() if slot not in fed}, outs)
@@ -1729,7 +1857,7 @@ class System(eqx.Module):
         else:  # a node no factor reads has no column
             owners = None
         gone = self._bound_away()
-        generated = (*(self.action_names or ()), *self._emission_names)
+        generated = (*(a for a in self.action_names or () if a is not None), *self._emission_names)
         if params is None or not table.controls:
             return keyed.FaceNames(
                 table.state_names,
@@ -2582,9 +2710,10 @@ class System(eqx.Module):
         )
 
     def _check_observes(self) -> None:
-        """``observes``: pairs of a slot (a modality, named at most once) and
-        a variable the System generates (an action node or an emission). The port types are
-        checked with the params."""
+        """``observes``: pairs of a slot (a modality or a control node, named at most once) and
+        a variable the System generates (an action node or an emission). A control node in
+        ``observes`` is driven: the variable's realised value is its level, and it has no action
+        node of its own. The port types are checked with the params."""
         observes = self.observes
         if not isinstance(observes, tuple) or not all(
             isinstance(entry, tuple) and len(entry) == 2 and all(isinstance(x, str) for x in entry)
@@ -2597,18 +2726,13 @@ class System(eqx.Module):
         if not observes:
             return
         mods, nodes = self.modality_names, self._table.control_names
-        generated = {*(self.action_names or ()), *self._emission_names}
+        generated = {*(a for a in self.action_names or () if a is not None), *self._emission_names}
         seen: set[str] = set()
         for slot, variable in observes:
-            if slot in nodes:
+            if slot not in mods and slot not in nodes:
                 raise ValueError(
-                    f"observes names the control node {slot!r} as a slot: driving a control node "
-                    "by identification with a variable is not yet supported, so observe the "
-                    "variable with a modality"
-                )
-            if slot not in mods:
-                raise ValueError(
-                    f"observes names the slot {slot!r}, which is not a modality {list(mods)}"
+                    f"observes names the slot {slot!r}, which is neither a modality {list(mods)} "
+                    f"nor a control node {list(nodes)}"
                 )
             if slot in seen:
                 raise ValueError(
@@ -2619,7 +2743,7 @@ class System(eqx.Module):
                 raise ValueError(
                     f"observes: {slot!r} observes {variable!r}, which this System does not "
                     f"generate; the variables it generates are its action nodes "
-                    f"{list(self.action_names or ())} and its emissions "
+                    f"{[a for a in self.action_names or () if a is not None]} and its emissions "
                     f"{list(self._emission_names)}"
                 )
 
@@ -2996,6 +3120,7 @@ class System(eqx.Module):
         Discrete control nodes only: raises under continuous ones. Under the sophisticated
         planner it is the first step's control assignments.
         """
+        self._plannable("policies", params)
         params = self._params_in(params, "policies")
         if FLOAT in self._space(params).kinds:
             raise ValueError(
@@ -3325,6 +3450,7 @@ class System(eqx.Module):
         present: Mapping[str, bool | Array] | None = None,
     ) -> tuple[Categorical, TermTree | None, Array]:
         """The engine: :func:`hybrid_aif.system.faces.plan._plan`."""
+        self._plannable(face, params)
         return _plan_face._plan(
             self,
             params,

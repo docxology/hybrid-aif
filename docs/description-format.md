@@ -32,7 +32,7 @@ written; reading one of them first is a good way in.
 | `variables` | yes | every variable, with its domain and size (section 2) |
 | `parameters` | no | named parameter variables that several factor records read (section 3.7) |
 | `factors` | no | the factor records, keyed by child variable and label (section 3) |
-| `relations` | no | `controls`, `observed`, `external` (section 5) |
+| `relations` | no | `controls`, `driven`, `observed`, `external` (section 5) |
 | `clamps` | no | the values of the fixed parameter variables (section 6) |
 | `objective` | no | the terms the planner scores; absent means `{"decomposition": "utility_infogain"}` (section 8) |
 | `configuration` | yes | planning, inference and learning settings (section 9) |
@@ -468,6 +468,7 @@ each naming the field.
 | key | value | meaning |
 |---|---|---|
 | `controls` | `{control node: action node}` | the System chooses each key and emits it as the paired action node, unless the control node is marked `held`: another participant supplies it, the System plans no decision for it and its action node is dropped. A control node is known only by being a key here and by having no initial or transition; an action node only by being a value and by its optional actuator record |
+| `driven` | `{control node: variable}` | each key is a control node with no action node of its own: the variable (an action node or an emission of the document) is its level, the realised value of the out-port; no decision is planned for it. It is a per-step variable with a categorical or real domain, read by the records that read a control node |
 | `observed` | `[observation, ...]` | the variables the System receives data for at every step; each has a likelihood record |
 | `external` | `[input, ...]` | vectors the System receives as data with no likelihood (domain `real` with `dim`), read only by recognition records |
 

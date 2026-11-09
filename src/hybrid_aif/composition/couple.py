@@ -37,8 +37,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from hybrid_aif.composition.merge import Link
+from hybrid_aif.composition.merge import Clamp, Identify, Link, _assemble
 from hybrid_aif.controls import FLOAT, LEVEL
+from hybrid_aif.distributions import Categorical
 from hybrid_aif.envs.base import Env
 from hybrid_aif.envs.generative import GenerativeEnv, GenerativeEnvParams
 from hybrid_aif.system import System, SystemParams
@@ -213,6 +214,49 @@ def _process(name: str, entry: object) -> tuple[Process, dict[str, PortType], di
     return Process(env, params), ins, outs
 
 
+def _couple_components(
+    components: Mapping[str, tuple[System, SystemParams]],
+    bindings: Sequence[Identify | Clamp],
+    fixed: Mapping[str, object] | None,
+) -> tuple[System, SystemParams]:
+    """The coupling of ``components``: their splice and the bindings, port identifications and
+    clamps only."""
+    if not isinstance(components, Mapping) or not components:
+        raise TypeError(
+            "couple() takes components, a non-empty mapping from a name to (System, SystemParams)"
+        )
+    systems: dict[str, System] = {}
+    params: dict[str, SystemParams] = {}
+    for name, entry in components.items():
+        if not (
+            isinstance(entry, tuple | list)
+            and len(entry) == 2
+            and isinstance(entry[0], System)
+            and isinstance(entry[1], SystemParams)
+        ):
+            raise TypeError(
+                f"couple(): components[{name!r}] is not (System, SystemParams); a component is "
+                "a System with its params (a Step belongs to run)"
+            )
+        systems[name], params[name] = entry
+    refused = [b for b in bindings if not isinstance(b, Identify | Clamp)]
+    if refused:
+        raise ValueError(
+            f"couple(): {refused[0]!r} is not an Identify or a Clamp, the bindings of a "
+            "coupling: a Link is an arc of one model's graph (a structural link, a relay, a belief "
+            "read), which merge() makes; a belief read is an emission and an observing slot, "
+            "written with Identify of the two ports"
+        )
+    clamps = [Clamp(node, level) for node, level in dict(fixed or {}).items()]
+    try:
+        return _assemble(systems, params, [*bindings, *clamps], coupled=True)
+    except (ValueError, TypeError, NotImplementedError) as exc:
+        message = str(exc).removeprefix("merge: ")
+        if message.startswith("couple"):
+            raise
+        raise type(exc)(f"couple(): {message}") from exc
+
+
 def _fixed_value(port: str, value: object, kind: str, size: int) -> Array:
     """A constant for a process input, checked against the input's type like a link's source."""
     value = jnp.asarray(value)
@@ -239,13 +283,41 @@ def _fixed_value(port: str, value: object, kind: str, size: int) -> Array:
 
 
 def couple(
+    components: Mapping[str, tuple[System, SystemParams]] | None = None,
+    bindings: Sequence[Identify | Clamp] = (),
+    fixed: Mapping[str, "int | Categorical | Array"] | None = None,
     *,
     minds: Mapping[str, tuple] | None = None,
     processes: Mapping[str, tuple] | None = None,
     links: Sequence[Link] = (),
-    fixed: Mapping[str, object] | None = None,
-) -> Wiring:
-    """Participants and the links between them, checked into a :class:`Wiring`.
+) -> "tuple[System, SystemParams] | Wiring":
+    """Components coupled through their ports into one ``(System, SystemParams)``.
+
+    ``components`` maps a name to ``(System, SystemParams)``; the components stay leaves of the
+    result, each with its own planner configuration (``Subsystem.config``), its own habit,
+    precision, durations and scoring (``SystemParams.parts``) and its own recognition, with
+    ``Subsystem.boundary == "coupled"`` (not :func:`~hybrid_aif.composition.merge.nested`). A
+    ``bindings`` entry is an :class:`~hybrid_aif.composition.merge.Identify` of an out-port (an
+    action node or an emission) with an in-port (a modality, or a control node: a driven
+    control node, which carries the out-port's realised value and has no action node of its own),
+    between ports of different components, or a :class:`~hybrid_aif.composition.merge.Clamp`;
+    ``fixed`` maps a discrete control node (``"world.u_move"``) to the level, or the distribution
+    over levels, it is held at, as a ``Clamp`` does. Every other binding is refused, naming
+    :func:`~hybrid_aif.composition.merge.merge`: a structural or belief-read ``Link``, an
+    ``Identify`` of two parameter variables.
+
+    A coupling is the splice of its components followed by port identifications:
+    ``|A| + |B| - k`` variables for components of ``|A|`` and ``|B|`` variables and ``k``
+    identifications, a variable one out-port feeds to several in-ports counted once. It plans
+    nothing as one mind: a planner field its leaves share it states, and holds
+    :data:`~hybrid_aif.system.UNSET` where they differ, a face needing it refusing. A coupling
+    may be merged and a merge coupled.
+
+    The keywords ``minds=``, ``processes=``, ``links=`` and ``fixed=`` (a constant per process
+    input) give the checked :class:`Wiring` of separate participants that
+    :func:`~hybrid_aif.composition.driver.run` executes, as below.
+
+    Wiring form, participants and the links between them, checked into a :class:`Wiring`.
 
     ``minds`` maps a name to ``(System, SystemParams, Step)``, ``processes`` a name to
     ``(GenerativeEnv, env_params)`` (``System.as_env`` gives one; ``GenerativeEnv.wrap`` keys an
@@ -265,6 +337,15 @@ def couple(
     modalities has a tabular, neural (``MLPConditional``) or linear-Gaussian likelihood; an
     amortized mind (a ``PredictorHead`` likelihood) cannot be coupled.
     """
+    if components is not None:
+        if minds or processes or links:
+            raise TypeError(
+                "couple() takes components and bindings, or minds, processes and links of the "
+                "wiring form, not both"
+            )
+        return _couple_components(components, bindings, fixed)
+    if bindings:
+        raise TypeError("couple(bindings=...) needs components: couple(components, bindings)")
     minds = dict(minds or {})
     processes = dict(processes or {})
     fixed = dict(fixed or {})

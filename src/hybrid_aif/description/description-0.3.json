@@ -41,6 +41,9 @@
     "configuration": {
       "$ref": "#/$defs/body/properties/configuration"
     },
+    "components": {
+      "$ref": "#/$defs/body/properties/components"
+    },
     "extensions": {
       "type": "object",
       "description": "Consumer data, keyed by consumer name; opaque to the library.",
@@ -1668,6 +1671,12 @@
                 "type": "string"
               }
             },
+            "driven": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
             "observed": {
               "type": "array",
               "items": {
@@ -1794,6 +1803,54 @@
                     "minLength": 1
                   }
                 }
+              }
+            }
+          }
+        },
+        "components": {
+          "type": "object",
+          "description": "A coupling's per-leaf records: each leaf's own configuration, habit (logits), precision, durations and recognition variables, and the top-level components that are coupled.",
+          "additionalProperties": false,
+          "properties": {
+            "leaves": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": [
+                  "configuration"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "configuration": {
+                    "type": "object"
+                  },
+                  "precision": {
+                    "type": "number"
+                  },
+                  "durations": {
+                    "type": "object"
+                  },
+                  "policy_prior": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  },
+                  "recognition": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "coupled": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

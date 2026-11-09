@@ -9,10 +9,13 @@ particles by links, and the clock that runs them.
   blanket-shaped bindings, belief reads and action-node links, is nested; :func:`subsystem`
   derives one mind's System from the composite and :func:`write_back` returns a view's learned
   parameter variables to it.
-- :mod:`~hybrid_aif.composition.couple` — :func:`couple` joins separate particles, minds and
-  processes, through their blankets: a :class:`Link` from an action node to a process input or a
-  mind's modality, or from a process observation to a mind's modality, typed and checked into a
-  :class:`Wiring`.
+- :mod:`~hybrid_aif.composition.couple`: :func:`couple` joins components through their ports
+  into one ``(System, SystemParams)``: an :class:`Identify` of an out-port (an action node or an
+  emission) with an in-port (a modality or a control node) and a :class:`Clamp`, each component
+  kept as a leaf with its own configuration. The keywords ``minds=``, ``processes=`` and
+  ``links=`` join separate particles through their blankets, a :class:`Link` from an action node
+  to a process input or a mind's modality, or from a process observation to a mind's modality,
+  typed and checked into a :class:`Wiring`.
 - :mod:`~hybrid_aif.composition.driver` — :func:`run` closes the loop under a declared tick
   order, over a :class:`Wiring` (one :class:`MindRecord` or :class:`ProcessRecord` per
   participant) or over a merged composite, each :data:`Step` acting through its own view of the

@@ -146,7 +146,8 @@ def test_the_composites_description_round_trips():
     document, arrays = describe(system, params, arrays="inline")
     rebuilt, _ = build(document, arrays=arrays)
     assert rebuilt.A_deps == system.A_deps
-    assert rebuilt.subsystems == system.subsystems
+    shown = tuple((n, sub._replace(config=(), recognition=())) for n, sub in system.subsystems)
+    assert rebuilt.subsystems == shown  # a document states no leaf's own configuration
 
 
 def test_a_boundary_prior_on_a_node_a_modality_observes_is_refused_naming_the_modality():

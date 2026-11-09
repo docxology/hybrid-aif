@@ -73,7 +73,7 @@ import numpy as np
 from jax import Array
 
 from hybrid_aif.composition.couple import Wiring
-from hybrid_aif.composition.merge import partner_controls, retake, subsystem, write_back
+from hybrid_aif.composition.merge import _inputs_of, retake, subsystem, write_back
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical
 from hybrid_aif.envs.generative import ACTUATOR_TAG
@@ -451,7 +451,11 @@ class _Body:
             a: (typed.kind(k), typed.sizes[k]) for k, a in enumerate(layout.names.actions)
         }
         order = list(minds)
-        self.partner = {name: partner_controls(composite, name) for name in order}
+        nodes = composite._table.control_names
+        self.partner = {
+            name: tuple(nodes[k] for ks in _inputs_of(composite, name).values() for k in ks)
+            for name in order
+        }
         kernels = composite._actuator(composite._params_in(params, face), who)
         for name in order:
             for node in self.partner[name]:
@@ -498,8 +502,9 @@ class _Body:
         levels = tuple((n, standing.get(n)) for n in self.partner[name])
         entry = self._cache.get((name, levels))
         if entry is None:
-            priors = {n: lv for n, lv in levels if lv is not None}
-            system, vparams = subsystem(self.composite, home, name, partner_priors=priors or None)
+            action = self.layout.action_of
+            priors = {action[n]: lv for n, lv in levels if lv is not None}
+            system, vparams = subsystem(self.composite, home, name, inputs=priors or None)
         elif entry[0] is home:
             return entry[1], entry[2]
         else:

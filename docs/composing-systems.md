@@ -45,7 +45,7 @@ numeric leaf: it is hashable, closed over by `jit`, and patched with
 | `dims` | `tuple[tuple[str, tuple[str, ...]], ...]` | `()` | Names for a continuous state factor's dimensions, given as `{factor: (name, ...)}` and stored as pairs in factor order; `dict(system.dims)` to read. `epistemic` selects a dimension as `<factor>:<name>`; an undeclared factor's dimensions are `dim0`, `dim1`, … by position. One unique name per dimension, each a single key segment (no `:`, `.`, `*` or brackets); `dimN` may name position `N` only. |
 | `action_names` | `tuple[str, ...]` | from the sugar | One action node per control node, in `controls` order: the actuator channel, a child of its control node. A native declaration (`controls=`) names them, paired with the control nodes by position, both names free; the sugar names the pair `u_<f>` / `a_<f>`. A modality may observe an action node: `A_deps` names action node `k` as `len(B_deps) + k`. |
 | `emissions` | `tuple[tuple[str, Emission], ...]` | `()` | The outputs the System realises from its state factors, **by name**: `{"fix": ("x",), "img": Emission(("x", "terrain"), realise="mode"), "cell": Emission(("x",), realise="mode", kernel=GRID)}` at construction (a tuple of parents is a draw), stored as `(name, Emission)` pairs in the order given. An emission is the action node of a state factor: its parents are state factors and control nodes (a control parent reads the node's realised level), its kernel is `SystemParams.emission[name]` (a likelihood of any family, in the parent order given) or the static kernel the declaration names, and its port type is read off the kernel as a modality's is. `kernel=None` means the kernel is the entry `params.emission[name]`, which must be there; a static kernel is declared on the emission: `kernel="identity"` (the **identity** of its one state factor: a categorical factor's level, or under `stats` its probability vector; a continuous factor's mean under `mode` and a draw under `sample`, `stats` being deferred) or a `Grid` (an indicator over the cells of one continuous factor: from a point the cell it falls in, from a belief `cell_mass`, of which `mode` is the largest cell). It has no node index: nothing in a model scores it, so no `C_deps` key or parent, `readings` entry, `branch_on` modality, target key or `epistemic` key may name it; the one way a model reads it is `observes`. `Emission.realise` is `"sample"` (a draw from the kernel), `"mode"` (its most probable level or mean) or `"stats"` (its probabilities, or its mean and covariance). `names.emissions` lists them; `emit` realises them. |
-| `observes` | `tuple[tuple[str, str], ...]` | `()` | Which variable each slot observes, given as `{"cell_obs": "cell"}` and stored as `(slot, variable)` pairs. A slot is a modality (a control node driven by a variable is not yet supported) and a variable an action node or emission of this System; the slot's port type must equal the variable's. A slot the map does not name observes the variable of its own name and is an in-port (`ports`). The datum of an observed variable is an observation like any other: `infer_states`, `learn` and `replay` take observations **keyed by variable** (one datum feeds every slot observing it, a key naming a renamed slot is refused naming the variable), and the datum of a variable the System generates may be left out, the slot then being absent. An own-belief read is an emission of the System that one of its own modalities observes; `replay` and `run` realise the emissions after a round and feed them back as the next round's observation. |
+| `observes` | `tuple[tuple[str, str], ...]` | `()` | Which variable each slot observes, given as `{"cell_obs": "cell"}` and stored as `(slot, variable)` pairs. A slot is a modality or a control node and a variable an action node or emission of this System; the slot's port type must equal the variable's. A control node in `observes` is **driven**: the variable's realised value is its level, and its `action_names` entry is `None` (nothing chooses it, so nothing realises it): it is an input, no planner chooses it, and `policies`, `infer_policies`, `act` and `elapsed` refuse naming it. A slot the map does not name observes the variable of its own name and is an in-port (`ports`). The datum of an observed variable is an observation like any other: `infer_states`, `learn` and `replay` take observations **keyed by variable** (one datum feeds every slot observing it, a key naming a renamed slot is refused naming the variable), and the datum of a variable the System generates may be left out, the slot then being absent. An own-belief read is an emission of the System that one of its own modalities observes; `replay` and `run` realise the emissions after a round and feed them back as the next round's observation. |
 | `recognition` | `tuple[Recognition, ...] \| None` | `None` | Which variables are inferred by an amortized module and what each conditions on. Parameters live in `SystemParams.recognition`. |
 | `terms` | `tuple[str, ...]` | `()` | Which estimator-registry rows G carries beyond the infogain rows. Grammar: `<row>`, `<row>:<slot>:<name>`, `<row>:obs:<modality>`. The row segment is always literal. |
 | `scoring` | `tuple[tuple[str, object], ...]` | `()` | Structural half of the scoring slot, keyed by row name. `dict(system.scoring)` to read. |
@@ -559,6 +559,51 @@ realised once, by its own kernel, and every link from it carries that value. A `
 (`couple` carries it); a `merge` refuses it, naming `couple`. A control node as a source is refused,
 naming its action node.
 
+**Port identifications: `Identify(out_port, in_port)`.** An out-port is an action node or an
+emission, an in-port a modality or a control node; `Identify` joins one of each (written in either
+order) into one variable, which the in-port observes: it writes `(in_port, out_port)` into the
+composite's `observes`. Every in-port is identified at most once, an out-port may feed many, and
+the two port types must be equal. A modality in-port reads the out-port's datum as an observation
+(`world.gauge` observed by two leaves is one variable, two observing slots). A control node
+in-port is a **driven** node: it stays in its own leaf, carries the *realised* value of the
+out-port (control-states.md C13), has no action node of its own (`action_names` entry `None`)
+and is never chosen by a planner. `Identify("mission.option", "rover.u_opt")` under `merge` and
+`Identify("agent.a_v", "world.v")` under `couple` are one form. The same-step `Link(action node,
+control node)` instead collapses the driven node into the driver's (below), and a merge that
+makes it plans the composite as one mind. A composite that carries driven slots is planned
+through its leaves' views (`subsystem`).
+
+**`couple(components, bindings, fixed)`** returns a `(System, SystemParams)`: the splice of the
+components (the stage of `merge` that renames and concatenates the components' variables and
+tables before any binding is applied) followed by port identifications and `Clamp`s (`fixed` maps
+a discrete control node to a level or a distribution, as a `Clamp`). It refuses every other
+binding, naming `merge`: a structural, relay, terminal or belief-read `Link`, an `Identify` of
+parameter variables. A coupling holds `|A| + |B| - k` variables for parts of `|A|` and `|B|`, a
+variable an out-port feeds to several in-ports counted once; its document writes each identified
+variable once and each observing slot's likelihood record names it (`observes`), a driven node
+is written under `relations.driven`, and each leaf's own record under `components`. A merge may
+take a coupling as a component and a coupling a merge. A coupling is run leaf by leaf: every
+planning face (`policies`, `infer_policies`, `act`, `elapsed`, `replay`) refuses it, and a leaf is
+planned through its view. `ports` lists a control node no `observes` entry drives as an in-port
+(it can be driven), so a coupling's `ports` are not empty when a leaf chooses its own node;
+closedness is a property of the modalities alone (no modality left unfed).
+
+**Per-leaf configuration.** A leaf of a splice (a component that is not itself a splice) keeps
+its own planner configuration on its `Subsystem` record (`config`: `policy_len`, `planner`,
+`gamma`, `num_iters`, `decomposition`, `planning_belief`, `feedback`, `mixture_schedule`,
+`mixture_k`, `epistemic`, `terms`, `scoring`), and recognition variables on the record
+(`recognition`). A coupling also keeps each leaf's habit, precision, durations and scoring
+parameters in `SystemParams.parts[<leaf>]` (a `PartParams`, present when it holds any). A merge
+keeps no `parts`: its composite fields are the planning problem, and a view reads them. A
+composite's own planner field is authoritative wherever it is set, and the leaf's record speaks
+where a coupling holds `UNSET` (its leaves differ on the field). A merged component brings the
+composite's fields as its leaves' configuration. `Subsystem.boundary` is `"coupled"` for a
+top-level component of a coupling (`nested` is false). A merge, which plans its leaves as one
+mind, requires its leaves to agree on `policy_len`, `planner`, `gamma`, `num_iters`,
+`decomposition`, `planning_belief`, `feedback` and `mixture_schedule`, composes their habits,
+states the one precision and the one clock, and refuses a leaf that declares scoring. A coupled
+leaf's view is its own System namespaced, with its recognition, scoring and configuration.
+
 **A link into a control node.** `Link(driver, node)` names a control node of one
 component (`"world.u_location"`), identified with the action node of another (same step) or
 with a state of it (relay). The driver's spelling decides when the driven factors read the
@@ -712,8 +757,9 @@ for each same-step identification), `relayed` (`(node, state)`) and `terminated`
 
 **One clock.** `params.durations` (a round's length per level of one discrete control node)
 carries under its component's prefix, and a `subsystem` view copies it. A round steps every
-factor once, so a composite has one clock: two components that both declare durations are
-refused at `merge()`, as is a binding that removes the node carrying them
+factor once, so a merge has one clock: two components that both declare durations are
+refused at `merge()`, as is a binding that removes the node carrying them; a coupling keeps each
+leaf's durations in its `parts`
 (`design/step-durations.md` T1). A slow component is given its own pace by `composition.hold`
 under `run`, which returns the stored action for the duration `System.elapsed` reports, not by
 a second clock inside the composite (`design/nesting-and-coupling.md` N4).
@@ -725,10 +771,18 @@ by the driver's node, where it applies as any node's mask does, on `act`,
 is refused naming the driver's node, and one keyed by a relayed node is refused
 naming the relay.
 
-**The views.** `subsystem(composite, params, name)` gives one mind's System. The
+**The views.** `subsystem(composite, params, name, inputs=None)` gives one mind's System. The
 driven mind's view has no node for the identified control: its factor's axis is
 terminated by a prior over the partner's node, uniform by default, or given in
-`partner_priors` keyed by the node's name (a relay stub's own control node too).
+`inputs` keyed by the action node of the node it is the level of (a relay stub's own control
+node too). A driven node of the component itself (`Identify(out_port, node)`) is kept as an
+input with no action node unless `inputs` names its driving variable: an `int` slices every table
+that reads the node and every carried target conditional on it, a `Categorical` or probability
+vector averages them, `None` averages uniformly (a driven continuous node is never sliced, and
+a Gaussian target takes a level). A leaf takes its configuration, habit (when the view holds
+all of the leaf's control nodes), precision, durations and scoring from its own record; a leaf
+that shares no latent with another gets its own System, recognition included, and an amortized
+composite's view is refused only where it would carry stubs.
 The driver's view keeps its node, and a boundary stub of
 the driven mind reads it at the same step. Boxes and targets on a node travel
 with the view that chooses it. A view of a nested component is that component's own model; the

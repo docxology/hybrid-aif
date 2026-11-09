@@ -360,13 +360,13 @@ def test_the_driven_view_has_no_node_and_the_drivers_view_keeps_it():
     table = np.exp(np.asarray(wp.transition["location"].log_probs))
     got = np.exp(np.asarray(wvp.transition["world.location"].log_probs))[..., 0]
     np.testing.assert_allclose(got, table.mean(axis=-1), rtol=1e-6)  # a uniform partner prior
-    pinned, pvp = subsystem(composite, cp, "world", partner_priors={"agent.u_location": CUE})
+    pinned, pvp = subsystem(composite, cp, "world", inputs={"agent.a_location": CUE})
     assert jnp.array_equal(
         pvp.transition["world.location"].log_table,
         jnp.take(cp.transition["world.location"].log_table, CUE, axis=-1)[..., None],
     )
-    with pytest.raises(ValueError, match="which are not control nodes the view of 'world' reads"):
-        subsystem(composite, cp, "world", partner_priors={"agent.location": CUE})
+    with pytest.raises(ValueError, match="which are no variable the view of 'world' takes"):
+        subsystem(composite, cp, "world", inputs={"agent.location": CUE})
 
     agent, avp = subsystem(composite, cp, "agent")
     assert agent.names.controls == ("agent.u_location",)
