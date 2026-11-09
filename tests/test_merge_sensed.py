@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.replay import replay
 from tests.test_action_node_modalities import LEVEL_SD, PROCESS_SD, scalar_model
@@ -110,10 +111,12 @@ def test_an_identified_node_is_read_at_the_drivers_action_and_carried_by_the_vie
         policy_len=fast.policy_len,
         epistemic=fast.epistemic,
     )
-    system, params = merge(
-        {"slow": slow, "fast": fast},
-        {"slow": slow_p, "fast": fast_p},
-        [Link("slow.option", "fast.u")],
+    system, params = joint_planner(
+        *merge(
+            {"slow": slow, "fast": fast},
+            {"slow": slow_p, "fast": fast_p},
+            [Link("slow.option", "fast.u")],
+        )
     )
     assert system.action_names == ("slow.option",)
     assert system._sensed == ("slow.option",)

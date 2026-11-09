@@ -1024,23 +1024,35 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   factor's probabilities or of a mean or a cell by `mode`, and everything that does not read a
   belief, is bitwise unchanged (`design/engine-consolidation.md` chunk B;
   `composing-systems.md`).
-- **The splice and its bindings (unreleased)**: `couple(components, bindings, fixed)` returns a
-  `(System, SystemParams)`: the components spliced and joined by `Identify(out_port, in_port)`
-  (an action node or an emission with a modality or a control node) and `Clamp`, every other
-  binding refused naming `merge`. An identified modality or control node is written into
-  `System.observes`; a **driven** control node, the in-port that carries an out-port's realised
-  value, has no action node of its own (`action_names` entry `None`), is never chosen by a
-  planner, and is described under `relations.driven`. A leaf keeps its own planner configuration
+- **The splice, its bindings and the joint planner (unreleased)**: `couple(components, bindings,
+  fixed)` returns a `(System, SystemParams)`: the components spliced and joined by
+  `Identify(out_port, in_port)` (an action node or an emission with a modality or a control node)
+  and `Clamp`, every other binding refused naming `merge`. An identified modality or control node
+  is written into `System.observes`; a **driven** control node, the in-port that carries an
+  out-port's realised value, has no action node of its own (`action_names` entry `None`), is never
+  chosen by a planner, and is described under `relations.driven`. `merge` is the same splice and
+  the same bindings, and `Link(action node, control node)` under `merge` is that identification:
+  the driven node stays in its component. A leaf keeps its own planner configuration
   (`Subsystem.config`), habit, precision, durations and scoring (`SystemParams.parts`) and
-  recognition, so a leaf with recognition or a scoring estimator is coupled where `merge` refuses
-  it; the composite states a planner field where its leaves agree and holds `UNSET` where they
-  differ, and a coupling is run leaf by leaf: `policies`, `infer_policies`, `act`, `elapsed` and
-  `replay` refuse it, and a leaf is planned through its view.
+  recognition in a merge and a coupling alike, so a leaf with recognition or a scoring estimator
+  is merged or coupled; the composite states a planner field where its leaves agree and holds
+  `UNSET` where they differ, and states no habit, precision, durations or scoring of its own.
+  `joint_planner(system, params, node=None, *, inputs=None, **config)` plans a node (the whole
+  System, or a component that is not a leaf) as one mind: each driven node whose driver is an
+  action node inside the node is collapsed into the driver's control node (`driven_nodes(composite,
+  name=None)` lists the driven nodes with their variables), the configuration
+  is an argument or the value the leaves agree on, and the habit, precision, durations and scoring
+  are composed from the leaves' records, what cannot be joined refused with a sentence. A
+  composite whose leaves differ, or that holds `parts`, is run leaf by leaf: `policies`,
+  `infer_policies`, `act`, `elapsed` and `replay` refuse it, naming `joint_planner`.
   `subsystem(composite, params, name, inputs=None)` slices or averages a driven node and a
   partner's node by the variable that drives it; `partner_priors` and `partner_controls` are
   gone (a view's `inputs` are keyed by the action node, where `partner_priors` was keyed by the
-  control node). A merge of leaves that agree is unchanged, and a coupling may be merged and a
-  merge coupled (`design/engine-consolidation.md` chunk B; `composing-systems.md`).
+  control node). Upgrading: a merge composes none of its leaves' habit, precision and
+  durations, accepts leaves that differ and a leaf that declares scoring, and leaves the driven
+  node of a same-step `Link` in its component: pass the merge to `joint_planner(composite,
+  params)` wherever it is planned as one mind (`run`, `particle`, `agent_step`, the faces).
+  `design/engine-consolidation.md` chunk B; `composing-systems.md`.
 - **Params flow through the runner (unreleased)**: one participant shape,
   `Step = step(key, obs, carry, params) -> (action, carry', params')`, for
   every mind of `run`. `agent_step(system, planner=None, **act_kwargs)`,

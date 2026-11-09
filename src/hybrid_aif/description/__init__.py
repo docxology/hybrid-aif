@@ -1202,7 +1202,8 @@ def _write_components(system: System, params: SystemParams, where: str) -> dict[
     """The ``components`` section of a splice that holds more than its composite fields say: each
     leaf's own configuration, habit, precision, durations and recognition variables, and the
     top-level components that are coupled. ``{}`` for a System whose composite fields state it all.
-    A leaf's scoring has no document form and is refused."""
+    ``unset`` lists the planner fields the composite holds ``UNSET`` (a field it states is written
+    in the composite's own configuration)."""
     subs = system.subsystems or ()
     leaves = [(name, sub) for name, sub in subs if sub.config]
     unset = any(getattr(system, f) is UNSET for f in _PLANNER_FIELDS)
@@ -1213,11 +1214,6 @@ def _write_components(system: System, params: SystemParams, where: str) -> dict[
     for name, sub in leaves:
         config = dict(sub.config)
         part = params.parts.get(name)
-        if config["scoring"] or (part is not None and part.scoring):
-            raise DescriptionError(
-                f"{where}leaf {name!r} declares scoring, which a document states for the whole "
-                "System and not per leaf; describe the leaf's view"
-            )
         record: dict[str, Any] = {
             "configuration": {
                 key: list(config[key]) if isinstance(config[key], tuple) else config[key]
@@ -1243,10 +1239,11 @@ def _write_components(system: System, params: SystemParams, where: str) -> dict[
                 logits = habit.logits if isinstance(habit, _dist.Categorical) else habit
                 record["policy_prior"] = np.asarray(logits, np.float64).tolist()
         out[name] = record
-    return {"leaves": out, "coupled": coupled}
+    held = [f for f in _PLANNER_FIELDS if getattr(system, f) is UNSET]
+    return {"leaves": out, "coupled": coupled, "unset": held}
 
 
-def _leaf_config(record: Mapping[str, Any]) -> tuple[tuple[str, object], ...]:
+def _leaf_config(record: Mapping[str, Any], scoring: tuple = ()) -> tuple[tuple[str, object], ...]:
     """A leaf record's configuration as ``Subsystem.config`` holds it (lists as tuples, no
     scoring)."""
     given = record["configuration"]
@@ -1254,12 +1251,14 @@ def _leaf_config(record: Mapping[str, Any]) -> tuple[tuple[str, object], ...]:
     for key in _LEAF_CONFIG:
         value = given[key]
         out.append((key, tuple(value) if isinstance(value, list) else value))
-    return (*out, ("scoring", ()))
+    return (*out, ("scoring", scoring))
 
 
-def _leaf_parts(records: Mapping[str, Any]) -> dict[str, PartParams]:
+def _leaf_parts(
+    records: Mapping[str, Any], scoring: Mapping[str, Mapping[str, Any]] | None = None
+) -> dict[str, PartParams]:
     """``SystemParams.parts`` from the leaf records: an entry for each leaf that holds a habit, a
-    precision or durations."""
+    precision, durations or scoring parameters (``scoring``: each leaf's own, by estimator name)."""
     out = {}
     for name, record in records.items():
         habit = record.get("policy_prior")
@@ -1270,8 +1269,14 @@ def _leaf_parts(records: Mapping[str, Any]) -> dict[str, PartParams]:
                 node: jnp.asarray(v, jnp.float32)
                 for node, v in (record.get("durations") or {}).items()
             },
+            dict((scoring or {}).get(name, {})),
         )
-        if part.policy_prior is not None or part.precision is not None or part.durations:
+        if (
+            part.policy_prior is not None
+            or part.precision is not None
+            or part.durations
+            or part.scoring
+        ):
             out[name] = part
     return out
 
@@ -1333,6 +1338,16 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
             kinds[name] = kind
     space = system._space(params) if nodes else None
     durations = system._durations(params, "describe") if nodes else {}
+    if not durations:  # a leaf's one clock, where a single node carries it and a planner chooses it
+        chosen = {u for u, a in zip(nodes, actions, strict=True) if a is not None}
+        held = {
+            n: v for part in params.parts.values() for n, v in part.durations.items() if n in chosen
+        }
+        durations = (
+            system._durations(dataclasses.replace(params, durations=held), "describe")
+            if (len(held) == 1)
+            else {}
+        )
 
     # ------------------------------------------------------------ per-step variables
     declared_dims = dict(system.dims)
@@ -1343,6 +1358,8 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     for s, grid in system.cells:
         w.variables[s]["cells"] = _grid_record(grid)
     for k, u in enumerate(nodes):
+        if u in driven:
+            continue  # a driven node is a slot: its variable is the driver's (see relations)
         if space.kinds[k] == FLOAT:
             box = params.control[u]
             w.variables[u] = {
@@ -1559,12 +1576,22 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     if params.precision is not None:
         precision = w.param("precision", params.precision, "positive", f"{where}precision")
 
-    objective = _write_objective(w, system, params, where)
+    objective = _write_leaf_objectives(
+        w, system, params, _write_objective(w, system, params, where), where
+    )
     relations: dict[str, Any] = {}
     if any(a is not None for a in actions):
         relations["controls"] = {u: a for u, a in zip(nodes, actions, strict=True) if a is not None}
     if driven:
         relations["driven"] = driven
+        inert = {
+            node: action
+            for _, sub in system.subsystems or ()
+            for node, action in sub.actions
+            if node in driven and action is not None
+        }
+        if inert:
+            relations["driven_actions"] = dict(sorted(inert.items()))
     if mods:
         relations["observed"] = list(mods)
     if externals:
@@ -1692,6 +1719,46 @@ def _write_objective(
     if pair or rows or "decomposition" not in out:
         out["terms"] = pair + rows
     return out
+
+
+def _write_leaf_objectives(
+    w: _Writer, system: System, params: SystemParams, objective: dict[str, Any], where: str
+) -> dict[str, Any]:
+    """``objective`` with the term records of each leaf's own scoring added, each tagged with its
+    ``leaf``: a leaf's estimators answer to the leaf alone, and the composite states none of its
+    own scoring (a view that states its own writes it there)."""
+    if system.scoring or params.scoring:
+        return objective
+    extra: list[dict[str, Any]] = []
+    for name, sub in system.subsystems or ():
+        if not sub.config:
+            continue
+        config, part = dict(sub.config), params.parts.get(name)
+        held = part.scoring if part is not None else {}
+        owned = {row for row, _ in config["scoring"]} | set(held)
+        if not owned:
+            continue
+        stand_in = dataclasses.replace(
+            system,
+            terms=tuple(t for t in config["terms"] if t.partition(":")[0] in owned),
+            scoring=config["scoring"],
+            epistemic=config["epistemic"],
+            decomposition=config["decomposition"],
+        )
+        written = _write_objective(
+            w,
+            stand_in,
+            dataclasses.replace(params, scoring=dict(held), obs_targets={}),
+            f"{where}{name}/",
+        )
+        extra += [
+            {**record, "leaf": name}
+            for record in written.get("terms", [])
+            if "parameters" in record or "model" in record
+        ]
+    if extra:
+        objective = {**objective, "terms": [*objective.get("terms", []), *extra]}
+    return objective
 
 
 def _epistemic_on(w: _Writer, key: str, where: str) -> list[str]:
@@ -2134,8 +2201,8 @@ _RECORD_KEYS = (
     "observes",
 )
 _LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
-_TERM_KEYS = ("term", "on", "parameters", "options", "model")
-_RELATIONS = ("controls", "observed", "external", "driven")
+_TERM_KEYS = ("term", "on", "parameters", "options", "model", "leaf")
+_RELATIONS = ("controls", "observed", "external", "driven", "driven_actions")
 _CONFIGURATION = {
     "planning": ("planner", "horizon", "gamma", "precision", "branch_on", "belief", "feedback"),
     "inference": ("iterations", "mixture_k", "mixture_schedule"),
@@ -2460,6 +2527,20 @@ class _Model:
             observed = record.get("observes") if isinstance(record, Mapping) else None
             if isinstance(observed, str) and child not in variables and observed in variables:
                 variables[child] = variables[observed]
+        #  a driven control node is no variable of its own either: it takes the domain of the
+        #  variable that drives it (a continuous one, the box of the driver's control node)
+        relations = self.doc.get("relations") or {}
+        if isinstance(relations, Mapping):
+            controls = relations.get("controls") or {}
+            paired = {a: u for u, a in controls.items()} if isinstance(controls, Mapping) else {}
+            for slot, driver in dict(relations.get("driven") or {}).items():
+                if slot in variables or not isinstance(driver, str) or driver not in variables:
+                    continue
+                record = variables[driver]
+                if isinstance(record, Mapping) and record.get("domain") == "real":
+                    record = variables.get(paired.get(driver), record)
+                if isinstance(record, Mapping):
+                    variables[slot] = {k: v for k, v in record.items() if k != "duration"}
         self.variables: Mapping[str, Any] = variables
         for name, record in self.variables.items():
             address = f"variables[{name!r}]"
@@ -2887,6 +2968,13 @@ class _Model:
                 "the variable that drives it"
             )
         self.driven: dict[str, str] = dict(driven)
+        inert = relations.get("driven_actions", {})
+        if not isinstance(inert, Mapping) or not set(inert) <= set(self.driven):
+            raise self.fail(
+                "relations.driven_actions maps a driven control node to the action node it had "
+                "before it was driven; its keys are driven nodes"
+            )
+        self.inert: dict[str, str] = dict(inert)
         self.observed: list[str] = list(relations.get("observed", []))
         self.external: list[str] = list(relations.get("external", []))
         named: dict[str, str] = {}
@@ -3159,6 +3247,13 @@ class _Model:
             *self.external,
         }
         self.nodes = [v for v in self.per_step if v in self.controls or v in self.driven]
+        #  the nodes of one component follow one another, a driven slot (listed after the
+        #  variables) beside the component's own nodes
+        rank: dict[str, int] = {}
+        for name in self.per_step:  # the document lists each component's states first
+            if name not in self.nodes:
+                rank.setdefault(name.split(_SEP, 1)[0], len(rank))
+        self.nodes.sort(key=lambda u: rank.get(u.split(_SEP, 1)[0], len(rank)))
         self.actions = [self.controls.get(u) for u in self.nodes]
         self.mods = [v for v in self.per_step if v in self.observed]
         if self.observes:  # an observing modality is listed last among the variables
@@ -3535,6 +3630,11 @@ class _Model:
                     "budget) is required"
                 )
         self._amortized_names()
+        leaf_clocks = {
+            node
+            for record in ((self.doc.get("components") or {}).get("leaves") or {}).values()
+            for node in (record.get("durations") or {})
+        }
         for u, a in zip(self.nodes, self.actions, strict=True):
             for fac in self.transition.values():
                 if any(p == a for p, _ in fac.parents):
@@ -3544,9 +3644,9 @@ class _Model:
                 + [fac.parents for fac in self.targets.values()]
                 + [[(u, 0)] for fac in self.likelihood.values() if a in dict(fac.parents)]
             )
-            sized_by_duration = u in self.durations and (
-                np.ndim(self.variables[u]["duration"]) == 1
-            )
+            sized_by_duration = (
+                u in self.durations and (np.ndim(self.variables[u]["duration"]) == 1)
+            ) or u in leaf_clocks
             if not sized_by_duration and not any(u == p for ps in named for p, _ in ps):
                 raise self.fail(
                     f"the control node {u!r} is read by no transition and nothing else names "
@@ -4960,10 +5060,13 @@ class _Model:
         infogain: list[tuple[str, Mapping[str, Any]]] = []
         rows: list[tuple[str, Mapping[str, Any]]] = []
         menu = sorted({*_PAIR_TERMS, INFOGAIN, *_registry.ROWS})
+        leaf_terms: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
         for i, record in enumerate(self.terms):
             address = f"objective.terms[{i}]"
             name = record["term"]
-            if name in _PAIR_TERMS:
+            if "leaf" in record:  # a term of one leaf's own scoring
+                leaf_terms.setdefault(record["leaf"], []).append((address, record))
+            elif name in _PAIR_TERMS:
                 extra = sorted(set(record) - {"term"})
                 if extra:
                     raise self.fail(
@@ -5021,6 +5124,30 @@ class _Model:
             else:
                 epistemic = tuple(self._epistemic_key(r["on"], a) for a, r in infogain)
         scoring: dict[str, Any] = {}
+        terms: list[str] = []
+        owned: list[tuple[str, System]] = []
+        self._scoring_entries(infogain, rows, scoring, owned, terms)
+        #  each leaf's own scoring: its estimators' parameters and models, and no term of the
+        #  composite's (the leaf's configuration lists its terms)
+        self.leaf_scoring: dict[str, tuple[tuple, dict[str, Any]]] = {}
+        for leaf, items in leaf_terms.items():
+            leaf_scoring: dict[str, Any] = {}
+            leaf_owned: list[tuple[str, System]] = []
+            self._scoring_entries(
+                [(a, r) for a, r in items if r["term"] == INFOGAIN],
+                [(a, r) for a, r in items if r["term"] != INFOGAIN],
+                leaf_scoring,
+                leaf_owned,
+                [],
+            )
+            self.leaf_scoring[leaf] = (tuple(leaf_owned), leaf_scoring)
+        self.decomposition, self.epistemic = decomposition, epistemic
+        self.term_keys, self.scoring, self.owned = tuple(terms), scoring, tuple(owned)
+
+    def _scoring_entries(self, infogain, rows, scoring, owned, terms) -> None:
+        """The estimators' parameters and models the infogain and estimator term records carry,
+        added to ``scoring`` and ``owned`` (a model estimator's declared System), and each
+        term's key to ``terms``."""
         for address, record in infogain:
             if "model" in record:
                 raise self.fail(f"{address}: an infogain term owns no model")
@@ -5043,8 +5170,6 @@ class _Model:
                     f"{address}: a second infogain term gives {matches[0].name}'s parameters"
                 )
             scoring[matches[0].name] = self._term_entry(matches[0], record, address)
-        terms: list[str] = []
-        owned: list[tuple[str, System]] = []
         for address, record in rows:
             row = record["term"]
             estimator = _registry.ROWS[row]
@@ -5073,8 +5198,6 @@ class _Model:
                 if row in scoring:
                     raise self.fail(f"{address}: a second {row!r} term gives its parameters")
                 scoring[row] = self._term_entry(estimator, record, address)
-        self.decomposition, self.epistemic = decomposition, epistemic
-        self.term_keys, self.scoring, self.owned = tuple(terms), scoring, tuple(owned)
 
     # ---------------------------------------------------------------- construction
 
@@ -5234,9 +5357,11 @@ class _Model:
             policy_len=self.config["policy_len"],
         )
         leaf_records = (self.doc.get("components") or {}).get("leaves") or {}
-        for field in _PLANNER_FIELDS:  # leaves that differ on a planner field leave it unset
+        parts = _leaf_parts(leaf_records, {k: v[1] for k, v in self.leaf_scoring.items()})
+        stated = (self.doc.get("components") or {}).get("unset")
+        for field in _PLANNER_FIELDS:  # a field the composite holds unset comes back unset
             values = {_leaf_config(r)[_LEAF_CONFIG.index(field)][1] for r in leaf_records.values()}
-            if len(values) > 1:
+            if field in (stated or ()) or (stated is None and len(values) > 1):
                 kwargs[field] = UNSET
         system = System(**kwargs)  # every refusal of the constructor is checked above
         params = SystemParams(
@@ -5253,13 +5378,13 @@ class _Model:
             control=dict(self.boxes),
             actuator=actuator,
             emission=emission,
-            durations=dict(self.durations),
+            durations=({} if any(p.durations for p in parts.values()) else dict(self.durations)),
             readings={
                 child: jnp.asarray(counts, jnp.result_type(float))
                 for child, (_, counts) in self.pooled.items()
             },
             parameters={name: parameters[name] for name in self.homes},
-            parts=_leaf_parts(leaf_records),
+            parts=parts,
         )
         return system, params
 
@@ -5367,6 +5492,7 @@ class _Model:
             mods = tuple(m for m, o in enumerate(self.mods) if o.startswith(prefix))
             chosen = tuple(u for u in self.nodes if u.startswith(prefix) and u not in self.driven)
             action_of = dict(zip(self.nodes, self.actions, strict=True))
+            node_of = {a: u for u, a in self.controls.items()}
             #  an action node a modality observes is no state factor of any component
             state_deps = [tuple(g for g in deps if g < len(self.states)) for deps in A_deps]
             #  a modality that observes a static-kernel emission of another component reads a
@@ -5389,7 +5515,22 @@ class _Model:
                         factors=facs,
                         modalities=mods,
                         controls=chosen,
-                        actions=tuple((u, action_of[u]) for u in chosen),
+                        actions=tuple(
+                            (u, action_of[u] if u not in self.driven else self.inert[u])
+                            for u in (
+                                *chosen,
+                                *(
+                                    u
+                                    for u in self.nodes
+                                    if u in self.driven and u.startswith(prefix) and u in self.inert
+                                ),
+                            )
+                        ),
+                        identified=tuple(
+                            (u, node_of[v])
+                            for u, v in self.driven.items()
+                            if u.startswith(prefix) and v in node_of
+                        ),
                         free_modalities=tuple(
                             m for m in mods if all(g in facs for g in state_deps[m])
                         ),
@@ -5404,7 +5545,13 @@ class _Model:
                         reads=reads,
                         boundary="coupled" if name in coupled else boundary.get(name, "none"),
                         emissions=tuple(e for e in self.emitted if e.startswith(prefix)),
-                        config=_leaf_config(leaf_records[name]) if name in leaf_records else (),
+                        config=(
+                            _leaf_config(
+                                leaf_records[name], self.leaf_scoring.get(name, ((), {}))[0]
+                            )
+                            if name in leaf_records
+                            else ()
+                        ),
                         recognition=tuple(leaf_records.get(name, {}).get("recognition", ())),
                     ),
                 )
@@ -5628,6 +5775,7 @@ def schema() -> dict[str, Any]:
                 "additionalProperties": False,
                 "properties": {
                     "term": {"type": "string", "minLength": 1},
+                    "leaf": {"type": "string", "minLength": 1},
                     "on": {"type": "string", "minLength": 1},
                     "parameters": {
                         "type": "object",
@@ -5687,6 +5835,10 @@ def schema() -> dict[str, Any]:
                                 "additionalProperties": {"type": "string"},
                             },
                             "driven": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                            },
+                            "driven_actions": {
                                 "type": "object",
                                 "additionalProperties": {"type": "string"},
                             },
@@ -5771,6 +5923,7 @@ def schema() -> dict[str, Any]:
                                 },
                             },
                             "coupled": names,
+                            "unset": names,
                         },
                     },
                 },

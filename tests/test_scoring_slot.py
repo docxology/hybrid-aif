@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import merge
 from hybrid_aif.distributions import Categorical, MLPConditional
 from hybrid_aif.distributions.neural import PredictorHead
@@ -509,18 +510,25 @@ def test_the_row_stamps_its_warrant_as_an_and_never_an_assignment():
 # ------------------------------------------------------------------- composition
 
 
-def test_merging_a_component_with_scoring_names_the_key_grammar():
+def test_joint_planning_two_components_with_scoring_names_the_key_grammar():
     """The addendum's second enforcement point. The obstacle is addressing, not
     mathematics: a row is addressed by row *name*, which namespacing deliberately
-    does not qualify, so two components' critics would both answer to ``g_tail``."""
-    system, params = _agent()
-    for broken_system, broken_params in (
-        (system, params),  # the whole G side
-        (dataclasses.replace(system, terms=()), params),  # structure alone
-        (dataclasses.replace(system, terms=(), scoring=()), params),  # parameters alone
-    ):
+    does not qualify, so two components' critics would both answer to ``g_tail``. A merge
+    keeps each leaf's scoring on its own record; the joint planner refuses two."""
+
+    def broken(kind):
+        system, params = _agent()
+        if kind == "structure alone":
+            system = dataclasses.replace(system, terms=())
+        elif kind == "parameters alone":
+            system = dataclasses.replace(system, terms=(), scoring=())
+        return system, params  # "the whole G side" is the System as declared
+
+    for kind in ("the whole G side", "structure alone", "parameters alone"):
+        (one, one_p), (two, two_p) = broken(kind), broken(kind)
+        merged, merged_params = merge({"mind": one, "twin": two}, {"mind": one_p, "twin": two_p})
         with pytest.raises(NotImplementedError, match="scoring structure or parameters"):
-            merge({"mind": broken_system}, {"mind": broken_params})
+            joint_planner(merged, merged_params)
 
 
 def test_merging_a_scoring_entry_as_a_subsystem_names_the_kernel_criterion():
@@ -539,8 +547,9 @@ def test_a_policy_module_does_not_compose_over_a_joint_policy_set():
 
     (asys, ap), (wsys, wp) = agent_and_world()
     ap = dataclasses.replace(ap, policy_prior=lambda beliefs: None)
+    composite, cp = merge({"agent": asys, "world": wsys}, {"agent": ap, "world": wp})
     with pytest.raises(NotImplementedError, match="policy module"):
-        merge({"agent": asys, "world": wsys}, {"agent": ap, "world": wp})
+        joint_planner(composite, cp)
 
 
 def test_a_vector_habit_still_composes_as_it_always_did():
@@ -550,5 +559,5 @@ def test_a_vector_habit_still_composes_as_it_always_did():
     (asys, ap), (wsys, wp) = agent_and_world(policy_len=1)
     ap = dataclasses.replace(ap, policy_prior=jnp.zeros(5))
     wp = dataclasses.replace(wp, policy_prior=Categorical(logits=jnp.arange(5.0)))
-    _, cp = merge({"agent": asys, "world": wsys}, {"agent": ap, "world": wp})
+    _, cp = joint_planner(*merge({"agent": asys, "world": wsys}, {"agent": ap, "world": wp}))
     assert cp.policy_prior.shape == (25,)

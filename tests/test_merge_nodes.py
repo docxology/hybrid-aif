@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.driver import MindCarry, agent_step
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
@@ -36,9 +37,15 @@ KEY = jax.random.PRNGKey(0)
 SAME_STEP = Link("agent.a_location", "world.u_location")
 
 
-def same_step(policy_len=2):
-    """The zoo pair with the agent's node driving the world's at the same step."""
+def same_step_merge(policy_len=2):
+    """The zoo pair with the agent's node driving the world's at the same step: the world's node
+    stays in its component, driven."""
     return merged(policy_len=policy_len, bindings=[SAME_STEP, *OBSERVATION_BINDINGS])
+
+
+def same_step(policy_len=2):
+    """The same pair planned as one mind: the driven node is the driver's."""
+    return joint_planner(*same_step_merge(policy_len))
 
 
 def _mixed_beliefs(system, params):
@@ -237,11 +244,11 @@ def test_a_driver_that_is_neither_a_node_nor_a_state_is_refused_naming_both():
     assert "agent.a_location" in str(err.value) and "'agent.location'" in str(err.value)
     with pytest.raises(ValueError, match="pass 'world.u_location', the control node of"):
         merge(subs, ps, [Link("agent.a_location", "world.location")])
-    with pytest.raises(ValueError, match="pairs 'agent.u_location' with itself"):
+    with pytest.raises(ValueError, match="cannot be driven by its own action node"):
         merge(subs, ps, [Link("agent.a_location", "agent.u_location")])
-    with pytest.raises(ValueError, match=r"already merged \(with 'agent.u_location'\)"):
+    with pytest.raises(ValueError, match="which 'agent.a_location' already drives"):
         merge(subs, ps, [SAME_STEP, SAME_STEP])
-    with pytest.raises(ValueError, match="pairs 'agent.u_location' with itself"):
+    with pytest.raises(ValueError, match="cannot be driven by its own action node"):
         merge(subs, ps, [SAME_STEP, Link("world.a_location", "agent.u_location")])
 
 
@@ -302,12 +309,13 @@ def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
     (agent, ap), (world, wp) = agent_and_world()
     target = Categorical(logits=jnp.zeros(5))
     wp = dataclasses.replace(wp, state_targets={"u_location": target})
+    driven, driven_params = merge(
+        {"agent": agent, "world": world},
+        {"agent": ap, "world": wp},
+        [SAME_STEP, *OBSERVATION_BINDINGS],
+    )
     with pytest.raises(ValueError, match="declare the target on 'agent.u_location'"):
-        merge(
-            {"agent": agent, "world": world},
-            {"agent": ap, "world": wp},
-            [SAME_STEP, *OBSERVATION_BINDINGS],
-        )
+        joint_planner(driven, driven_params)
     with pytest.raises(ValueError, match="merged with the state 'agent.location'"):
         merge(
             {"agent": agent, "world": world},
@@ -316,10 +324,12 @@ def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
         )
     #  a target on the driver's node travels with it, a risk leaf under its name
     ap = dataclasses.replace(ap, state_targets={"u_location": target})
-    composite, cp = merge(
-        {"agent": agent, "world": world},
-        {"agent": ap, "world": dataclasses.replace(wp, state_targets={})},
-        [SAME_STEP, *OBSERVATION_BINDINGS],
+    composite, cp = joint_planner(
+        *merge(
+            {"agent": agent, "world": world},
+            {"agent": ap, "world": dataclasses.replace(wp, state_targets={})},
+            [SAME_STEP, *OBSERVATION_BINDINGS],
+        )
     )
     _, tree = composite.infer_policies(cp, composite.infer_states(cp, _obs(composite))[0])
     assert set(tree["risk"]) == {"agent.u_location"}
@@ -404,7 +414,9 @@ def test_a_continuous_node_drives_another_minds_g_u_at_the_same_step():
     a, ap = _lg_mind("x", G2)
     G_y = jnp.asarray([[0.3], [-0.2]])
     b, bp = _lg_mind("y", G_y)
-    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
+    composite, cp = joint_planner(
+        *merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
+    )
     assert composite.names.controls == ("a.u_x",) and set(cp.control) == {"a.u_x"}
     beliefs = composite.initial_priors(cp)
     u = jnp.asarray([0.7])
@@ -452,8 +464,8 @@ def test_a_chain_of_same_step_bindings_is_one_node_in_either_order():
     subs, ps = _three()
     first = Link("agent.a_location", "w1.u_location")
     second = Link("w1.a_location", "w2.u_location")
-    forward = merge(subs, ps, [first, second])
-    _assert_same_composite(forward, merge(subs, ps, [second, first]))
+    forward = joint_planner(*merge(subs, ps, [first, second]))
+    _assert_same_composite(forward, joint_planner(*merge(subs, ps, [second, first])))
     composite, cp = forward
     assert composite.names.controls == ("agent.u_location",)
     meta = dict(composite.subsystems)
@@ -514,13 +526,15 @@ def test_a_relay_into_a_node_its_component_shares_names_the_wiring():
 def test_a_mix_of_a_node_driver_and_a_relay():
     """One decision drives one world at once and the other a tick later."""
     subs, ps = _three()
-    composite, cp = merge(
-        subs,
-        ps,
-        [
-            Link("agent.a_location", "w1.u_location"),
-            Link("agent.location", "w2.u_location"),
-        ],
+    composite, cp = joint_planner(
+        *merge(
+            subs,
+            ps,
+            [
+                Link("agent.a_location", "w1.u_location"),
+                Link("agent.location", "w2.u_location"),
+            ],
+        )
     )
     assert composite.names.controls == ("agent.u_location",)
     beliefs = {
@@ -561,6 +575,8 @@ def test_a_discrete_state_relayed_into_a_continuous_node_is_a_kind_mismatch():
 def test_the_driven_view_of_a_continuous_pair_names_the_node():
     a, ap = _lg_mind("x", G2)
     b, bp = _lg_mind("y", jnp.asarray([[0.3], [-0.2]]))
-    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
+    composite, cp = joint_planner(
+        *merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.a_x", "b.u_y")])
+    )
     with pytest.raises(NotImplementedError, match=r"continuous control node \['a.u_x'\]"):
         subsystem(composite, cp, "b")

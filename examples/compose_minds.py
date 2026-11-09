@@ -46,7 +46,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import Link, agent_step, couple, merge, run
+from hybrid_aif.composition import Link, agent_step, couple, joint_planner, merge, run
 from hybrid_aif.system import System, SystemParams
 
 N = 5  # corridor cells; the docks are the two ends
@@ -145,11 +145,13 @@ LINKS = (
 
 
 def merged(start=SYMMETRIC, policy_len: int = 2) -> tuple[System, SystemParams]:
-    """The two robots' models as one System: every modality reads the robots' own position
-    factors, and the composite plans over both action nodes."""
+    """The two robots' models as one System, planned as one mind (``joint_planner`` of the
+    merge): every modality reads the robots' own position factors, and the System plans over both
+    action nodes."""
     a, b = start
     (sa, pa), (sb, pb) = robot(a, b, policy_len), robot(b, a, policy_len)
-    return merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(LINKS))
+    composite, params = merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(LINKS))
+    return joint_planner(composite, params)
 
 
 def longhand(start=SYMMETRIC, policy_len: int = 2) -> tuple[System, SystemParams]:

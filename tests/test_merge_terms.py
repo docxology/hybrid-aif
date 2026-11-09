@@ -7,6 +7,7 @@ import jax
 import numpy as np
 import pytest
 
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import merge, namespaced_term, subsystem
 from tests.test_action_node_modalities import scalar_model
 from tests.test_merge_gaussian_control import mission
@@ -80,12 +81,20 @@ def test_a_components_selector_equals_the_composites_declared_by_hand():
     assert jax.tree_util.tree_structure(bare) != jax.tree_util.tree_structure(tree)
 
 
-def test_a_component_declaring_scoring_is_still_refused():
+def test_a_merge_keeps_a_leafs_scoring_and_the_joint_planner_refuses_two_leaves_with_it():
     fast, fast_p = scalar_model(horizon=2)
     fast = dataclasses.replace(fast, terms=("uncertainty:x",), scoring=(("g_tail", object()),))
-    with pytest.raises(NotImplementedError, match=r"fast.*scoring"):
-        merge({"fast": fast}, {"fast": fast_p})
+    composite, cp = merge({"fast": fast}, {"fast": fast_p})
+    assert composite.scoring == () and "g_tail" not in " ".join(composite.terms)
+    assert dict(dict(composite.subsystems)["fast"].config)["scoring"] == fast.scoring
+    twin, twin_p = merge({"fast": fast, "slow": fast}, {"fast": fast_p, "slow": fast_p})
+    with pytest.raises(NotImplementedError, match=r"fast.*slow.*scoring"):
+        joint_planner(twin, twin_p)
     fast, fast_p = scalar_model(horizon=2)
     fast_p = dataclasses.replace(fast_p, scoring={"g_tail": 1.0})
-    with pytest.raises(NotImplementedError, match=r"fast.*scoring"):
-        merge({"fast": dataclasses.replace(fast, terms=("g_tail",))}, {"fast": fast_p})
+    both, bp = merge(
+        {"fast": dataclasses.replace(fast, terms=("g_tail",)), "slow": fast},
+        {"fast": fast_p, "slow": fast_p},
+    )
+    with pytest.raises(NotImplementedError, match=r"fast.*slow.*scoring"):
+        joint_planner(both, bp)

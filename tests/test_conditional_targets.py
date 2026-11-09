@@ -32,6 +32,7 @@ from hybrid_aif import (
     System,
     SystemParams,
 )
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.controls import ControlStep
 from hybrid_aif.description import DescriptionError, build, describe
@@ -572,7 +573,9 @@ def test_merge_refuses_a_conditional_targets_control_parent_relayed_to_a_state()
 
 def test_a_conditional_targets_control_parent_identified_with_a_driver_follows_it():
     systems, params = _relay_pair()
-    composite, composite_params = merge(systems, params, [Link("b.a_location", "a.u_location")])
+    composite, composite_params = joint_planner(
+        *merge(systems, params, [Link("b.a_location", "a.u_location")])
+    )
     assert composite.C_deps == (("a.reward", ("b.u_location",)),)
     doc, _ = describe(composite, composite_params, arrays="inline")
     assert doc["factors"]["a.reward"]["target"]["parents"] == ["b.u_location"]

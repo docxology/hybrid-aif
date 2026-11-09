@@ -142,14 +142,19 @@ factor and modality, a control count. Its code:
   of its family (its menu, its parents, its parameters) while the document records it under the
   actuator label. The two agree only while an actuator kernel itself is unpriced; when actuators
   are priced, the record's label and its price must be settled together.*
-  *2026-11-09: a driven control node (no action node of its own, its level the realised value of
-  another component's action node, `composing-systems.md`) is priced as any control node: one
-  `log*` of its level count in the control entries, and the table axes that read it in the
-  records that read it. Nothing else is priced for it: the action node it replaces was unpriced,
-  and no habit or prior over its levels is written, so identifying an action node with a control
-  node leaves the total where it was (118.99 nats for the zoo coupling with the world's node
-  driven, and the same with the world choosing it). A modality that observes a variable is no
-  variable of its own and drops out of the modality count.*
+  *2026-11-09: a control node and its action node are one decision variable (the action node is
+  the control node's realised value). A driven control node (no action node of its own, its level
+  the realised value of another component's action node, `composing-systems.md`) is a slot of
+  the decision variable that drives it, as a modality that observes a variable is a slot of that
+  variable: it is no variable of its own, pays no `log*` of its level count, and is not counted
+  among the control nodes of the graph code or among the candidate parents of a table, while the
+  records that read it keep naming it as their parent. The level count of the identified
+  variable is paid once, on the driver's control node, so a driven coupling costs what its joint
+  planner costs (111.27 nats for the zoo coupling with the world's node driven, against 118.99
+  with the world choosing it: `log*(5)` 3.70, the graph code 0.87 and a candidate-parent alphabet
+  of 5 where it was 6 for ten tables, 3.16). The earlier statement that identifying an action
+  node with a control node leaves the total where it was paid the level count twice and is
+  withdrawn.*
 
 Alternatives considered: a per-candidate-parent bit (a Bernoulli edge prior; costs `P log 2`
 regardless of sparsity, so a sparse graph is overpriced); a fixed-width code for every count

@@ -18,6 +18,7 @@ import pytest
 
 from hybrid_aif import SystemParams
 from hybrid_aif import description as D
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import merge
 from hybrid_aif.description import mdl
 from hybrid_aif.planning import make_gradient_planner
@@ -182,19 +183,23 @@ def _components(precisions):
 def test_merge_carries_the_one_precision_the_components_share():
     systems, params = _components((GAMMA, GAMMA))
     _, composite = merge(systems, params, OBSERVATION_BINDINGS)
-    assert float(composite.precision) == GAMMA
+    assert composite.precision is None and float(composite.parts["agent"].precision) == GAMMA
+    _, joint = joint_planner(*merge(systems, params, OBSERVATION_BINDINGS))
+    assert float(joint.precision) == GAMMA
     systems, params = _components((None, None))
-    _, composite = merge(systems, params, OBSERVATION_BINDINGS)
-    assert composite.precision is None
+    _, joint = joint_planner(*merge(systems, params, OBSERVATION_BINDINGS))
+    assert joint.precision is None
 
 
 def test_merge_refuses_components_that_disagree_on_the_precision():
     systems, params = _components((GAMMA, 3.0))
+    composite = merge(systems, params, OBSERVATION_BINDINGS)
     with pytest.raises(ValueError, match="different params.precision"):
-        merge(systems, params, OBSERVATION_BINDINGS)
+        joint_planner(*composite)
     systems, params = _components((GAMMA, None))
+    composite = merge(systems, params, OBSERVATION_BINDINGS)
     with pytest.raises(ValueError, match="declare params.precision and the others do not"):
-        merge(systems, params, OBSERVATION_BINDINGS)
+        joint_planner(*composite)
 
 
 def test_the_field_is_a_system_params_field():

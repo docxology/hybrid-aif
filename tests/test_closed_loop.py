@@ -999,7 +999,8 @@ def test_a_nonlinear_factor_is_linearised_at_the_pre_step_belief():
 
 
 def test_merge_keeps_the_planning_belief_and_the_feedback_switch():
-    from hybrid_aif.composition import merge
+    from hybrid_aif.composition import joint_planner, merge
+    from hybrid_aif.system import UNSET
 
     def mind(name):
         system = System(
@@ -1033,5 +1034,10 @@ def test_merge_keeps_the_planning_belief_and_the_feedback_switch():
     assert composite.planning_belief == "posterior"
     assert composite.feedback == "linear_quadratic"
     open_loop = dataclasses.replace(b, feedback=None)
+    differing, dp = merge({"a": a, "b": open_loop}, {"a": ap, "b": bp})
+    assert differing.feedback is UNSET
     with pytest.raises(ValueError, match="disagree on feedback"):
-        merge({"a": a, "b": open_loop}, {"a": ap, "b": bp})
+        joint_planner(differing, dp)
+    assert joint_planner(differing, dp, feedback="linear_quadratic")[0].feedback == (
+        "linear_quadratic"
+    )

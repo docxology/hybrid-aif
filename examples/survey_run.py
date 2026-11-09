@@ -45,7 +45,17 @@ import survey_scheduler as ss
 import survey_world as wd
 
 from hybrid_aif import Parameter, __version__
-from hybrid_aif.composition import Identify, Link, couple, hold, merge, particle, run, subsystem
+from hybrid_aif.composition import (
+    Identify,
+    Link,
+    couple,
+    hold,
+    joint_planner,
+    merge,
+    particle,
+    run,
+    subsystem,
+)
 from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
@@ -349,7 +359,7 @@ def build_composite(decoder, setting):
         durations=True,  # hold reads the option's length off the scheduler's durations
         readings=setting.get("readings", False),
     )
-    cs, cp = merge(
+    merged, merged_params = merge(
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
         [
@@ -358,6 +368,7 @@ def build_composite(decoder, setting):
             Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
         ],
     )
+    cs, cp = joint_planner(merged, merged_params)
     mview, mparams = subsystem(cs, cp, "mission")
     mview = dataclasses.replace(mview, policy_len=2)
     rview, _ = subsystem(cs, cp, "rover", inputs={"mission.option": PINNED_OPTION})

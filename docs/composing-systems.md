@@ -547,7 +547,7 @@ Separate minds that exchange only action and sensation are joined by `couple`, n
 
 | `source` | `target` | `realise` | meaning |
 |---|---|---|---|
-| an action node (`"agent.a_location"`) | a control node (`"world.u_location"`) | none | the driver's decision drives the node at the same step (below) |
+| an action node (`"agent.a_location"`) | a control node (`"world.u_location"`) | none | `Identify` of the two ports: the node is driven by the realised decision (below) |
 | a state factor (`"agent.location"`) | a control node | none | the relay: read a step later (below) |
 | state factors, one name or a tuple | a modality | none | structural: the modality's complete parent list, in its likelihood's axis order, one link per modality |
 | one state factor of another component | a modality | `"sample"`, `"mode"` or `"stats"` | a belief read (below); `kernel` is the identity when `None` or `"identity"`, or a `Grid` |
@@ -565,12 +565,15 @@ order) into one variable, which the in-port observes: it writes `(in_port, out_p
 composite's `observes`. Every in-port is identified at most once, an out-port may feed many, and
 the two port types must be equal. A modality in-port reads the out-port's datum as an observation
 (`world.gauge` observed by two leaves is one variable, two observing slots). A control node
-in-port is a **driven** node: it stays in its own leaf, carries the *realised* value of the
+in-port is a **driven** node: it stays in its own leaf (a component that is not itself composed
+of others), carries the *realised* value of the
 out-port (control-states.md C13), has no action node of its own (`action_names` entry `None`)
-and is never chosen by a planner. `Identify("mission.option", "rover.u_opt")` under `merge` and
-`Identify("agent.a_v", "world.v")` under `couple` are one form. The same-step `Link(action node,
-control node)` instead collapses the driven node into the driver's (below), and a merge that
-makes it plans the composite as one mind. A composite that carries driven slots is planned
+and is never chosen by a planner (`driven_nodes(composite, name=None)` lists a component's driven
+nodes, each with the variable that drives it; a `Subsystem` record's `controls` and the planner's
+action nodes leave them out). `Identify("mission.option", "rover.u_opt")` under `merge` and
+`Identify("agent.a_v", "world.v")` under `couple` are one form, and `Link(action node, control
+node)` under `merge` is the same binding. A composite that carries driven slots is planned as one
+mind through `joint_planner`, which collapses each driven node into its driver's (below), or
 through its leaves' views (`subsystem`).
 
 **`couple(components, bindings, fixed)`** returns a `(System, SystemParams)`: the splice of the
@@ -578,31 +581,66 @@ components (the stage of `merge` that renames and concatenates the components' v
 tables before any binding is applied) followed by port identifications and `Clamp`s (`fixed` maps
 a discrete control node to a level or a distribution, as a `Clamp`). It refuses every other
 binding, naming `merge`: a structural, relay, terminal or belief-read `Link`, an `Identify` of
-parameter variables. A coupling holds `|A| + |B| - k` variables for parts of `|A|` and `|B|`, a
-variable an out-port feeds to several in-ports counted once; its document writes each identified
-variable once and each observing slot's likelihood record names it (`observes`), a driven node
-is written under `relations.driven`, and each leaf's own record under `components`. A merge may
+parameter variables. A coupling holds `|A| + |B| - k` decision variables for parts of `|A|` and
+`|B|` (a control node and its action node are one decision variable, so the zoo agent has 14,
+the world 13 and the coupling with the world's node driven 14 + 13 - 4 = 23), a variable an
+out-port feeds to several in-ports counted once; its document writes each identified variable
+once and each observing slot's likelihood record names it (`observes`), a driven node is a slot
+of its driver's variable (no variable of its own, written under `relations.driven` with the
+action node it had under `relations.driven_actions`), and each leaf's own record, its scoring
+terms (each tagged with its `leaf`) and the planner fields it holds unset under `components`. A
+merge may
 take a coupling as a component and a coupling a merge. A coupling is run leaf by leaf: every
 planning face (`policies`, `infer_policies`, `act`, `elapsed`, `replay`) refuses it, and a leaf is
-planned through its view. `ports` lists a control node no `observes` entry drives as an in-port
-(it can be driven), so a coupling's `ports` are not empty when a leaf chooses its own node;
+planned through its view, or the whole as one mind through `joint_planner`. `ports` lists a
+control node no `observes` entry drives as an in-port (it can be driven), so a coupling's `ports`
+are not empty when a leaf chooses its own node;
 closedness is a property of the modalities alone (no modality left unfed).
 
-**Per-leaf configuration.** A leaf of a splice (a component that is not itself a splice) keeps
-its own planner configuration on its `Subsystem` record (`config`: `policy_len`, `planner`,
-`gamma`, `num_iters`, `decomposition`, `planning_belief`, `feedback`, `mixture_schedule`,
-`mixture_k`, `epistemic`, `terms`, `scoring`), and recognition variables on the record
-(`recognition`). A coupling also keeps each leaf's habit, precision, durations and scoring
-parameters in `SystemParams.parts[<leaf>]` (a `PartParams`, present when it holds any). A merge
-keeps no `parts`: its composite fields are the planning problem, and a view reads them. A
-composite's own planner field is authoritative wherever it is set, and the leaf's record speaks
-where a coupling holds `UNSET` (its leaves differ on the field). A merged component brings the
-composite's fields as its leaves' configuration. `Subsystem.boundary` is `"coupled"` for a
-top-level component of a coupling (`nested` is false). A merge, which plans its leaves as one
-mind, requires its leaves to agree on `policy_len`, `planner`, `gamma`, `num_iters`,
-`decomposition`, `planning_belief`, `feedback` and `mixture_schedule`, composes their habits,
-states the one precision and the one clock, and refuses a leaf that declares scoring. A coupled
-leaf's view is its own System namespaced, with its recognition, scoring and configuration.
+**Per-leaf configuration.** A leaf (a component that is not itself composed) keeps its own planner
+configuration on its `Subsystem` record (`config`: `policy_len`, `planner`, `gamma`, `num_iters`,
+`decomposition`, `planning_belief`, `feedback`, `mixture_schedule`, `mixture_k`, `epistemic`,
+`terms`, `scoring`), and its recognition variables on the record (`recognition`). Its habit,
+precision, durations and scoring parameters are `SystemParams.parts[<leaf>]` (a `PartParams`,
+present when the leaf holds any). `merge` and `couple` alike state a planner field where their
+leaves agree and hold `UNSET` where they differ, and state no habit, precision, durations or
+scoring of their own: a composite is not one planning problem until `joint_planner` makes it
+one. A composite's own planner field is authoritative wherever it is set (edit it with
+`dataclasses.replace`), and the leaf's record speaks where it holds `UNSET`. A merged component
+brings the composite's fields as its leaves' configuration. `Subsystem.boundary` is `"coupled"`
+for a top-level component of a coupling (`nested` is false). A leaf's view is its own System
+namespaced, with its recognition, scoring and configuration.
+
+**The joint planner.** `joint_planner(system, params, node=None, *, inputs=None, **config)`
+returns the planning problem of `node` (a component that is not a leaf, or `None` for the whole
+System) as one mind: a `(System, SystemParams)` whose faces plan every control node of the node
+together.
+
+- *Control identifications collapse.* A driven control node whose driver is an action node
+  inside the node leaves the System: every factor that read it reads the driver's control node,
+  so one mind plans one decision. A driven node whose driver lies outside the node stays driven
+  (give `inputs`, as for `subsystem`). An emission identified with a modality stays an emission
+  and an observing slot: the joint model reads its own belief. A kernel in `params.actuator` on
+  the driver's action node is refused unless it is the identity (otherwise the intention and the
+  value planned on would differ).
+- *Configuration.* Each of `policy_len`, `planner`, `gamma`, `num_iters`, `decomposition`,
+  `planning_belief`, `feedback`, `mixture_schedule`, `mixture_k` is the argument of
+  `joint_planner`, else the composite's value where it states one (for the whole System; a
+  field stated on an enclosing composite does not reach into a nested node), else the value the
+  node's leaves agree on; leaves that differ are refused, naming the field and each leaf's value
+  (`epistemic` and `terms` are also arguments).
+- *Habit, precision, durations, scoring.* The composite's own, where it states them. Otherwise
+  the habit is the sum in log space of the leaves' habits over the joint policy set (a leaf whose
+  own policy set the joint view does not have, a policy module, and a continuous node are
+  refused); the precision is the one value the leaves declare (all of them, or none); the
+  durations are one clock on one node the planner chooses; the scoring is the one leaf's that
+  declares it (two are refused).
+- *Recognition* is carried per leaf under the leaf's names.
+
+A node that is itself a leaf is refused (it is its own planner). A leaf that a caller steps as a
+process is planned here as a self-model: `joint_planner` does not see the caller's steps.
+`joint_planner(merge(...), params)` of a merge plans it exactly as one planning problem, and is
+what `run`, `particle` and `agent_step` take as a composite.
 
 **A link into a control node.** `Link(driver, node)` names a control node of one
 component (`"world.u_location"`), identified with the action node of another (same step) or
@@ -611,7 +649,7 @@ decision:
 
 | `driver` | read | what the composite holds |
 |---|---|---|
-| an action node of the driving component (`"agent.a_location"`) | at the same step | one node: every factor that read the driven node reads the driver's, from t to t+1 on the call that chooses it; the driven node leaves `controls` and `names.controls`, and its action node goes with it |
+| an action node of the driving component (`"agent.a_location"`) | at the same step | the control node stays in its component, driven (it carries the driver's realised value, and `action_names` holds `None`); in a joint planner's System it is one node with the driver's: every factor that read it reads the driver's, from t to t+1 on the call that chooses it, and the driven node leaves `controls` and `names.controls` with its action node |
 | a state factor of it (`"agent.location"`) | a step later | the one-tick relay: the state becomes a `B_deps` parent of the one factor reading the node, in its place, its control axis re-read as that parent and a no-op axis of size 1 appended |
 
 Level counts must agree (a 5-level node binds a 5-level node, or the state of a
@@ -636,7 +674,7 @@ factor as the driver, the relay binds a state's belief into the factor's parent 
 later and is an identification.
 
 ```python
-from hybrid_aif.composition import Clamp, Link, merge
+from hybrid_aif.composition import Clamp, Link, joint_planner, merge
 
 composite, params = merge(
     {"agent": agent, "world": world},
@@ -646,7 +684,9 @@ composite, params = merge(
         Link(("world.location",), "agent.location"),  # the modality's parents
     ],
 )
-composite.names.controls  # ("agent.u_location",)
+composite.names.controls  # ("agent.u_location", "world.u_location"): the world's is driven
+mind, mind_params = joint_planner(composite, params)
+mind.names.controls  # ("agent.u_location",)
 ```
 
 **`Clamp(node, level)`** terminates a discrete control node, replacing
@@ -696,7 +736,8 @@ being absent when it is left out), `describe` and `build` (a likelihood record c
 `observes` entry where its variable differs from the slot's name, and an emission with a static
 kernel is a record of its kernel and realisation under the label `actuator`, with no family) and
 the description length (a slot the map names is no variable of its own, so a coupling of `A` and
-`B` with `k` identified variables counts `|A| + |B| - k`). Nothing computes the datum inside the
+`B` with `k` identified variables counts `|A| + |B| - k` decision variables, and the level count
+of an identified variable is priced once). Nothing computes the datum inside the
 faces: a hand loop realises the emissions after a round, `system.emit(fold_in(key, EMIT_TAG),
 params, {**beliefs, <control levels>})`, and passes them to the next round's `infer_states` and
 `learn`; `replay` does that after each tick and records them (`Replay.emitted`); the composite
@@ -749,23 +790,26 @@ component not nested (`design/nesting-and-coupling.md` N2, N3).
 **Names a binding removed.** A node a binding removed is gone from the
 composite, and a mapping keyed by it or by its action node (an action, a node
 belief, `legal=`, a target) is refused with a sentence naming what it became:
-under a same-step binding, the driver's node; under the relay, the state it reads;
-under a `Clamp`, nothing. A target on a removed node is refused at
-`merge()`. The `Subsystem` record names nodes: `controls` (still chosen here),
-`actions` (each named control node's action node), `identified` (`(node, driver)`
-for each same-step identification), `relayed` (`(node, state)`) and `terminated`.
+in a joint planner's System, the driver's node; under the relay, the state it reads;
+under a `Clamp`, nothing. A target on a node a relay or `Clamp` removed is refused at
+`merge()`, one on a node a joint planner collapses at `joint_planner`. The `Subsystem` record
+names nodes: `controls` (chosen here), `actions` (each named control node's action node; a driven
+node's is the one it had before it was driven), `identified` (`(driven node, driver's node)` for
+each action node identified with a control node), `relayed` (`(node, state)`) and `terminated`.
 
 **One clock.** `params.durations` (a round's length per level of one discrete control node)
-carries under its component's prefix, and a `subsystem` view copies it. A round steps every
-factor once, so a merge has one clock: two components that both declare durations are
-refused at `merge()`, as is a binding that removes the node carrying them; a coupling keeps each
-leaf's durations in its `parts`
+belongs to a leaf, is `parts[<leaf>].durations` in a composite, and a `subsystem` view copies it.
+A round steps every
+factor once, so a joint planner has one clock: leaves that declare durations on two nodes are
+refused at `joint_planner`, as is a collapse that removes the node carrying them; a merge or a
+coupling keeps each leaf's durations in its `parts`
 (`design/step-durations.md` T1). A slow component is given its own pace by `composition.hold`
 under `run`, which returns the stored action for the duration `System.elapsed` reports, not by
 a second clock inside the composite (`design/nesting-and-coupling.md` N4).
 
-**Legality across a merge.** A same-step binding leaves one choice point, the
-driver's, so a mask on the identified node is the driver's constraint: key it
+**Legality across a merge.** A joint planner's System has one choice point for an action node
+identified with a control node, the driver's, so a mask on the identified node is the driver's
+constraint: key it
 by the driver's node, where it applies as any node's mask does, on `act`,
 `infer_policies`, `replay` and `agent_step`. A mask keyed by the driven node
 is refused naming the driver's node, and one keyed by a relayed node is refused

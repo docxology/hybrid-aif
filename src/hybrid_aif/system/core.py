@@ -544,14 +544,17 @@ class Subsystem(NamedTuple):
     ``factors[i]``). The control nodes, by composite name, as this merge left them:
 
     - ``controls``: the control nodes this subsystem still chooses (the composite plans them);
-    - ``actions``: ``(control node, action node)`` for every control node this record names;
+    - ``actions``: ``(control node, action node)`` for every control node this record names (a
+      driven node's is the one it had before it was driven, which is no action node of the
+      System);
     - ``relayed``: pairs ``(node, state)``, a control node identified with another subsystem's
       state, which its reader reads a step later
       (a ``Link`` from a state);
     - ``terminated``: control nodes a ``Clamp`` replaced with a prior;
-    - ``identified``: pairs ``(node, driver)``, a control node identified with another subsystem's
-      control node ``driver`` (a ``Link`` from its action node, read at the same step),
-      so every factor that read ``node`` reads ``driver``;
+    - ``identified``: pairs ``(node, driver)``, a driven control node and the control node
+      ``driver`` whose action node drives it (an ``Identify``, or a ``Link`` from the action node,
+      read at the same step); a joint planner makes the two one node, so every factor that read
+      ``node`` reads ``driver``;
     - ``free_modalities`` / ``bound_modalities``: modalities reading only this subsystem's factors,
       versus ``(modality, foreign parents)`` for those an observation binding pointed across the
       boundary;
@@ -1322,16 +1325,20 @@ class System(eqx.Module):
 
     def _plannable(self, face: str, params: "SystemParams | None" = None) -> None:
         """Raise unless this System states one planning problem. A coupling is run leaf by leaf and
-        is not planned as one System: a leaf keeps its own habit, precision, durations or scoring in
-        ``params.parts``, or the leaves differ on a planner field (:data:`UNSET`), or several
-        top-level components are coupled. No planner chooses a control node that has no action
-        node (an input, driven from outside)."""
+        is planned as one System only through :func:`~hybrid_aif.composition.joint.joint_planner`:
+        a leaf keeps its own habit, precision, durations or scoring in ``params.parts``, or the
+        leaves differ on a planner field (:data:`UNSET`), or several top-level components are
+        coupled. No planner chooses a control node that has no action node (an input, driven
+        from outside)."""
         coupled = sum(sub.boundary == "coupled" for _, sub in self.subsystems or ()) > 1
         unset = [f for f in _PLANNER_FIELDS if getattr(self, f) is UNSET]
         if unset or coupled or (params is not None and params.parts):
             raise ValueError(
-                f"{face}: this System is a coupling, and a coupling is run leaf by leaf: it is not "
-                "planned as one System. Plan one leaf's view, subsystem(system, params, leaf)"
+                f"{face}: this System is a coupling (or a merge whose leaves keep their own "
+                "planner settings), and a coupling is run leaf by leaf: it is not planned as "
+                "one System. "
+                "Plan one leaf's view, subsystem(system, params, leaf), or plan the composite as "
+                "one mind with joint_planner(system, params, node)"
             )
         driven = [
             self.factor_names[c]
@@ -1342,7 +1349,8 @@ class System(eqx.Module):
             raise ValueError(
                 f"{face}: control node(s) {driven} are driven (no action node chooses them), so "
                 "no planner chooses them; slice them with subsystem(..., inputs={variable: "
-                "level}) and plan the view"
+                "level}) and plan the view, or collapse each into its driver's node with "
+                "joint_planner(system, params, node)"
             )
 
     def _check_action_names(self) -> None:
@@ -1550,7 +1558,10 @@ class System(eqx.Module):
             self._facs,
             targets=targets,
             observations=tuple(zip(mods, self.A_deps, params.likelihood, strict=True)),
-            durations=params.durations,
+            durations={
+                **{n: v for part in params.parts.values() for n, v in part.durations.items()},
+                **params.durations,  # the composite's own value is authoritative
+            },
             emissions=self._emission_readers(params),
         )
 

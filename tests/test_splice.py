@@ -19,8 +19,8 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical
-from hybrid_aif.composition import Clamp, Identify, Link, couple, merge, subsystem
-from hybrid_aif.description import DescriptionError, build, describe
+from hybrid_aif.composition import Clamp, Identify, Link, couple, joint_planner, merge, subsystem
+from hybrid_aif.description import build, describe
 from hybrid_aif.distributions import MLPConditional
 from hybrid_aif.factors import LinearGaussianObservation, Recognition
 from hybrid_aif.reads import Emission
@@ -113,8 +113,14 @@ def test_a_planner_field_the_leaves_differ_on_is_unset_and_a_face_that_needs_it_
     rebuilt, rp = build(document, arrays=arrays)
     assert rebuilt.policy_len is UNSET and rebuilt.gamma == agent.gamma
     assert {n: dict(s.config)["policy_len"] for n, s in rebuilt.subsystems} == leaves
+    again, ap = merge({"pair": cs}, {"pair": cp})  # a merge carries the difference as well
+    assert again.policy_len is UNSET
+    assert {n: dict(s.config)["policy_len"] for n, s in again.subsystems if s.config} == {
+        "pair.agent": 1,
+        "pair.world": 3,
+    }
     with pytest.raises(ValueError, match="disagree on policy_len"):
-        merge({"pair": cs}, {"pair": cp})  # a merge plans its leaves as one mind
+        joint_planner(again, ap)  # one mind plans with one policy_len
 
 
 def test_each_leaf_keeps_its_own_habit_precision_and_durations_in_parts():
@@ -220,8 +226,10 @@ def test_a_leaf_with_a_scoring_estimator_is_coupled_to_a_world_with_its_scoring_
     assert {**_static(view), "terms": ()} == _static(own)  # the leaf's term is the leaf's alone
     assert view.terms == ("epistemic_probe",) and cs.terms == ()
     np.testing.assert_array_equal(vp.scoring["epistemic_probe"], 2.0)
-    with pytest.raises(NotImplementedError, match="scoring"):
-        merge({"mind": agent}, {"mind": ap})
+    merged_, mp = merge({"mind": agent}, {"mind": ap})  # a merge keeps it on the leaf's record
+    assert merged_.scoring == () and mp.scoring == {} and mp.parts["mind"].scoring
+    one_mind, one_p = joint_planner(merged_, mp)
+    assert dict(one_mind.scoring) == dict(agent.scoring) and one_p.scoring == ap.scoring
 
 
 # ------------------------------------------------- identifying ports: variables and the document
@@ -240,17 +248,28 @@ def _two_agents_one_world():
     )
 
 
-def test_a_coupling_counts_the_variables_of_its_parts_less_the_identifications():
+def test_a_coupling_counts_the_decision_variables_of_its_parts_less_the_identifications():
+    """A control node and its action node are one decision variable, so a part's count is its
+    document's variables less one per action node (agent 14, world 13): the coupling with the
+    world's node driven holds 14 + 13 - 4 = 23."""
     (agent, ap), (world, wp) = zoo_world()
     cs, cp = _two_agents_one_world()
     document, _ = describe(cs, cp, arrays="inline")
-    parts = [
-        len(describe(s, p, arrays="inline")[0]["variables"])
-        for s, p in ((agent, ap), (agent, ap), (world, wp))
-    ]
+
+    def decisions(system, params):
+        doc, _ = describe(system, params, arrays="inline")
+        return len(doc["variables"]) - sum(a is not None for a in system.action_names)
+
+    parts = [decisions(s, p) for s, p in ((agent, ap), (agent, ap), (world, wp))]
+    assert parts[0] == 14 and parts[2] == 13
     # four in-ports observe a variable, so each is a modality that is no variable of its own;
     # world.reward feeds two of them and is counted once
-    assert len(document["variables"]) == sum(parts) - 4
+    assert decisions(cs, cp) == sum(parts) - 4
+    driven, dp = zoo_coupling()
+    assert decisions(driven, dp) == 14 + 13 - 4
+    assert len(describe(driven, dp, arrays="inline")[0]["variables"]) == 24  # = its joint planner's
+    joint, jp = joint_planner(driven, dp)
+    assert len(describe(joint, jp, arrays="inline")[0]["variables"]) == 24
 
 
 def test_the_document_writes_an_identified_variable_once_and_its_observers_name_it():
@@ -425,11 +444,15 @@ def test_a_coupling_of_a_merge_carries_the_merge_s_components_as_leaves():
     assert Categorical  # the public names resolve
 
 
-def test_a_merge_with_a_same_step_link_is_unchanged_and_keeps_its_one_planning_problem():
+def test_a_merge_with_a_same_step_link_is_the_driven_form_and_the_joint_planner_collapses_it():
     composite, cp = merged(bindings=[Link("agent.a_location", "world.u_location")])
     assert composite.policy_len == 2 and cp.parts == {}
-    assert composite.names.controls == ("agent.u_location",)
-    composite.policies(cp)
+    assert composite.names.controls == ("agent.u_location", "world.u_location")
+    with pytest.raises(ValueError, match="are driven"):
+        composite.policies(cp)
+    one_mind, mp = joint_planner(composite, cp)
+    assert one_mind.names.controls == ("agent.u_location",)
+    one_mind.policies(mp)
 
 
 def test_a_merge_takes_the_driven_form_too_and_leaves_the_node_in_its_leaf():
@@ -460,6 +483,7 @@ def test_a_composite_edited_after_merge_is_authoritative_for_its_views_and_re_me
     assert (view.policy_len, view.gamma, view.planner) == (2, 4.0, "sophisticated")
     _, vp = subsystem(cs, dataclasses.replace(cp, precision=5.0), "agent")
     assert float(vp.precision) == 5.0
+    assert float(joint_planner(cs, cp)[1].precision) == 2.0  # composed from the leaves' records
     (third, tp), _ = agent_and_world(1)
     tp = dataclasses.replace(tp, precision=2.0)
     third = dataclasses.replace(third, policy_len=2, gamma=4.0, planner="sophisticated")
@@ -467,7 +491,7 @@ def test_a_composite_edited_after_merge_is_authoritative_for_its_views_and_re_me
     assert (both.policy_len, both.gamma, both.planner) == (2, 4.0, "sophisticated")
     alone, _ = merge({"pair": edited}, {"pair": cp})
     assert (alone.policy_len, alone.gamma) == (2, 4.0)
-    assert cp.parts == {}  # a merge keeps its composite fields alone
+    assert set(cp.parts) == {"agent", "world"}  # each leaf's own precision stays on its record
 
 
 def test_coupling_a_merge_keeps_the_merged_component_s_own_habit_precision_and_durations():
@@ -543,7 +567,9 @@ def test_an_action_keyed_by_the_driver_sets_the_driven_node_and_the_node_is_refu
     assert "None" not in str(cs.from_positional("actions", keyed))
 
 
-def test_a_driven_node_prices_nothing_beyond_its_level_count_in_the_description_length():
+def test_a_driven_coupling_is_priced_as_its_joint_planner_and_no_variable_pays_its_size_twice():
+    """A control node and its action node are one decision variable: a driven node is a slot of
+    its driver's, so the level-count code is paid once, on the driver's control node."""
     from hybrid_aif.description.mdl import description_length, log_star
 
     (agent, ap), (world, wp) = zoo_world()
@@ -551,19 +577,17 @@ def test_a_driven_node_prices_nothing_beyond_its_level_count_in_the_description_
     driven, dp = couple(parts, [ACT, *SENSES])
     chosen, chp = couple(parts, SENSES)
     a = description_length(driven, params=dp)
-    b = description_length(chosen, params=chp)
-    assert a.total == b.total  # the action node the driven node replaces was unpriced
-    assert a.per_address["control:world.u_location"].graph == pytest.approx(log_star(5))
+    mind, mind_p = joint_planner(driven, dp)
+    joint = description_length(mind, params=mind_p)
+    assert a.total == pytest.approx(joint.total) and a.total == pytest.approx(111.2671, abs=1e-4)
+    assert a.total == pytest.approx(description_length(chosen, params=chp).total - 7.7275, abs=1e-4)
+    paid = [k for k in a.per_address if k.startswith("control:")]
+    assert paid == ["control:agent.u_location"]  # the driven slot pays nothing
+    assert a.per_address[paid[0]].graph == pytest.approx(log_star(5))
     assert not [k for k in a.per_address if "policy" in k or "habit" in k]
 
 
-def test_a_coupling_with_a_scoring_leaf_has_no_document_and_couple_refusals_name_couple():
-    _probe_row()
-    agent = make_system(terms=("epistemic_probe",), policy_len=2)
-    ap = dataclasses.replace(make_params(), scoring={"epistemic_probe": jnp.asarray(2.0)})
-    cs, cp = couple({"mind": (agent, ap)})
-    with pytest.raises(DescriptionError, match="declares scoring"):
-        describe(cs, cp, arrays="inline")
+def test_couple_refusals_name_couple():
     (a, apar), (w, wpar) = zoo_world()
     parts = {"agent": (a, apar), "world": (w, wpar)}
     with pytest.raises(ValueError, match="^couple\\(\\): Identify names 'world.reward2'"):

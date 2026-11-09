@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box
 from hybrid_aif.description import build, describe
@@ -149,10 +150,12 @@ def test_a_composite_containing_an_unread_node_merges_and_describes():
 def test_identifying_an_unread_node_with_a_driver_keeps_the_target_on_the_driver():
     system, params = model("target")
     driver, driver_params = model("durations", null_parent=True, durations=[1.0, 2.0])
-    cs, cp = merge(
-        {"a": system, "b": driver},
-        {"a": params, "b": driver_params},
-        [Link("b.a_opt", "a.u_opt")],
+    cs, cp = joint_planner(
+        *merge(
+            {"a": system, "b": driver},
+            {"a": params, "b": driver_params},
+            [Link("b.a_opt", "a.u_opt")],
+        )
     )
     assert ("a.s", ("b.u_opt",)) in cs.C_deps
     assert cs._space(cp).sizes == (LEVELS,)

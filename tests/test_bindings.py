@@ -15,7 +15,7 @@ import pytest
 
 import hybrid_aif.composition as composition
 from hybrid_aif import ConditionalCategorical, Grid
-from hybrid_aif.composition import Clamp, Identify, Link, merge, nested, subsystem
+from hybrid_aif.composition import Clamp, Identify, Link, joint_planner, merge, nested, subsystem
 from hybrid_aif.reads import Emission
 from tests.test_emissions import world as emitting_world
 from tests.test_merge import DRIVE, OBSERVATION_BINDINGS, agent_and_world, merged
@@ -48,10 +48,12 @@ def _world_pair():
 def test_a_link_from_an_action_node_to_a_control_node_makes_the_two_nodes_one():
     (agent, ap), _ = agent_and_world()
     other = dataclasses.replace(agent, modality_names=agent.modality_names)
-    composite, params = merge(
-        {"a": agent, "b": other},
-        {"a": ap, "b": ap},
-        [Link("a.a_location", "b.u_location")],
+    composite, params = joint_planner(
+        *merge(
+            {"a": agent, "b": other},
+            {"a": ap, "b": ap},
+            [Link("a.a_location", "b.u_location")],
+        )
     )
     assert composite.names.controls == ("a.u_location",)
     assert composite.names.actions == ("a.a_location",)

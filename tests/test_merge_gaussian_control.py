@@ -20,7 +20,7 @@ from hybrid_aif import (
     Gaussian,
     LinearGaussianObservation,
 )
-from hybrid_aif.composition import run
+from hybrid_aif.composition import joint_planner, run
 from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box
 from hybrid_aif.distributions import MixtureGaussian
@@ -218,7 +218,7 @@ def test_the_rover_with_its_option_clamped_predicts_as_the_pinned_view_does():
 
 
 def test_averaging_over_the_option_is_refused_as_a_mixture():
-    cs, cp = two_tier()
+    cs, cp = joint_planner(*two_tier())
     with pytest.raises(NotImplementedError, match="average Gaussians across control levels"):
         subsystem(cs, cp, "rover")  # the default partner prior is uniform
 

@@ -28,6 +28,7 @@ from hybrid_aif import (
     describe,
     discretise,
 )
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import DescriptionError
 from hybrid_aif.reference.raif.world import tiny_rssm
@@ -227,7 +228,11 @@ def _two_tmazes(first=None, second=None):
 
 def test_merge_carries_one_components_durations_under_its_prefix():
     systems, params = _two_tmazes(second=TMAZE_DURATIONS)
-    composite, composite_params = merge(systems, params)
+    merged, merged_params = merge(systems, params)
+    assert merged_params.durations == {} and list(merged_params.parts["b"].durations) == [
+        "b.u_location"
+    ]
+    composite, composite_params = joint_planner(merged, merged_params)
     assert list(composite_params.durations) == ["b.u_location"]
     np.testing.assert_array_equal(
         np.asarray(composite_params.durations["b.u_location"]),
@@ -238,29 +243,36 @@ def test_merge_carries_one_components_durations_under_its_prefix():
     _, view_params = subsystem(composite, composite_params, "b")
     assert list(view_params.durations) == ["b.u_location"]
     assert subsystem(composite, composite_params, "a")[1].durations == {}
+    _, leaf_params = subsystem(merged, merged_params, "b")  # a leaf's view reads its own record
+    assert list(leaf_params.durations) == ["b.u_location"]
 
 
-def test_merge_refuses_two_components_that_both_declare_durations():
+def test_joint_planner_refuses_two_components_that_both_declare_durations():
     systems, params = _two_tmazes(first=TMAZE_DURATIONS, second=TMAZE_DURATIONS)
+    merged, merged_params = merge(systems, params)  # each leaf keeps its own clock
     with pytest.raises(ValueError, match=r"one clock"):
-        merge(systems, params)
+        joint_planner(merged, merged_params)
 
 
-def test_merge_refuses_a_binding_that_identifies_the_clock_node_with_a_driver():
+def test_joint_planner_refuses_a_binding_that_identifies_the_clock_node_with_a_driver():
     systems, params = _two_tmazes(second=TMAZE_DURATIONS)
+    merged, merged_params = merge(systems, params, [Link("a.a_location", "b.u_location")])
     with pytest.raises(ValueError, match=r"removes control node 'b.u_location'.*durations"):
-        merge(systems, params, [Link("a.a_location", "b.u_location")])
+        joint_planner(merged, merged_params)
 
 
-def test_merge_refuses_a_boundary_prior_that_terminates_the_clock_node():
+def test_joint_planner_refuses_a_boundary_prior_that_terminates_the_clock_node():
     systems, params = _two_tmazes(second=TMAZE_DURATIONS)
+    merged, merged_params = merge(systems, params, [Clamp("b.u_location", 1)])
     with pytest.raises(ValueError, match=r"removes control node 'b.u_location'.*durations"):
-        merge(systems, params, [Clamp("b.u_location", 1)])
+        joint_planner(merged, merged_params)
 
 
 def test_a_clock_node_that_is_the_driver_of_an_identification_carries_its_durations():
     systems, params = _two_tmazes(first=TMAZE_DURATIONS)
-    composite, composite_params = merge(systems, params, [Link("a.a_location", "b.u_location")])
+    composite, composite_params = joint_planner(
+        *merge(systems, params, [Link("a.a_location", "b.u_location")])
+    )
     assert list(composite_params.durations) == ["a.u_location"]
     assert float(composite.elapsed({"a.a_location": 2}, composite_params)) == 3.0
 

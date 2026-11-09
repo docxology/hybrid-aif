@@ -792,6 +792,13 @@ def _layout(composite: System, minds: Mapping[str, object], who: str) -> _Layout
         for node in chosen:
             claimed[node] = name
     unclaimed = [node for node in c_names.controls if node not in claimed]
+    driven = [node for node in unclaimed if action_of[node] is None]
+    if driven:
+        raise ValueError(
+            f"control node(s) {driven} are driven by an action node (an identified port) and no "
+            "mind chooses them: collapse each into its driver's node with "
+            "joint_planner(composite, params) and run that composite, or run the leaves' views"
+        )
     if unclaimed:
         raise ValueError(
             f"control node(s) {unclaimed} are chosen by no mind, so nothing would ever emit "

@@ -35,7 +35,7 @@ from hybrid_aif import (
     SystemParams,
     describe,
 )
-from hybrid_aif.composition import Clamp, Link, merge
+from hybrid_aif.composition import Clamp, Link, joint_planner, merge
 from hybrid_aif.controls import ControlStep
 from hybrid_aif.description.mdl import description_length, resolution_term
 from hybrid_aif.learning.carry import learnable_blocks
@@ -713,10 +713,12 @@ def test_merge_carries_the_declaration_and_refuses_slicing_its_inputs():
     alone = robot.update_empirical_prior(rp, robot.initial_priors(rp), {"a_pose": jnp.int32(2)})
     _close(one["robot.pose"], alone["pose"])
     #  identifying two control nodes keeps f's inputs whole
-    same, sp = merge(
-        {"robot": robot, "twin": twin},
-        {"robot": rp, "twin": tp},
-        [Link("robot.a_pose", "twin.u_pose")],
+    same, sp = joint_planner(
+        *merge(
+            {"robot": robot, "twin": twin},
+            {"robot": rp, "twin": tp},
+            [Link("robot.a_pose", "twin.u_pose")],
+        )
     )
     assert same.names.controls == ("robot.u_pose",)
     #  terminating the node f reads would slice its inputs

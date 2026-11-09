@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Clamp, Link, merge, namespaced_key, resolved_epistemic
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
@@ -517,6 +518,8 @@ def test_policy_prior_composes_as_a_sum_over_the_joint_policy_set():
         },
         [*OBSERVATION_BINDINGS],  # both control nodes stay chosen: 25 joint policies
     )
+    assert cp.policy_prior is None and set(cp.parts) == {"agent", "world"}  # each leaf's own
+    composite, cp = joint_planner(composite, cp)
     policies = composite.policies(cp)
     assert policies.shape[0] == 25 and cp.policy_prior.shape == (25,)
     for p in range(25):
@@ -535,19 +538,23 @@ def test_policy_prior_absent_everywhere_stays_None():
 def test_policy_prior_on_a_merged_control_node_raises():
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)
     wp = dataclasses.replace(wp, policy_prior=jnp.zeros(5))
-    with pytest.raises(ValueError, match="were merged in this call"):
-        merge(
-            {"agent": agent, "world": world},
-            {"agent": ap, "world": wp},
-            [DRIVE, *OBSERVATION_BINDINGS],
-        )
+    composite, cp = merge(
+        {"agent": agent, "world": world},
+        {"agent": ap, "world": wp},
+        [DRIVE, *OBSERVATION_BINDINGS],
+    )
+    with pytest.raises(ValueError, match="not chosen by the joint planner"):
+        joint_planner(composite, cp)
 
 
 def test_policy_prior_of_the_wrong_size_raises():
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)
     ap = dataclasses.replace(ap, policy_prior=jnp.zeros(4))
+    composite, cp = merge(
+        {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
+    )
     with pytest.raises(ValueError, match="one weight per policy"):
-        merge({"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS)
+        joint_planner(composite, cp)
 
 
 # --------------------------------------------------------------------- metadata
@@ -649,11 +656,17 @@ def test_node_typing_errors():
 def test_inference_config_disagreement_raises():
     (agent, ap), (world, wp) = agent_and_world()
     slow = dataclasses.replace(world, policy_len=3)
+    composite, cp = merge(
+        {"agent": agent, "world": slow}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
+    )
     with pytest.raises(ValueError, match="disagree on policy_len"):
-        merge({"agent": agent, "world": slow}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS)
+        joint_planner(composite, cp)
     hot = dataclasses.replace(world, gamma=1.0)
+    composite, cp = merge(
+        {"agent": agent, "world": hot}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
+    )
     with pytest.raises(ValueError, match="disagree on gamma"):
-        merge({"agent": agent, "world": hot}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS)
+        joint_planner(composite, cp)
 
 
 def test_structural_errors_and_bad_keys_raise_at_build_time():

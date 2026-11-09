@@ -23,6 +23,7 @@ import pytest
 from scipy.stats import chi2
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.driver import MindCarry, _check_action, agent_step, ancestral_step, run
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
@@ -339,7 +340,9 @@ def test_a_merge_identifies_a_control_node_with_any_state():
 
 def test_a_merge_binds_native_control_nodes():
     (a, ap), (b, bp) = pusher(), pusher()
-    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.push", "b.u_push")])
+    composite, cp = joint_planner(
+        *merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Link("a.push", "b.u_push")])
+    )
     assert composite.names.controls == ("a.u_push",) and composite.names.actions == ("a.push",)
     assert dict(composite.subsystems)["b"].identified == (("b.u_push", "a.u_push"),)
     beliefs = composite.initial_priors(cp)
@@ -609,25 +612,29 @@ def test_predict_beliefs_carries_the_observed_action_nodes_prediction():
 def test_a_binding_that_would_drop_a_kernel_is_refused():
     (a, ap), (b, bp) = pusher(kernel=KERNEL), pusher()
     same = Link("a.push", "b.u_push")
-    with pytest.raises(ValueError, match="kernels params.actuator holds .* differ"):
-        merge({"a": a, "b": b}, {"a": ap, "b": bp}, [same])
-    with pytest.raises(ValueError, match="kernels params.actuator holds .* differ"):
-        merge({"a": b, "b": a}, {"a": bp, "b": ap}, [same])
-    composite, cp = merge({"a": a, "b": a}, {"a": ap, "b": ap}, [same])  # equal kernels
+    with pytest.raises(ValueError, match="takes away the action node 'b.push'"):
+        merge({"a": b, "b": a}, {"a": bp, "b": ap}, [same])  # the driven node's kernel
+    with pytest.raises(ValueError, match="takes away the action node 'b.push'"):
+        merge({"a": a, "b": a}, {"a": ap, "b": ap}, [same])  # equal kernels, one driven
+    composite, cp = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [same])  # the driver's kernel
     assert set(cp.actuator) == {"a.push"}
+    with pytest.raises(ValueError, match="params.actuator kernel"):
+        joint_planner(composite, cp)  # one mind's intention and the value it plans on would differ
     (src, sp) = _source()
-    with pytest.raises(ValueError, match="kernel for its action node 'w.push' that would be"):
+    with pytest.raises(ValueError, match="takes away the action node 'w.push'"):
         merge({"src": src, "w": a}, {"src": sp, "w": ap}, [Link("src.s", "w.u_push")])
-    with pytest.raises(ValueError, match="kernel for its action node 'w.push' that would be"):
+    with pytest.raises(ValueError, match="takes away the action node 'w.push'"):
         merge({"w": a}, {"w": ap}, [Clamp("w.u_push", 0)])
 
 
 def test_inputs_are_keyed_by_the_action_node_and_a_control_node_key_is_refused():
     (agent, ap), (world, wp) = agent_and_world()
-    composite, cp = merge(
-        {"agent": agent, "world": world},
-        {"agent": ap, "world": wp},
-        [Link("agent.a_location", "world.u_location"), *OBSERVATION_BINDINGS],
+    composite, cp = joint_planner(
+        *merge(
+            {"agent": agent, "world": world},
+            {"agent": ap, "world": wp},
+            [Link("agent.a_location", "world.u_location"), *OBSERVATION_BINDINGS],
+        )
     )
     subsystem(composite, cp, "world", inputs={"agent.a_location": 0})
     with pytest.raises(ValueError, match="inputs names 'world.u_location', a control node"):

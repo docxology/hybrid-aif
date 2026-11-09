@@ -516,7 +516,12 @@ class _Walk:
 
     def run(self) -> DescriptionLength:
         #  a modality that observes a variable of the System is no variable of its own
-        f_count, u_count = len(self.states), len(self.controls)
+        #  a driven control node is a slot of the variable that drives it, which is priced once
+        #  on its driver's own control node
+        self.driven = {
+            u for u, a in zip(self.controls, self.system.action_names, strict=True) if a is None
+        }
+        f_count, u_count = len(self.states), len(self.controls) - len(self.driven)
         m_count = sum(1 for o in self.mods if o not in self.system._observed)
         e_count = len(self.system._emission_names)
         self.out["graph"] = Links(
@@ -536,6 +541,8 @@ class _Walk:
         )
         space = self.system._space(self.params) if self.controls else None
         for k, u in enumerate(self.controls):
+            if u in self.driven:
+                continue
             continuous = space.kinds[k] == _description.FLOAT
             self.out[f"control:{u}"] = Links(
                 graph=log_star(int(space.sizes[k])),

@@ -1,32 +1,37 @@
 """``merge()`` and ``subsystem()``: one model from several, and its per-mind views.
 
-:func:`merge` runs at declaration time and returns a plain ``(System, SystemParams)``, so every
-face applies to a composite unchanged. It namespaces every node as ``"<sub>.<name>"`` (the whole
-key grammar with it: ``"likelihood:arm.pose"``), concatenates state factors, modalities, control
-nodes and emissions in ``subsystems`` order with every dependency index offset, and applies the
-bindings, of three kinds: :class:`Link`, an arc of the graphical model of the whole;
-:class:`Identify`, two parameter variables made one, or an out-port (an action node or an
-emission) joined to an in-port (a modality or a control node); and :class:`Clamp`, a control node
-held at a constant. A merge makes one particle with one blanket to the world. The first phase of
-:func:`merge` and of :func:`~hybrid_aif.composition.couple.couple` is the same splice (namespacing
-and concatenation, with each leaf's own planner configuration, parameters and recognition kept on
-the result); the bindings follow.
+:func:`merge` runs at declaration time and returns a plain ``(System, SystemParams)``. It
+namespaces every node as ``"<sub>.<name>"`` (the whole key grammar with it:
+``"likelihood:arm.pose"``), concatenates state factors, modalities, control nodes and emissions in
+``subsystems`` order with every dependency index offset (the **splice**, the first phase of
+:func:`merge` and of :func:`~hybrid_aif.composition.couple.couple`), and applies the bindings, of
+three kinds: :class:`Link`, an arc of the graphical model of the whole; :class:`Identify`, two
+parameter variables made one, or an out-port (an action node or an emission) joined to an
+in-port (a modality or a control node); and :class:`Clamp`, a control node held at a constant.
+Each leaf (a component that is not itself composed) keeps its own planner configuration, habit,
+precision, durations, scoring and recognition on the result (``Subsystem.config``,
+``SystemParams.parts``): a merge states a planner field where its leaves agree and holds
+:data:`~hybrid_aif.system.UNSET` where they differ, and states no habit, precision, durations or
+scoring of its own. It is planned as one mind through
+:func:`~hybrid_aif.composition.joint.joint_planner`, which composes them, or run leaf by leaf
+through :func:`subsystem`.
 
 A :class:`Link` from a state factor to a modality's parents or to a control node's latent
 (a relay) or to a terminal target identifies a latent outright, sharing that variable with
 messages both ways; so does :class:`Identify`. A :class:`Link` from an action node to a control
-node makes one node in the composite, the driver's decision, which the driven component's factors
-read as a supplied level; a decision is not a belief, so no belief of the driven component is
-identified with the driver's, and the link is blanket-shaped at the driven component's boundary.
+node is the identification of the two ports: the control node stays in its own component, driven
+(it carries the driver's realised value and has no action node of its own), and a
+:func:`~hybrid_aif.composition.joint.joint_planner` of the node holding both collapses it into
+the driver's. A decision is not a belief, so no belief of the driven component is identified
+with the driver's, and the link is blanket-shaped at the driven component's boundary.
 A :class:`Link` with a ``realise`` from a state factor to a modality is sensing inside one
 particle: a modality of one component takes its datum from another component's belief, through a
 kernel, realised. A component whose every binding across its boundary is of those two forms keeps
 a blanket of its own inside the particle, and is nested (:func:`nested`, ``Subsystem.nested``).
 Control nodes no binding touches stay the composite's own, chosen by its planner. A link into a
 control node names it, and the latent it is linked from decides the timing: another component's
-action node is read at the same step (the two control nodes become one), a state of another
-component at the previous step (a one-tick relay). A composite may be merged again
-(``"outer.inner.x"``).
+action node is read at the same step, a state of another component at the previous step (a
+one-tick relay). A composite may be merged again (``"outer.inner.x"``).
 
 :func:`subsystem` goes the other way: one mind's bona-fide System, its own factors plus boundary
 stubs for the neighbours it must model. The driver that interleaves the views is
@@ -68,7 +73,6 @@ from hybrid_aif.factors import (
 )
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives import registry
-from hybrid_aif.planning.enumerate import enumerate_policies
 from hybrid_aif.reads import REALISATIONS, Emission
 from hybrid_aif.system import (
     _KEY_KINDS,
@@ -96,15 +100,16 @@ class Link(NamedTuple):
     (a state factor's terminal target). What the link means follows from its two ends and
     ``realise``:
 
-    - **from an action node to a control node** (``Link("agent.a_v", "world.u_v")``): the driver's
-      decision drives the driven node at the same step. The two nodes become one, the driver's:
-      every factor that read the driven node reads the driver's, and the driven node and its action
-      node leave the composite. Level counts (or, for continuous nodes, widths) must agree; the
-      driver's box governs a continuous pair. A decision is not a belief, so no belief of the
-      driven component is identified with the driver's, and the link is blanket-shaped at the
-      driven component's boundary (a held control node). The link carries the action node's one
-      realised value (control-states.md C13), so it takes no ``realise``, and a control node as the
-      source is refused, naming its action node;
+    - **from an action node to a control node** (``Link("agent.a_v", "world.u_v")``): the
+      identification of the two ports, ``Identify("agent.a_v", "world.u_v")``. The control node
+      is *driven*: it stays in its own component, carries the driver's one realised value
+      (control-states.md C13), and has no action node of its own, so no planner chooses it. A
+      :func:`~hybrid_aif.composition.joint.joint_planner` over a node holding both collapses it
+      into the driver's: every factor that read the driven node reads the driver's, and the driven
+      node leaves the planning problem. Level counts (or, for continuous nodes, widths) must
+      agree. A decision is not a belief, so no belief of the driven component is identified with
+      the driver's, and the link is blanket-shaped at the driven component's boundary. The link
+      takes no ``realise``, and a control node as the source is refused, naming its action node;
     - **from a state factor to a control node** (``Link("agent.location", "world.u_location")``):
       the relay. The state becomes a ``B_deps`` parent of the one factor reading the node, in its
       place, read a step later, the table's control axis re-read as that parent and a no-op axis of
@@ -159,7 +164,8 @@ class Identify(NamedTuple):
     the composite's ``System.observes`` gains ``(in-port, out-port)``. An in-port is identified at
     most once, an out-port feeds any number, and the two port types must be equal. A control node
     in-port is driven: it stays in its leaf, carries the out-port's realised value, and has no
-    action node of its own (``action_names`` entry ``None``), so no planner chooses it. Under
+    action node of its own (``action_names`` entry ``None``), so no planner chooses it; a
+    :func:`~hybrid_aif.composition.joint.joint_planner` collapses it into the driver's node. Under
     :func:`~hybrid_aif.composition.couple.couple` the two ports lie in different components.
 
     **Parameter variables.**
@@ -350,20 +356,11 @@ _PLANNING_FIELDS = (
 _CARRY_FIELDS = ("mixture_schedule", "mixture_k")
 
 
-def _agree(field: str, values: Mapping[str, object], strict: bool = True):
+def _unanimous(values: Mapping[str, object]):
     """The one value a configuration field takes across leaves (``values`` is keyed by leaf), or
-    :data:`~hybrid_aif.system.UNSET` where they differ and ``strict`` is false; strict, a
-    disagreement raises, naming every leaf's value."""
+    :data:`~hybrid_aif.system.UNSET` where they differ."""
     distinct = set(values.values())
-    if len(distinct) > 1:
-        if not strict:
-            return UNSET
-        raise ValueError(
-            f"merged Systems disagree on {field}: {dict(values)}. A composite is one planning "
-            f"problem with one {field}; declare the components alike, or set the composite's "
-            f"value afterwards with dataclasses.replace(composite, {field}=...)"
-        )
-    return next(iter(distinct))
+    return next(iter(distinct)) if len(distinct) == 1 else UNSET
 
 
 def _requalify_config(prefix: str, config: tuple) -> tuple:
@@ -745,7 +742,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
     # -------------------------------------------------- concatenate the frames
     fac_offset: dict[str, int] = {}
     mod_offset: dict[str, int] = {}
-    node_offset: dict[str, int] = {}
     factor_names: list[str] = []
     modality_names: list[str] = []
     A_deps: list[tuple[int, ...]] = []
@@ -768,7 +764,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
     readings: list[tuple[str, str]] = []
     reading_counts: dict[str, object] = {}
     C_deps: list[tuple[str, tuple[str, ...]]] = []
-    durations: dict[str, object] = {}
     parameters: dict[str, object] = {}  # the named parameter variables, by composite name
     reads: dict[tuple[str, int], str] = {}  # (slot, composite index) -> the variable it reads
     own_reads: list[tuple[str, System, tuple[str, str]]] = []  # a component's observes entries
@@ -803,7 +798,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
             )
         table = system._table
         f_off, m_off, k_off = len(factor_names), len(modality_names), len(nodes)
-        fac_offset[name], mod_offset[name], node_offset[name] = f_off, m_off, k_off
+        fac_offset[name], mod_offset[name] = f_off, m_off
         factor_names.extend(f"{name}{SEPARATOR}{f}" for f in facs)
         modality_names.extend(f"{name}{SEPARATOR}{m}" for m in mods)
         #  a state factor shifts by the component's offset; an action node a modality observes
@@ -825,8 +820,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         H_deps.extend(tuple(g + f_off for g in deps) for deps in system._effective_H_deps())
         space = system._space(p)
         kernels = system._actuator(p, "merge")
-        for node, clock in system._durations(p, "merge").items():
-            durations[f"{name}{SEPARATOR}{node}"] = clock
         nodes.extend(
             _Node(
                 f"{name}{SEPARATOR}{node}",
@@ -921,7 +914,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         params=params,
         fac_offset=fac_offset,
         mod_offset=mod_offset,
-        node_offset=node_offset,
         factor_names=factor_names,
         modality_names=modality_names,
         A_deps=A_deps,
@@ -944,7 +936,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         readings=readings,
         reading_counts=reading_counts,
         C_deps=C_deps,
-        durations=durations,
         parameters=parameters,
         reads=reads,
         own_reads=own_reads,
@@ -957,107 +948,6 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         leaf_recognition=leaf_recognition,
         leaf_order=leaf_order,
     )
-
-
-# ------------------------------------------------------------------ the transient planning seam
-#
-#  What follows is what planning a merge as one mind needs of its leaves: the scoring refusal, the
-#  one clock and one precision of the composite, and the composite's own habit. A joint planner
-#  composes these from the leaves' ``parts`` where the faces need them; ``merge`` applies them at
-#  construction, and ``couple`` never does.
-
-
-def _refuse_scoring(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]) -> None:
-    """Refuse a merge whose component declares scoring structure or parameters: a composite
-    planned as one mind has one scoring estimator per name, and two components' critics would
-    answer to the same name. A coupling carries each leaf's scoring in its own record instead."""
-    scored = sorted(
-        name
-        for name, system in subsystems.items()
-        if system.scoring
-        or params[name].scoring
-        or any(sub.config and dict(sub.config)["scoring"] for _, sub in system.subsystems or ())
-        or any(part.scoring for part in params[name].parts.values())
-    )
-    if scored:
-        raise NotImplementedError(
-            f"subsystem(s) {scored} declare scoring structure or parameters (System.scoring / "
-            "SystemParams.scoring), whose composition into one planning problem is not built: a "
-            "estimator that owns a model or parameters answers to its name alone, so two "
-            "components' critics would both answer to 'g_tail' in the composite with no way to "
-            "say which. Declare the composite's scoring on the returned pair instead, or "
-            "couple the components (each leaf then keeps its own scoring; design: "
-            "amortization.md, the A12 implementation note on the terms= key grammar, flags 4 and "
-            "5). A component's plain terms= selectors (terms that carry no parameters) do merge, "
-            "namespaced on their variable segment."
-        )
-
-
-def _refuse_leaf_held(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]) -> None:
-    """Refuse a merge of a component whose leaves hold a habit, a precision or durations that
-    the component itself does not state: the composite is planned as one mind from the
-    components' own fields, so a leaf-held one would be dropped without a word."""
-    for name, p in params.items():
-        held = [
-            f"{leaf}.{field}"
-            for leaf, part in p.parts.items()
-            for field, value in (
-                ("policy_prior", part.policy_prior),
-                ("precision", part.precision),
-                ("durations", part.durations or None),
-            )
-            if value is not None
-        ]
-        own = (p.policy_prior, p.precision, p.durations or None)
-        if held and all(v is None for v in own):
-            raise NotImplementedError(
-                f"component {name!r} holds {held} on its leaves (SystemParams.parts) and states "
-                "none of its own, so merging it would plan the composite as one mind without "
-                "them; give the component's own policy_prior, precision and durations, or couple "
-                "it instead of merging"
-            )
-
-
-def _collapse_for_planning(
-    sp: "_Spliced", live_nodes: Sequence[str]
-) -> tuple[dict[str, Array], Array | None]:
-    """The composite's one clock and one policy precision, for planning a merge as one mind:
-    ``(durations, precision)``.
-
-    ``durations`` is the leaves' durations carried under their node names; a round has one clock,
-    so durations on two nodes, or on a node a binding removed (``live_nodes`` are the nodes that
-    stay), raise. ``precision`` is the one value the leaves declare; a leaf declaring it beside
-    one that does not, or two values, raises. The leaves' own entries stay in
-    ``SystemParams.parts``."""
-    durations = sp.durations
-    if len(durations) > 1:
-        raise ValueError(
-            f"components declare durations on {sorted(durations)}: a round steps every factor "
-            "once, so the composite has one clock; declare durations on one component's control "
-            "node (design: step-durations.md T1)"
-        )
-    params = sp.params
-    precisions = {name: p.precision for name, p in params.items() if p.precision is not None}
-    if precisions and len(precisions) != len(params):
-        raise ValueError(
-            f"components {sorted(precisions)} declare params.precision and the others do not: "
-            "the composite plans with one policy precision, so declare it on every component "
-            "with the same value, or on none and declare the composite's on the returned params"
-        )
-    if len({float(v) for v in precisions.values()}) > 1:
-        raise ValueError(
-            f"components declare different params.precision values "
-            f"{ {n: float(v) for n, v in precisions.items()} }: the composite plans with one "
-            "policy precision, so declare one value"
-        )
-    removed = sorted(set(durations) - set(live_nodes))
-    if removed:
-        raise ValueError(
-            f"a binding removes control node {removed[0]!r}, which carries the durations; "
-            "declare the composite's durations on a control node that stays "
-            "(design: step-durations.md T1)"
-        )
-    return durations, next(iter(precisions.values()), None)
 
 
 def merge(
@@ -1074,56 +964,47 @@ def merge(
     explicit ``factor_names``/``modality_names``/``action_names``: a component's generated names
     are namespaced.
 
-    - Inference config (``policy_len``, ``planner``, ``gamma``, ``num_iters``, ``decomposition``,
-      ``mixture_schedule``, any non-``None`` ``mixture_k``) must agree.
-    - ``policy_prior`` composes as a sum in log space over the composite policy set, ``log E(π) =
-      Σ_sub log E_sub(π|_sub)``; a component whose control nodes were merged away raises (declare
-      the composite's habit on the returned params). No component habit gives ``None``.
+    - Planner fields (``policy_len``, ``planner``, ``gamma``, ``num_iters``, ``decomposition``,
+      ``planning_belief``, ``feedback``) are the leaves' value where every leaf has one and
+      :data:`~hybrid_aif.system.UNSET` where they differ; ``mixture_schedule`` and a non-``None``
+      ``mixture_k`` are shared by one belief carry and must agree. Each leaf's own are
+      ``Subsystem.config``.
+    - A leaf's ``policy_prior``, ``precision``, ``durations`` and scoring parameters are
+      ``SystemParams.parts[<leaf>]`` (present when it holds any); the composite states none of
+      them, and :func:`~hybrid_aif.composition.joint.joint_planner` composes them.
     - ``epistemic`` is resolved and unioned (:func:`resolved_epistemic`); ``dims`` moves with its
       factors, under the namespaced names (a key ``pose:b1`` becomes ``arm.pose:b1``).
     - A modality observing an action node keeps it: the node's index at or above the component's
       node count becomes the composite's, ``len(B_deps) + position`` among the control nodes
-      that stay (a node a same-step ``Link`` made one with a driver's reads the
-      driver's action node; one a relay or ``Clamp`` removed raises).
+      that stay (one a relay or ``Clamp`` removed, or an action node a driven node lost, raises).
     - Designations keep each component's preferences under namespaced keys; ``C_deps``
-      namespaces its keys and parents as ``H_deps`` does, a parent following its node through a
-      same-step identification or a relay.
+      namespaces its keys and parents as ``H_deps`` does.
     - ``System.terms`` selectors carry under the component prefix, on their variable segment
       (:func:`namespaced_term`: ``uncertainty:x`` becomes ``uncertainty:arm.x``); the union is the
-      composite's. The rest of the G side does not compose: a component declaring either
-      ``scoring`` half, or a policy module in ``policy_prior``, raises. Declare it on the
-      composite.
+      composite's, less a term a leaf's scoring owns (that leaf's ``config`` carries it).
     - ``recognition`` namespaces both halves, the parent addresses included (``Recognition("stoch",
       ("deter", "recognition:embed"))`` → ``Recognition("mc.stoch", ("mc.deter",
       "recognition:mc.embed"))``; ``obs:`` and ``external:`` operands keep their prefix and are
       renamed on their name). ``external_inputs`` carries under the component prefix, so two
       components' inputs of one name stay distinct.
     - A continuous control node's box (``params.control``) and an action node's kernel
-      (``params.actuator``) move with their nodes, under the namespaced names; a node identified
-      with a driver's node leaves its box and its action node, the driver's governing.
+      (``params.actuator``) move with their nodes, under the namespaced names; a driven node
+      refuses a kernel on its own action node.
     - ``readings`` (a table's pooled reading, ``System.readings`` and ``params.readings``) carries
-      under the component's prefix, the control node following a same-step identification to the
-      driver's; a node a relay or ``Clamp`` removed raises. A view carries the entries of
-      its own tables and raises where the node is another component's.
+      under the component's prefix; a node a relay or ``Clamp`` removed raises. A view carries the
+      entries of its own tables and raises where the node is another component's.
     - ``observes`` (a slot's variable: a modality that observes an emission or an action node of
       its component, which is how a component reads its own belief or its previous action)
-      carries under the component's prefix, slot and variable alike, an action-node variable
-      following its node through a same-step identification; a :class:`Link` with a ``realise``
+      carries under the component's prefix, slot and variable alike; a :class:`Link` with a
+      ``realise``
       adds an emission to the source's component and a modality's entry, whose variable is in
       another component. A component whose every binding across its boundary is such a belief
       read or a link from an action node into a control node is nested (:func:`nested`). An
       action node an entry names must stay one its component chooses. Design:
       nesting-and-coupling.md N2, N3.
     - ``emissions`` (a component's outputs drawn from its state factors, with their kernels in
-      ``params.emission`` or declared static) carry under the component's prefix, a control
-      parent following its node through a same-step identification; a parent a relay or a
-      ``Clamp`` removed raises.
-    - ``params.durations`` carries under the component's prefix; a round has one clock, so two
-      components that both declare durations, or a binding that removes the node carrying them,
-      raise (design: step-durations.md T1).
-    - ``params.precision`` is the composite's one policy precision: components that declare it
-      must all declare the same value, and a component declaring it beside one that does not
-      raises (the others read their ``System.gamma``, which must agree already).
+      ``params.emission`` or declared static) carry under the component's prefix; a parent a relay
+      or a ``Clamp`` removed raises.
     - A target on a node a binding removed raises, naming what the node became.
 
     The composite is validated (``System._validate``) before it is returned.
@@ -1141,15 +1022,11 @@ def _assemble(
     """The splice of components followed by bindings: the body of :func:`merge` and of
     :func:`~hybrid_aif.composition.couple.couple`. With ``coupled`` the bindings are port
     identifications and clamps only, every top-level component is a leaf of the coupling
-    (``boundary="coupled"``), and the composite states no planning problem of its own:
-    :func:`_collapse_for_planning` is not applied.
+    (``boundary="coupled"``); neither states a planning problem of its own.
     """
     sp = _splice(subsystems, params)
-    if not coupled:
-        _refuse_scoring(subsystems, sp.params)
-        _refuse_leaf_held(subsystems, sp.params)
     params = sp.params
-    fac_offset, mod_offset, node_offset = sp.fac_offset, sp.mod_offset, sp.node_offset
+    fac_offset, mod_offset = sp.fac_offset, sp.mod_offset
     factor_names, modality_names, A_deps, parents = (
         sp.factor_names,
         sp.modality_names,
@@ -1208,13 +1085,9 @@ def _assemble(
     relayed: dict[int, int] = {}  # node -> the state it was identified with
     relay_reader: dict[int, int] = {}  # node -> the factor that read it
     terminations: dict[int, tuple] = {}  # a terminated node's (keep, weights)
-    same_step: dict[str, str] = {}
-
-    def resolve(node: str) -> str:
-        """The node ``node`` is, following same-step identifications to their end."""
-        while node in same_step:
-            node = same_step[node]
-        return node
+    identified_pairs: list[tuple[str, str]] = []  # (driven node, driver's node), as written
+    inert: dict[str, str] = {}  # a driven node -> the action node it had before it was driven
+    alias: dict[str, str] = {}  # that inert action node -> the variable that drives its node
 
     def readers_of(k: int) -> list[tuple[int, int]]:
         """``(factor, position)`` for every factor that reads node ``k``."""
@@ -1269,7 +1142,7 @@ def _assemble(
             elif k in terminations:
                 to = "a Clamp"
             else:
-                to = repr(resolve(name))
+                to = "a driver's node"
             raise ValueError(
                 f"control node {name!r} is already merged (with {to}); a node is identified "
                 "with exactly one partner"
@@ -1298,27 +1171,16 @@ def _assemble(
             f"'boat{SEPARATOR}u_x')"
         )
 
-    def kernels_agree(c: int, d: int | None, what: str) -> None:
-        """Refuse a binding that removes node ``c`` when its action node's kernel would be
-        dropped: with no driver node ``d`` any kernel, else one unequal to the driver's."""
-        kc = nodes[c].kernel
-        kd = None if d is None else nodes[d].kernel
-        if kc is None and kd is None:
-            return
-        if kc is not None and kd is not None and kc.shape == kd.shape:
-            if bool(jnp.array_equal(kc, kd)):
-                return
-        if d is None:
+    def kernel_not_dropped(c: int, what: str) -> None:
+        """Refuse a binding that takes the action node of node ``c`` away (the node is removed, or
+        driven and so without one) while ``params.actuator`` holds a kernel for it."""
+        if nodes[c].kernel is not None:
             raise ValueError(
-                f"{what} removes control node {nodes[c].name!r}, and params.actuator holds a "
-                f"kernel for its action node {nodes[c].action!r} that would be dropped: drop the "
-                "kernel, or leave the node to be chosen"
+                f"{what} takes away the action node {nodes[c].action!r} of control node "
+                f"{nodes[c].name!r} (the node is removed or driven), and params.actuator holds a "
+                "kernel for it that would be dropped: drop the kernel, or leave the node to be "
+                "chosen"
             )
-        raise ValueError(
-            f"{what} makes control node {nodes[c].name!r} one with {nodes[d].name!r}, and the "
-            f"kernels params.actuator holds for their action nodes {nodes[c].action!r} and "
-            f"{nodes[d].action!r} differ: declare the same kernel on both, or on neither"
-        )
 
     def table_is_owned(g: int, what: str) -> None:
         """Refuse a rewrite of the table of a factor that reads a parameter variable: the table
@@ -1345,57 +1207,6 @@ def _assemble(
             )
             del parents[g][pos]
         nodes[k].live = False
-
-    def identify(d: int, c: int, drv: str, ctl: str) -> None:
-        """Same-step: every reader of node ``c`` reads node ``d``, and ``c`` leaves. A driver a
-        Clamp terminated terminates ``c``'s readers with the same prior. ``drv`` is the driver's
-        action node and ``ctl`` the driven control node, as the link wrote them."""
-        if d == c:
-            raise ValueError(
-                f"Link({drv!r} -> {ctl!r}) pairs {nodes[c].name!r} with itself (the "
-                "bindings make both names one node); a link identifies two control nodes"
-            )
-        nd, nc = nodes[d], nodes[c]
-        noun = {LEVEL: "discrete", FLOAT: "continuous"}
-        if nd.kind != nc.kind:
-            raise ValueError(
-                f"node kind mismatch: driver node {drv!r} is {noun[nd.kind]} and {ctl!r} is "
-                f"{noun[nc.kind]}; a same-step binding makes two nodes one, so bind nodes of one "
-                "kind"
-            )
-        if nd.size != nc.size:
-            unit = "level(s)" if nd.kind == LEVEL else "dimension(s)"
-            raise ValueError(
-                f"node arity mismatch: driver node {drv!r} has {nd.size} {unit} but {ctl!r} has "
-                f"{nc.size}; a same-step binding makes two nodes one, so their "
-                f"{'level counts' if nd.kind == LEVEL else 'widths'} must agree"
-            )
-        if d in relayed:  # the driver's node was merged with a state
-            partners = [k for k in same_step if resolve(k) == nd.name]
-            raise relay_refusal(
-                factor_names[relayed[d]],
-                nd.name,
-                [relay_reader[d], *(g for g, _ in readers_of(c))],
-                [*partners, ctl],
-            )
-        kernels_agree(c, None if d in terminations else d, f"Link({drv!r} -> {ctl!r})")
-        if d in terminations:
-            cut(c, *terminations[d])
-            same_step[ctl] = nodes[d].name
-            return
-        both = [
-            factor_names[g] for g, _ in readers_of(c) if any(i == d for _, i in control_parents(g))
-        ]
-        if both:
-            raise ValueError(
-                f"Link({drv!r} -> {ctl!r}): {both} read both nodes, so making them one "
-                f"would have each read one node twice; bind a node that no reader of {drv!r} "
-                "reads"
-            )
-        for g, pos in readers_of(c):
-            parents[g][pos] = ("control", d)
-        nc.live = False
-        same_step[ctl] = nodes[d].name
 
     #  what each binding that crosses a component's boundary is shaped as, per component record
     #  (a top-level component and the components of an inner composite): "blanket" for a
@@ -1457,6 +1268,75 @@ def _assemble(
             return "gone"
         return "unknown"
 
+    def bind_port(variable: str, slot: str, label: str) -> None:
+        """Identify the out-port ``variable`` with the in-port ``slot``: the slot observes the
+        variable. A control node slot is driven (it keeps its place in its leaf and loses its
+        action node); the pair is recorded for the leaf's record."""
+        if slot in {s for s, _ in port_observes} or slot in own_read_modalities:
+            raise ValueError(
+                f"{label}: the in-port {slot!r} already observes a variable (its "
+                "component's System.observes, a belief read or another Identify); an "
+                "in-port is identified at most once"
+            )
+        if slot in {b.modality for b in sibling}:
+            raise ValueError(
+                f"{label}: the in-port {slot!r} already observes a variable (a belief "
+                "read); an in-port is identified at most once"
+            )
+        if slot in node_index:
+            c = driven_node(slot, "Identify")
+            if variable in action_to_node:
+                cross("blanket", variable, slot)
+            kernel_not_dropped(c, label)
+            driver = action_to_node.get(variable)
+            if driver is not None and node_index[driver] == c:
+                raise ValueError(
+                    f"{label}: control node {slot!r} cannot be driven by its own action node"
+                )
+            d = None if driver is None else node_index[driver]
+            if d is not None and d in relayed:
+                raise relay_refusal(
+                    factor_names[relayed[d]],
+                    nodes[d].name,
+                    [relay_reader[d], *(g for g, _ in readers_of(c))],
+                    [*(nodes[k].name for k, v in driven_by.items() if v == nodes[d].action), slot],
+                )
+            sensing = [
+                m for m, deps in enumerate(A_deps) if any(g == -c - 1 for g in deps if g < 0)
+            ]
+            if sensing and d is None:
+                raise NotImplementedError(
+                    f"{label}: modality {modality_names[sensing[0]]!r} observes the action node "
+                    f"of {slot!r}, which a driven node does not have (nothing chooses it)"
+                )
+            for m in sensing:  # the node's realised value is its driver's: observe that
+                A_deps[m] = tuple(-d - 1 if g == -c - 1 else g for g in A_deps[m])
+            old = nodes[c].action
+            inert[slot] = old
+            alias[old] = variable
+            del action_to_node[old]
+            node_to_action.pop(slot, None)
+            nodes[c].action = None
+            if d is not None:
+                identified_pairs.append((slot, driver))
+            for k, v in driven_by.items():  # a node this node's action node drove follows it
+                if v == old:
+                    driven_by[k] = variable
+            for i, (pair_slot, pair_variable) in enumerate(port_observes):
+                if pair_variable == old:
+                    port_observes[i] = (pair_slot, variable)
+            for i, (pair_node, pair_driver) in enumerate(identified_pairs):
+                if pair_driver == slot and d is not None:
+                    identified_pairs[i] = (pair_node, driver)
+            if d is not None and d in terminations:
+                #  a driver a Clamp terminated terminates the node it drives, with the same prior
+                cut(c, *terminations[d])
+                return
+            driven_by[c] = variable
+        else:
+            cross("blanket", variable, slot)
+        port_observes.append((slot, variable))
+
     # ----------------------------------------------------------- the bindings
     for binding in bindings:
         if coupled and not isinstance(binding, Identify | Clamp):
@@ -1475,6 +1355,8 @@ def _assemble(
                     f"'{TERMINAL}:<factor>', got {target!r}"
                 )
             ends = (source,) if isinstance(source, str) else tuple(source)
+            ends = tuple(alias.get(end, end) if isinstance(end, str) else end for end in ends)
+            source = ends[0] if isinstance(source, str) else ends
             if not ends or not all(isinstance(end, str) for end in ends):
                 raise ValueError(
                     f"{label}: the source is a node's name, or a tuple of names where the link "
@@ -1649,9 +1531,26 @@ def _assemble(
                         "link an action node, or a state factor (a relay)"
                     )
                 if kind == "an action node":
-                    cross("blanket", driver, target)
-                    d = node_index[resolve(action_to_node[driver])]
-                    identify(d, driven_node(target, "Link"), driver, target)
+                    nd, nc = (
+                        nodes[node_index[action_to_node[driver]]],
+                        nodes[driven_node(target, "Link")],
+                    )
+                    noun = {LEVEL: "discrete", FLOAT: "continuous"}
+                    if nd.kind != nc.kind:
+                        raise ValueError(
+                            f"node kind mismatch: driver node {driver!r} is {noun[nd.kind]} and "
+                            f"{target!r} is {noun[nc.kind]}; a same-step binding makes two nodes "
+                            "one, so bind nodes of one kind"
+                        )
+                    if nd.size != nc.size:
+                        unit = "level(s)" if nd.kind == LEVEL else "dimension(s)"
+                        raise ValueError(
+                            f"node arity mismatch: driver node {driver!r} has {nd.size} {unit} "
+                            f"but {target!r} has {nc.size}; a same-step binding makes two nodes "
+                            f"one, so their {'level counts' if nd.kind == LEVEL else 'widths'} "
+                            "must agree"
+                        )
+                    bind_port(driver, target, label)
                     continue
                 if kind != "a state factor":
                     raise ValueError(
@@ -1694,10 +1593,15 @@ def _assemble(
                         "with a control node's one-for-one"
                     )
                 readers = readers_of(c)
-                if len(readers) != 1 or len(control_parents(readers[0][0])) != 1:
-                    partners = [k for k in same_step if resolve(k) == target]
-                    raise relay_refusal(driver, target, [g for g, _ in readers], partners)
-                kernels_agree(c, None, label)
+                partnered = [k for k, v in driven_by.items() if v == nodes[c].action]
+                if partnered or len(readers) != 1 or len(control_parents(readers[0][0])) != 1:
+                    raise relay_refusal(
+                        driver,
+                        target,
+                        [g for g, _ in readers] + [g for k in partnered for g, _ in readers_of(k)],
+                        [nodes[k].name for k in partnered],
+                    )
+                kernel_not_dropped(c, label)
                 g, pos = readers[0]
                 table_is_owned(g, label)
                 transition[g] = _drop_control_axis(transition[g], factor_names[g], None, None)
@@ -1726,15 +1630,20 @@ def _assemble(
             keep, weights = _termination(
                 binding.level, nodes[c].size, f"Clamp for {binding.node!r}"
             )
-            kernels_agree(c, None, f"Clamp for {binding.node!r}")
+            kernel_not_dropped(c, f"Clamp for {binding.node!r}")
             cut(c, keep, weights)
             terminations[c] = (keep, weights)
+            for k in [k for k, v in driven_by.items() if v == nodes[c].action]:
+                #  the nodes this node's action node drives end with the same prior
+                cut(k, keep, weights)
+                del driven_by[k]
+                port_observes[:] = [(a, v) for a, v in port_observes if a != nodes[k].name]
         elif isinstance(binding, Identify):
-            ends = (binding.a, binding.b)
+            ends = (alias.get(binding.a, binding.a), alias.get(binding.b, binding.b))
             if not any(end in parameters for end in ends) and all(
                 classify(end) != "unknown" or end in parameters for end in ends
             ):
-                what_a, what_b = classify(binding.a), classify(binding.b)
+                what_a, what_b = classify(ends[0]), classify(ends[1])
                 outs = [e for e, w in zip(ends, (what_a, what_b), strict=True) if w in _OUT_PORTS]
                 ins = [e for e, w in zip(ends, (what_a, what_b), strict=True) if w in _IN_PORTS]
                 label = f"Identify({binding.a!r}, {binding.b!r})"
@@ -1757,47 +1666,7 @@ def _assemble(
                         "different components, and a read inside one component is its own "
                         "System.observes"
                     )
-                variable, slot = outs[0], ins[0]
-                if slot in {s for s, _ in port_observes} or slot in own_read_modalities:
-                    raise ValueError(
-                        f"{label}: the in-port {slot!r} already observes a variable (its "
-                        "component's System.observes, a belief read or another Identify); an "
-                        "in-port is identified at most once"
-                    )
-                if slot in {b.modality for b in sibling}:
-                    raise ValueError(
-                        f"{label}: the in-port {slot!r} already observes a variable (a belief "
-                        "read); an in-port is identified at most once"
-                    )
-                if slot in node_index:
-                    c = driven_node(slot, "Identify")
-                    if variable in action_to_node:
-                        cross("blanket", variable, slot)
-                    kernels_agree(c, None, label)
-                    driver = action_to_node.get(variable)
-                    if driver is not None and node_index[driver] == c:
-                        raise ValueError(
-                            f"{label}: control node {slot!r} cannot be driven by its own action "
-                            "node"
-                        )
-                    readers = [
-                        (modality_names[m], g)
-                        for m, deps in enumerate(A_deps)
-                        for g in deps
-                        if g < 0 and nodes[-g - 1].name == slot
-                    ]
-                    if readers:
-                        raise NotImplementedError(
-                            f"{label}: modality {readers[0][0]!r} observes the action node of "
-                            f"{slot!r}, which a driven node does not have (nothing chooses it)"
-                        )
-                    del action_to_node[nodes[c].action]
-                    node_to_action.pop(slot, None)
-                    nodes[c].action = None
-                    driven_by[c] = variable
-                else:
-                    cross("blanket", variable, slot)
-                port_observes.append((slot, variable))
+                bind_port(outs[0], ins[0], label)
                 continue
             cross("shared", binding.a, binding.b)
             for end in (binding.a, binding.b):
@@ -1830,8 +1699,6 @@ def _assemble(
                 "control node held at a constant)"
             )
 
-    same_step = {node: resolve(node) for node in same_step}
-
     #  an emission's control parent follows its node through a same-step identification; a node a
     #  relay or a Clamp removed leaves the emission nothing to read
     composite_emissions: list[tuple[str, Emission]] = []
@@ -1841,7 +1708,7 @@ def _assemble(
             if q in nested_gone:
                 raise ValueError(f"merge: emission {emission!r} reads {q!r}, {nested_gone[q]}")
             if q in node_index:
-                final = resolve(q)
+                final = q
                 k = node_index[final]
                 if not nodes[k].live:
                     how = (
@@ -1872,18 +1739,26 @@ def _assemble(
         prefix = f"{name}{SEPARATOR}"
         target = prefix + variable
         if variable in (system.action_names or ()):
-            node = next(n for n in nodes if n.action == target)
-            final = nodes[node_index[resolve(node.name)]]
-            if not final.live or not final.name.startswith(prefix):
+            node = next(
+                (n for n in nodes if n.action == target or inert.get(n.name) == target), None
+            )
+            final = node
+            via = None if node is None else driven_by.get(node_index[node.name])
+            if node is not None and node.action is None and via in action_to_node:
+                final = nodes[
+                    node_index[action_to_node[via]]
+                ]  # a driven node's value is its driver's
+            if final is None or not final.live or not final.name.startswith(prefix):
                 gone = (
                     "a binding removed"
-                    if not final.live
+                    if final is None or not final.live
                     else f"{final.name!r}, another component's"
                 )
                 raise ValueError(
                     f"merge: {prefix + slot!r} observes the action node {target!r} in "
-                    f"System.observes, whose control node {node.name!r} is {gone} node; an "
-                    "observation of an action node stays inside the component that chooses it"
+                    f"System.observes, whose control node {node.name if node else '?'!r} is "
+                    f"{gone} node; an observation of an action node stays inside the "
+                    "component that chooses it"
                 )
             target = final.action
         observes_out.append((prefix + slot, target))
@@ -1891,7 +1766,7 @@ def _assemble(
     followed = {n.action: n for n in nodes if n.action is not None}
     for slot, variable in port_observes:
         if variable in followed:
-            final = nodes[node_index[resolve(followed[variable].name)]]
+            final = followed[variable]
             if not final.live:
                 raise ValueError(
                     f"merge: {slot!r} observes the action node {variable!r}, whose control node a "
@@ -1912,7 +1787,7 @@ def _assemble(
     live_nodes = [k for k, node in enumerate(nodes) if node.live]
     pooled_over = []
     for table, node in readings:
-        final = resolve(node)
+        final = node
         k = node_index.get(final)
         if k is None or not nodes[k].live:
             raise ValueError(
@@ -1932,7 +1807,7 @@ def _assemble(
             if g >= 0:
                 placed.append(g)
                 continue
-            k = node_index.get(resolve(nodes[-g - 1].name))
+            k = node_index.get(nodes[-g - 1].name)
             if k is None or not nodes[k].live:
                 raise NotImplementedError(
                     f"merge: modality {modality_names[m]!r} observes the action node "
@@ -1950,18 +1825,6 @@ def _assemble(
 
     for what, targets in (("state_targets", state_targets), ("terminal_targets", terminal_targets)):
         for key in targets:
-            if key in same_step and nodes[node_index[same_step[key]]].live:
-                raise ValueError(
-                    f"merge: {what}[{key!r}] is a target on a control node a same-step "
-                    f"Link made one with {same_step[key]!r}, so the composite's node is "
-                    f"{same_step[key]!r}: declare the target on {same_step[key]!r}"
-                )
-            if key in same_step:
-                raise ValueError(
-                    f"merge: {what}[{key!r}] is a target on a control node a same-step "
-                    f"Link made one with {same_step[key]!r}, which a Clamp "
-                    "terminated, so the composite has no such node: drop the target"
-                )
             k = node_index.get(key)
             if k in relayed or k in terminations:
                 how = (
@@ -1974,12 +1837,11 @@ def _assemble(
                     "composite has no such node: drop the target"
                 )
 
-    #  a conditional target's parent follows its node to the driver a same-step Link
-    #  made it one with; a relayed or terminated node is gone
+    #  a conditional target's parent must be a node the composite has; a relayed or terminated
+    #  node is gone
     for i, (key, c_parents) in enumerate(C_deps):
         renamed = []
         for p in c_parents:
-            p = resolve(p)
             k = node_index.get(p)
             if k in terminations:
                 raise ValueError(
@@ -1998,14 +1860,15 @@ def _assemble(
             renamed.append(p)
         C_deps[i] = (key, tuple(renamed))
 
-    # every same-step identification, the components' own re-qualified, as (node, driver) names
+    # every identification of an action node with a control node, the components' own
+    # re-qualified, as (node, driver) names
     identified = [
         (namespaced_key(name, node), namespaced_key(name, driver))
         for name, system in subsystems.items()
         for _, sub in system.subsystems or ()
         for node, driver in sub.identified
     ]
-    identified = list(dict.fromkeys([*identified, *sorted(same_step.items())]))
+    identified = list(dict.fromkeys([*identified, *sorted(identified_pairs)]))
 
     # ---------------------------------------------------------- the metadata
     # One entry per component, plus a re-qualified, offset entry per component of an inner
@@ -2014,6 +1877,7 @@ def _assemble(
     live_names = [node.name for node in nodes if node.live]
     driven_names = {node.name for node in nodes if node.action is None}
     action_of = {node.name: node.action for node in nodes}
+    action_of.update(inert)
     for name, system in subsystems.items():
         for _, sub in system.subsystems or ():
             for node, action in sub.actions:
@@ -2133,19 +1997,17 @@ def _assemble(
     else:
         epistemic = tuple(epistemic_keys)
     live = [k for k, node in enumerate(nodes) if node.live]
-    if coupled:
-        durations_out, precision_out = {}, None
-    else:
-        durations_out, precision_out = _collapse_for_planning(sp, [nodes[k].name for k in live])
     planning = {
-        field: _agree(
-            field, {leaf: c[field] for leaf, c in leaf_config.items()}, strict=not coupled
-        )
+        field: _unanimous({leaf: c[field] for leaf, c in leaf_config.items()})
         for field in _PLANNING_FIELDS
     }
-    mixture_schedule = _agree(
-        "mixture_schedule", {leaf: c["mixture_schedule"] for leaf, c in leaf_config.items()}
-    )
+    schedules = {leaf: c["mixture_schedule"] for leaf, c in leaf_config.items()}
+    if len(set(schedules.values())) > 1:
+        raise ValueError(
+            f"merged Systems disagree on mixture_schedule: {schedules}. The schedule is shared "
+            "by the whole belief carry, so declare one value"
+        )
+    mixture_schedule = next(iter(schedules.values()))
     column = {k: n_states + j for j, k in enumerate(live)}
     B_deps = tuple(tuple(i if kind == "state" else column[i] for kind, i in ps) for ps in parents)
     pad = ((),) * len(live)
@@ -2187,17 +2049,6 @@ def _assemble(
         obs_targets=obs_targets,
         state_targets=state_targets,
         terminal_targets=terminal_targets,
-        policy_prior=None
-        if coupled
-        else _compose_policy_prior(
-            subsystems,
-            params,
-            composite,
-            tuple(nodes[k].size if nodes[k].kind == LEVEL else 1 for k in live),
-            node_offset,
-            {k for k, node in enumerate(nodes) if not node.live or node.action is None},
-            bool(boxes),
-        ),
         control=boxes,
         emission={
             emission: Parameter(emission_reads[emission])
@@ -2207,9 +2058,7 @@ def _assemble(
             if emission in emission_reads or emission in emission_kernels
         },
         actuator={nodes[k].action: nodes[k].kernel for k in live if nodes[k].kernel is not None},
-        durations=durations_out,
-        precision=precision_out,
-        parts=sp.parts if coupled else {},
+        parts=sp.parts,
     )
     for binding in sibling:
         _check_sibling_shapes(binding, composite, composite_params)
@@ -2367,91 +2216,6 @@ def _node_order(node: str, factor_names: Sequence[str]) -> tuple[int, str]:
     return (len(factor_names), node)
 
 
-def _compose_policy_prior(
-    subsystems: Mapping[str, System],
-    params: Mapping[str, SystemParams],
-    composite: System,
-    levels: tuple[int, ...],
-    node_offset: Mapping[str, int],
-    merged_away: set[int],
-    continuous: bool = False,
-) -> Array | None:
-    """Sum the components' habit priors over the composite policy set.
-
-    ``log E(π) = Σ_sub log E_sub(π restricted to sub's control nodes)``, as a static gather: each
-    component's policy index is recomputed from the composite enumeration's digits.
-    """
-    declared = {name: p.policy_prior for name, p in params.items() if p.policy_prior is not None}
-    if not declared:
-        return None
-    modules = sorted(
-        name
-        for name, prior in declared.items()
-        if not hasattr(prior, "shape") and not isinstance(prior, Categorical)
-    )
-    if modules:
-        raise NotImplementedError(
-            f"subsystem(s) {modules} declare a *policy module* in policy_prior (A3's habit net), "
-            "which does not compose as a sum over the composite's joint policy set: a module is "
-            "a conditional prior P(u|s) over its own beliefs, so composing two of them is a "
-            "question about the joint control-state distribution of two minds, not a log-space "
-            "addition. Declare the composite's own habit on the returned params, or merge "
-            "world models and keep each mind's actor in its own subsystem() view."
-        )
-    if continuous:
-        raise NotImplementedError(
-            f"subsystem(s) {sorted(declared)} declare policy_prior, but the composite's control "
-            "space is continuous: a habit prior over an enumerated policy set has no meaning "
-            "there (CEM's E is its proposal distribution — design: amortization.md A9). Drop the "
-            "policy_prior leaves before merging."
-        )
-    policies = enumerate_policies(levels, composite.policy_len, (True,) * len(levels))
-    total = jnp.zeros((policies.shape[0],), jnp.float32)
-    #  each original node's composite column, for the nodes that stayed
-    columns: dict[int, int] = {}
-    j = 0
-    for k in range(sum(len(s._table.control_names) for s in subsystems.values())):
-        if k not in merged_away:
-            columns[k] = j
-            j += 1
-    for name, policy_prior in declared.items():
-        system = subsystems[name]
-        off = node_offset[name]
-        own = range(off, off + len(system._table.control_names))
-        rebound = [k - off for k in own if k in merged_away]
-        if rebound:
-            names = [system._table.control_names[k] for k in rebound]
-            raise ValueError(
-                f"subsystem {name!r} declares policy_prior over its own policy set, but its "
-                f"control node(s) {names} were merged in this call, so that policy set does "
-                "not exist in the composite. Drop the component's policy_prior "
-                "(dataclasses.replace(params, policy_prior=None)) and declare the composite's "
-                "habit prior on the returned SystemParams."
-            )
-        own_levels = system._control_levels(params[name])
-        expected = 1
-        for _ in range(system.policy_len):
-            for n in own_levels:
-                expected *= n
-        lp = (
-            policy_prior.log_probs
-            if isinstance(policy_prior, Categorical)
-            else jnp.asarray(policy_prior)
-        )
-        if lp.shape != (expected,):
-            raise ValueError(
-                f"subsystem {name!r} has policy_prior of shape {lp.shape}, but its own policy "
-                f"set has {expected} member(s) (levels={own_levels}, "
-                f"policy_len={system.policy_len}); a habit prior is one weight per policy"
-            )
-        index = jnp.zeros((policies.shape[0],), jnp.int32)
-        for t in range(system.policy_len):
-            for k, n in zip(own, own_levels, strict=True):
-                index = index * n + policies[:, t, columns[k]]
-        total = total + lp[index]
-    return total
-
-
 # ------------------------------------------------------- the subjective-view constructor
 
 
@@ -2533,6 +2297,22 @@ def _driven_nodes(composite: System, name: str) -> list[int]:
         )
         if action is None and node.startswith(prefix)
     ]
+
+
+def driven_nodes(composite: System, name: str | None = None) -> dict[str, str]:
+    """The control nodes of component ``name`` (every component's when ``None``) that a variable
+    drives, each with its variable: an action node or an emission another slot generates
+    (``System.observes``). A driven node has no action node of its own and no planner chooses it;
+    :func:`subsystem` takes its level as an input keyed by the variable, and
+    :func:`~hybrid_aif.composition.joint.joint_planner` collapses it into its driver's node where
+    the driver lies in the same node."""
+    prefix = "" if name is None else f"{name}{SEPARATOR}"
+    observed = dict(composite.observes)
+    return {
+        node: observed[node]
+        for node, action in zip(composite._table.control_names, composite.action_names, strict=True)
+        if action is None and node.startswith(prefix) and node in observed
+    }
 
 
 def _input_variable(composite: System, k: int) -> str:
@@ -2919,6 +2699,11 @@ def subsystem(
     held = params.durations if params.durations or part is None else part.durations
     view_durations = {k: v for k, v in held.items() if k in set(view_nodes)}
     scoring_params: dict[str, object] = {} if part is None else part.scoring
+    if part is None and leaf is not None:
+        #  a leaf of a joint-planned composite: its estimators' parameters are the composite's
+        #  composed scoring, under the rows the leaf's record owns
+        mine = {n for n, _ in leaf["scoring"]} | {t.partition(":")[0] for t in leaf["terms"]}
+        scoring_params = {k: v for k, v in params.scoring.items() if k in mine}
 
     def configured(field: str):
         """A field of the view: the composite's, the leaf's own where the composite's is UNSET."""

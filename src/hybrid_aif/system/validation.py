@@ -226,6 +226,19 @@ def _validate(
     """
     mods, facs = (system.modality_names, system._facs)
     _validate_cells(system, params, facs)
+    for term in system.terms:  # a mounted estimator that owns parameters needs its entry
+        row = term.partition(":")[0]
+        try:
+            parametric = registry.get_row(row).parametric
+        except ValueError:
+            continue  # an unknown estimator is refused where the terms are read
+        mountable = system._is_amortized(params) or set(registry.row_families(row)) != {"code"}
+        if parametric and mountable and row not in params.scoring:
+            raise ValueError(
+                f"{face}: terms mounts the estimator {row!r}, which owns parameters, and "
+                f"SystemParams.scoring carries no {row!r} entry (it holds "
+                f"{sorted(params.scoring)}); a missing entry is a mismatch, not a silent skip"
+            )
     targeted_controls = set(facs) | set(
         system._table.control_names
     )  # a control node takes a target

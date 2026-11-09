@@ -23,6 +23,7 @@ from hybrid_aif.composition import (
     agent_step,
     couple,
     hold,
+    joint_planner,
     merge,
     particle,
     run,
@@ -57,7 +58,7 @@ def _same(a, b):
 
 
 def _zoo():
-    comp, cp = merged(bindings=[SAME_STEP, *OBSERVATION_BINDINGS])
+    comp, cp = joint_planner(*merged(bindings=[SAME_STEP, *OBSERVATION_BINDINGS]))
     obs, _ = comp.as_env(cp)[0].reset(KEY, comp.as_env(cp)[1])
     return comp, cp, obs
 
@@ -466,7 +467,7 @@ def test_a_wire_into_a_modality_the_particle_supplies_is_refused():
 
 
 def _two_tier_target():
-    return _two_tier(*_target_rover(_conditional_target(), (("x", ("u_opt",)),)))
+    return joint_planner(*_two_tier(*_target_rover(_conditional_target(), (("x", ("u_opt",)),))))
 
 
 def _idle_rover(key, obs, carry, params):
@@ -592,14 +593,16 @@ def test_a_slow_mind_under_hold_and_a_fast_learner_sharing_a_parameter():
         None, grid_shape=4, camera=False, image_preference=False, tiered=True
     )
     ms, mp = ss.scheduler(grid, centres, durations=True, policy_len=rs.policy_len)
-    comp, cp = merge(
-        {"mission": ms, "rover": rs},
-        {"mission": mp, "rover": rp},
-        [
-            Link("mission.option", "rover.u_opt"),
-            Identify("rover.field", "mission.field"),
-            Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
-        ],
+    comp, cp = joint_planner(
+        *merge(
+            {"mission": ms, "rover": rs},
+            {"mission": mp, "rover": rp},
+            [
+                Link("mission.option", "rover.u_opt"),
+                Identify("rover.field", "mission.field"),
+                Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
+            ],
+        )
     )
     mview = subsystem(comp, cp, "mission")[0]
     mview = dataclasses.replace(mview, policy_len=1)

@@ -20,6 +20,7 @@ from hybrid_aif import (
     Gaussian,
     LinearGaussianObservation,
 )
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box, ControlStep
 from hybrid_aif.distributions import MixtureGaussian
@@ -229,7 +230,7 @@ def test_a_soft_prior_on_a_gaussian_target_is_refused_with_the_level_to_pass():
 
 
 def test_a_partner_node_without_an_entry_is_refused_naming_the_entry():
-    cs, cp = _two_tier(*_rover(_conditional_target(), (("x", ("u_opt",)),)))
+    cs, cp = joint_planner(*_two_tier(*_rover(_conditional_target(), (("x", ("u_opt",)),))))
     with pytest.raises(ValueError, match=r"inputs has no entry.*inputs=\{'mission"):
         subsystem(cs, cp, "rover")
 

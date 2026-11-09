@@ -28,6 +28,7 @@ from hybrid_aif import (
     System,
     SystemParams,
 )
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.description import build, describe
@@ -440,10 +441,12 @@ def test_merge_namespaces_emissions_and_their_kernels():
 
 def test_a_control_parent_follows_a_same_step_identification_and_a_removed_one_is_refused():
     system, params = world()
-    cs, cp = merge(
-        {"a": system, "b": system},
-        {"a": params, "b": params},
-        [Link("a.a_v", "b.v")],
+    cs, cp = joint_planner(
+        *merge(
+            {"a": system, "b": system},
+            {"a": params, "b": params},
+            [Link("a.a_v", "b.v")],
+        )
     )
     assert dict(cs.emissions)["b.gauge"].parents == ("a.v",)
     from hybrid_aif.composition.merge import Clamp
@@ -499,10 +502,12 @@ def test_a_view_carries_its_own_emissions_and_refuses_a_partners_control_node():
     assert dict(view.subsystems)["a"].emissions == view.names.emissions
     assert view.ports(vp).outs.keys() >= {"a.fix", "a.img", "a.gauge"}
     system, params = world()
-    shared, sp = merge(
-        {"a": system, "b": system},
-        {"a": params, "b": params},
-        [Link("a.a_v", "b.v")],
+    shared, sp = joint_planner(
+        *merge(
+            {"a": system, "b": system},
+            {"a": params, "b": params},
+            [Link("a.a_v", "b.v")],
+        )
     )
     mine, _ = subsystem(shared, sp, "a")  # `a` chooses the node `b`'s emission reads
     assert "a.v" in mine.names.controls

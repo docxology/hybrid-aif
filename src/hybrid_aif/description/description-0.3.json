@@ -1558,6 +1558,10 @@
           "type": "string",
           "minLength": 1
         },
+        "leaf": {
+          "type": "string",
+          "minLength": 1
+        },
         "on": {
           "type": "string",
           "minLength": 1
@@ -1672,6 +1676,12 @@
               }
             },
             "driven": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "driven_actions": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
@@ -1847,6 +1857,13 @@
               }
             },
             "coupled": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "unset": {
               "type": "array",
               "items": {
                 "type": "string",

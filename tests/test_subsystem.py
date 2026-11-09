@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif.composition import joint_planner
 from hybrid_aif.composition.merge import Link, merge, subsystem, subsystem_factors
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
@@ -383,6 +384,8 @@ def test_a_joint_habit_prior_does_not_project_onto_one_mind():
         },
         OBSERVATION_BINDINGS,  # both nodes chosen: a genuinely joint policy set
     )
+    assert np.array_equal(subsystem(composite, cp, "agent")[1].policy_prior, jnp.zeros(5))
+    composite, cp = joint_planner(composite, cp)
     assert cp.policy_prior.shape == (25,)
     with pytest.raises(NotImplementedError, match="chooses only part of its control nodes"):
         subsystem(composite, cp, "agent")
