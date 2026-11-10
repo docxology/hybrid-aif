@@ -33,7 +33,7 @@ Conventions:
 # <!-- block: title-image -->
 
 {.sub}
-Hybrid continuous-discrete-amortized active inference in JAX
+Continuous-discrete-amortized active inference in JAX
 
 {.byline}
 Noumenal Labs · <!-- block: version --> · MIT
