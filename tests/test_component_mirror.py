@@ -32,8 +32,8 @@ from hybrid_aif.distributions import ConditionalGaussian
 from hybrid_aif.factors import LinearGaussianTransition, Parameter
 from hybrid_aif.system import PartParams
 from hybrid_aif.system.mirror import mirror
-from tests.test_clock_parity import _replay, _robots, states
-from tests.test_driver import _arena, arena_minds
+from tests.test_clock_parity import FIXTURE, _replay, _robots, states
+from tests.test_driver import _arena
 from tests.test_merge import OBSERVATION_BINDINGS
 from tests.test_particle import SAME_STEP, _shared, merged
 from tests.test_run import idle
@@ -273,11 +273,10 @@ def test_a_modality_with_parents_in_two_components_reads_the_boundary_value(orde
 def test_under_sequential_each_mind_steps_right_after_the_world_leaf_it_drives():
     """``run`` derives the sequential order: the sources (the model leaves and the arena) in
     listing order and each driven world leaf right after its driver, so ``model.b`` observes a's
-    hand as ``a`` moved it this round, as the composite form's mind did."""
+    hand as ``a`` moved it this round, as the composite form's mind did: the composite form's
+    sequential run of the arena is ``tests/data/clock_parity.npz`` (``arena/sequential``, recorded
+    with ``PRNGKey(1)``)."""
     composite, cp = _arena()
-    composite_run = run(
-        composite, cp, arena_minds(composite, cp), ticks=6, key=KEY, tick_order="sequential"
-    )
     system, params = with_mirror(composite, cp, per_component=True)
     assert [n for n, _ in system.subsystems if n.count(".") == 1] == [
         "model.a",
@@ -299,16 +298,17 @@ def test_under_sequential_each_mind_steps_right_after_the_world_leaf_it_drives()
         return traced
 
     steps = {n: tagged(n, f) for n, f in arena_steps().items()}
-    traj = run(system, params, 6, KEY, steps, tick_order="sequential", record_carries=True)
+    key = jax.random.PRNGKey(1)
+    traj = run(system, params, 6, key, steps, tick_order="sequential", record_carries=True)
     assert calls[:6] == ["model.a", "world.a", "model.b", "world.b", "model.arena", "world.arena"]
     hand_a = states(traj, "world.a.hand", "world.a")
     np.testing.assert_array_equal(traj["model.b"].received["watch"][:6], hand_a[1:7])
     np.testing.assert_array_equal(
-        traj["model.b"].received["watch"][:6], composite_run.states["a.hand"][1:7]
+        traj["model.b"].received["watch"][:6], FIXTURE["arena/sequential/a.hand"][1:7]
     )
     for m in "ab":
         np.testing.assert_array_equal(
-            traj[f"model.{m}"].emitted["a_hand"], composite_run.actions[f"{m}.a_hand"]
+            traj[f"model.{m}"].emitted["a_hand"], FIXTURE[f"arena/sequential/{m}.a_hand"]
         )
 
 

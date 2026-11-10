@@ -454,6 +454,13 @@ def _leaves(name: str, system: System, p: SystemParams, epistemic: Sequence[str]
 _factor_levels = System._factor_levels
 
 
+class MixtureRefusal(NotImplementedError):
+    """A distribution over a control node's levels refused where a factor reading the node has no
+    form for it: a linear-Gaussian transition or a Gaussian target averaged over levels is a
+    mixture, not a Gaussian. A level is accepted; ``run`` catches this type at a reset call, whose
+    view it then takes at a level."""
+
+
 def _drop_control_axis(decl, name: str, keep: "int | None", weights: "Array | None"):
     """Retire a tabular transition's control axis, keeping a trailing no-op axis.
 
@@ -475,7 +482,7 @@ def _drop_control_axis(decl, name: str, keep: "int | None", weights: "Array | No
     if isinstance(decl, LinearGaussianTransition):
         if keep is None and weights is None:
             return decl  # the axis keeps its place and size; only its reading changes
-        raise NotImplementedError(_mixture_sentence(name))
+        raise MixtureRefusal(_mixture_sentence(name))
     if not isinstance(decl, ConditionalCategorical | ConditionalDirichlet):
         raise NotImplementedError(
             f"factor {name!r}: merging or terminating a control node a "
@@ -533,7 +540,7 @@ def _cut_gaussian(decl: LinearGaussianTransition, name: str, cuts: Sequence[tupl
     a per-mode ``F`` and ``G``; a factor left with no mode axis keeps a trailing size-1 one.
     """
     if any(weights is not None for _, _, weights in cuts):
-        raise NotImplementedError(_mixture_sentence(name))
+        raise MixtureRefusal(_mixture_sentence(name))
     inn = decl.innovations
     pn = inn.parent_ndims
     axes = sorted((pos - sum(1 for c in floats if c < pos), keep) for pos, keep, _ in cuts)
@@ -649,7 +656,7 @@ def _contract_target(target, key: str, cuts: Sequence[tuple[int, int | None, Arr
     ndims = target.parent_ndims - n
     if isinstance(target, ConditionalGaussian):
         if any(weights is not None for _, _, weights in cuts):
-            raise NotImplementedError(
+            raise MixtureRefusal(
                 f"the target on {key!r} is a Gaussian conditional on another component's control "
                 "node, and a prior spread over that node's levels makes the target a mixture of "
                 "Gaussians, which is not a Gaussian; pass an int level in inputs for "
@@ -1246,6 +1253,7 @@ def _assemble(
     action_to_node = {node.action: node.name for node in nodes if node.action is not None}
     node_to_action = {node.name: node.action for node in nodes if node.action is not None}
     port_observes: list[tuple[str, str]] = []  # the slots a port Identify feeds, with variables
+    identified_outs: dict[str, str] = {}  # an out-port an Identify named -> the binding's label
     driven_by: dict[int, str] = {  # a driven node -> the variable that drives it
         node_index[f"{name}{SEPARATOR}{slot}"]: f"{name}{SEPARATOR}{variable}"
         for name, _, (slot, variable) in own_reads
@@ -1267,6 +1275,19 @@ def _assemble(
         if name in nested_gone:
             return "gone"
         return "unknown"
+
+    def no_inert_end(label: str, names) -> None:
+        """Refuse a binding that names the action node of a driven control node: the node and its
+        driver's action node are one variable, named by the driver's action node."""
+        for end in names:
+            if isinstance(end, str) and end in alias:
+                node = next(n for n, a in inert.items() if a == end)
+                raise ValueError(
+                    f"{label} names {end!r}, the action node of control node {node!r}, which "
+                    f"{alias[end]!r} drives, so {end!r} has no value of its own: it would carry "
+                    f"{alias[end]!r}'s; name {alias[end]!r} itself (the reader then steps after "
+                    "its driver, a join on it rather than a chain)"
+                )
 
     def bind_port(variable: str, slot: str, label: str) -> None:
         """Identify the out-port ``variable`` with the in-port ``slot``: the slot observes the
@@ -1312,6 +1333,13 @@ def _assemble(
             for m in sensing:  # the node's realised value is its driver's: observe that
                 A_deps[m] = tuple(-d - 1 if g == -c - 1 else g for g in A_deps[m])
             old = nodes[c].action
+            if old in identified_outs:
+                raise ValueError(
+                    f"{identified_outs[old]} names {old!r}, the action node of control node "
+                    f"{slot!r}, and {label} drives {slot!r} by {variable!r}, so {old!r} has no "
+                    f"value of its own: it would carry {variable!r}'s; name {variable!r} "
+                    f"itself, or drive {slot!r} from elsewhere"
+                )
             inert[slot] = old
             alias[old] = variable
             del action_to_node[old]
@@ -1355,6 +1383,8 @@ def _assemble(
                     f"'{TERMINAL}:<factor>', got {target!r}"
                 )
             ends = (source,) if isinstance(source, str) else tuple(source)
+            if classify(target) != "a modality":  # a port into a modality is refused below
+                no_inert_end(label, (*ends, target))
             ends = tuple(alias.get(end, end) if isinstance(end, str) else end for end in ends)
             source = ends[0] if isinstance(source, str) else ends
             if not ends or not all(isinstance(end, str) for end in ends):
@@ -1551,6 +1581,7 @@ def _assemble(
                             "must agree"
                         )
                     bind_port(driver, target, label)
+                    identified_outs.setdefault(driver, label)
                     continue
                 if kind != "a state factor":
                     raise ValueError(
@@ -1639,6 +1670,7 @@ def _assemble(
                 del driven_by[k]
                 port_observes[:] = [(a, v) for a, v in port_observes if a != nodes[k].name]
         elif isinstance(binding, Identify):
+            no_inert_end(f"Identify({binding.a!r}, {binding.b!r})", (binding.a, binding.b))
             ends = (alias.get(binding.a, binding.a), alias.get(binding.b, binding.b))
             if not any(end in parameters for end in ends) and all(
                 classify(end) != "unknown" or end in parameters for end in ends
@@ -1667,15 +1699,33 @@ def _assemble(
                         "System.observes"
                     )
                 bind_port(outs[0], ins[0], label)
+                identified_outs.setdefault(outs[0], label)
                 continue
             cross("shared", binding.a, binding.b)
             for end in (binding.a, binding.b):
                 if end not in parameters and classify(end) not in (*_OUT_PORTS, *_IN_PORTS):
-                    raise ValueError(
-                        f"Identify names {end!r}, which is not a parameter variable of the "
-                        f"composite; they are {sorted(parameters)} (a component's own name under "
-                        "its prefix), nor a port to identify with one"
-                    )
+                    owner = end.split(SEPARATOR)[0]
+                    if owner not in subsystems:
+                        where = f"names no component; the components are {sorted(subsystems)}"
+                    else:
+                        prefix = f"{owner}{SEPARATOR}"
+                        outs = sorted(
+                            n for n in (*action_to_node, *emission_names) if n.startswith(prefix)
+                        )
+                        ins = sorted(
+                            n for n in (*modality_index, *node_index) if n.startswith(prefix)
+                        )
+                        where = (
+                            f"is no port of component {owner!r}; its out-ports are {outs} and "
+                            f"its in-ports {ins}"
+                        )
+                    if parameters:
+                        raise ValueError(
+                            f"Identify names {end!r}, which is not a parameter variable of the "
+                            f"composite; they are {sorted(parameters)} (a component's own name "
+                            f"under its prefix), nor a port to identify with one: it {where}"
+                        )
+                    raise ValueError(f"Identify names {end!r}, which {where}")
             if coupled:
                 raise ValueError(
                     f"couple(): Identify({binding.a!r}, {binding.b!r}) joins two parameter "

@@ -15,7 +15,6 @@ import pytest
 from jax.scipy.linalg import cho_solve
 
 from hybrid_aif import Gaussian, MixtureGaussian
-from hybrid_aif.composition.driver import run
 from hybrid_aif.distributions import InverseWishart, MatrixNormal
 from hybrid_aif.distributions.gaussian import cholesky_of_inverse
 from hybrid_aif.distributions.noise_priors import _diag_embed
@@ -189,19 +188,46 @@ def test_mixture_sample_is_bitwise_unchanged(sample_shape):
 
 
 def test_async_with_one_mind_is_bitwise_sequential():
-    """The async sweep draws its permutation host-side and consumes no device
-    key, so a single-mind composite ticks identically under both orders."""
-    from hybrid_aif.composition.driver import agent_step
-    from hybrid_aif.composition.merge import subsystem
-    from tests.test_merge import merged
+    """The async order draws its permutation of the sources host-side and consumes no device key,
+    so one mind coupled to the mirror of each component steps identically under both orders; and
+    both are the composite form's runs (``tests/data/migration_driver.npz``, ``one_mind``) under
+    its key layout, whose sequential order stepped each component's factors at its turn as the
+    mirror per component does."""
+    import pathlib
 
-    composite, cp = merged(policy_len=3)
-    view = subsystem(composite, cp, "agent")[0]
-    minds = {"agent": agent_step(view, selection="deterministic")}
-    seq = run(composite, cp, minds, ticks=3, key=KEY, tick_order="sequential")
-    asy = run(composite, cp, minds, ticks=3, key=KEY, tick_order="async")
-    assert list(seq.states) == list(asy.states) and list(seq.actions) == list(asy.actions)
-    for name in seq.states:
-        np.testing.assert_array_equal(np.asarray(seq.states[name]), np.asarray(asy.states[name]))
-    for name in seq.actions:
-        np.testing.assert_array_equal(np.asarray(seq.actions[name]), np.asarray(asy.actions[name]))
+    from hybrid_aif.composition import plan, run, sample, with_mirror
+    from tests.test_merge import merged
+    from tests.test_run_parity import _old_layout, idle
+
+    system, params = with_mirror(*merged(policy_len=3), per_component=True)
+    steps = {
+        "model.agent": plan(selection="deterministic"),
+        "model.world": idle,
+        "world.agent": sample(),
+        "world.world": sample(),
+    }
+    fixture = np.load(pathlib.Path(__file__).parent / "data" / "migration_driver.npz")
+    got = {}
+    for order in ("sequential", "async"):
+        a, b, c = _old_layout(1)
+        with a, b, c:
+            traj = run(system, params, 3, KEY, steps, tick_order=order, record_carries=True)
+        held = {
+            f: np.asarray([s[f"world.{f}"] for s in traj[f"world.{f.split('.')[0]}"].carries])
+            for f in ("agent.location", "agent.context", "world.location", "world.context")
+        }
+        agent = traj["model.agent"]
+        held["agent.a_location"] = np.asarray(agent.intended["a_location"])
+        for name, value in held.items():
+            part = "actions" if name == "agent.a_location" else "states"
+            np.testing.assert_array_equal(value, fixture[f"one_mind/{order}/{part}/{name}"])
+        np.testing.assert_array_equal(
+            agent.emitted["a_location"], fixture[f"one_mind/{order}/realised/agent.a_location"]
+        )
+        for m, values in agent.received.items():
+            np.testing.assert_array_equal(
+                values, fixture[f"one_mind/{order}/observations/agent.{m}"], err_msg=m
+            )
+        got[order] = held
+    for name, value in got["sequential"].items():
+        np.testing.assert_array_equal(value, got["async"][name])

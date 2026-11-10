@@ -1,4 +1,6 @@
-"""``hold``'s argument checks, the duration arithmetic, and carry resumption."""
+"""``hold``'s argument checks, the duration arithmetic, and carry resumption; and the same
+arithmetic under ``run``'s ``clocks=`` (``run``'s other clock checks: ``tests/test_clocks.py``).
+"""
 
 import dataclasses
 import importlib.util
@@ -101,3 +103,28 @@ def test_a_system_that_differs_from_the_steps_own_is_refused():
     hold(step, system=system)  # the same System: fine
     with pytest.raises(TypeError, match="different System"):
         hold(step, system=other)
+
+
+# ------------------------------------------- the same arithmetic under run's clocks
+
+
+def test_a_float32_duration_times_a_clock_holds_a_whole_number_of_rounds_under_run():
+    """``33.3 * 10`` in float32 is a whole number of rounds within the tolerance ``hold`` uses."""
+    from hybrid_aif.composition import plan, run
+    from tests.test_clocks import robots, steps_of
+
+    system, params = robots([33.3, 33.3, 33.3])
+    traj = run(system, params, 3, KEY, steps_of(plan()), clocks={"a": 10})
+    assert np.asarray(traj["a"].decided).tolist() == [True, False, False]
+
+
+@pytest.mark.parametrize(
+    "good", [np.int64(2), np.float32(2.0), jnp.asarray(2), np.asarray(2.0), 2, 2.0]
+)
+def test_a_clock_is_any_real_scalar_under_run(good):
+    from hybrid_aif.composition import plan, run
+    from tests.test_clocks import robots, steps_of
+
+    system, params = robots([1.0, 1.0, 1.0])
+    traj = run(system, params, 4, KEY, steps_of(plan()), clocks={"a": good})
+    assert np.asarray(traj["a"].decided).tolist() == [True, False, True, False]

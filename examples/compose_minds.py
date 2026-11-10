@@ -20,7 +20,10 @@ The two robots' models are composed two ways:
   structural ``Link`` bindings into the modalities' parents identify the robots' position factors
   outright, so the two components share them with messages both ways;
 - **coupled** (:func:`coupled_episode`): each robot is a mind of its own, its model as
-  declared, wired to a world process through ``couple()``, as ``hide_and_seek.py`` does.
+  declared, coupled through ``couple()`` to the corridor (the mirror of :func:`world_model`), each
+  move identified with the corridor's control node it drives and each of the corridor's emissions
+  with the modalities that observe it, and run by ``run`` with ``plan()`` for each robot and
+  ``sample()`` for the corridor, as ``hide_and_seek.py`` does.
 
 From a symmetric start (both robots in the middle cell) the joint planner assigns the docks
 at once. Each coupled mind wants a dock and values the two equally (the problem is
@@ -46,8 +49,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import Link, agent_step, couple, joint_planner, merge, run
+from hybrid_aif.composition import Identify, Link, couple, joint_planner, merge, plan, run, sample
 from hybrid_aif.system import System, SystemParams
+from hybrid_aif.system.mirror import mirror
 
 N = 5  # corridor cells; the docks are the two ends
 MOVES = (-1, 0, 1)  # left, stay, right
@@ -282,45 +286,48 @@ def world_model(start=SYMMETRIC) -> tuple[System, SystemParams]:
     return system, params
 
 
-def world(start=SYMMETRIC):
-    """The corridor as a process: both positions, each moved by its own action input,
-    emitting the two positions and the status."""
-    system, params = world_model(start)
-    env, env_params = system.as_env(params)
-    return env, dataclasses.replace(env_params, actuator={})
+def world(start=SYMMETRIC) -> tuple[System, SystemParams]:
+    """The corridor as the robots meet it: the mirror of :func:`world_model`, a System whose
+    control nodes ``u_a`` and ``u_b`` the robots' moves drive and whose emissions ``a_pos``,
+    ``b_pos`` and ``status`` are what the robots observe."""
+    return mirror(*world_model(start), lower=True)
 
 
-PORT_LINKS = (
-    Link("a.move", "world.a_move"),
-    Link("b.move", "world.b_move"),
-    Link("world.a_pos", "a.me_obs"),
-    Link("world.b_pos", "a.other_obs"),
-    Link("world.status", "a.status"),
-    Link("world.b_pos", "b.me_obs"),
-    Link("world.a_pos", "b.other_obs"),
-    Link("world.status", "b.status"),
+BINDINGS = (
+    Identify("a.move", "world.u_a"),
+    Identify("b.move", "world.u_b"),
+    Identify("world.a_pos", "a.me_obs"),
+    Identify("world.b_pos", "a.other_obs"),
+    Identify("world.status", "a.status"),
+    Identify("world.b_pos", "b.me_obs"),
+    Identify("world.a_pos", "b.other_obs"),
+    Identify("world.status", "b.status"),
 )
 
 
-def coupled(start=SYMMETRIC, selection="deterministic", policy_len: int = 2):
-    """The two robots as two minds, each its own model, wired to the corridor."""
+def coupled(start=SYMMETRIC, policy_len: int = 2) -> tuple[System, SystemParams]:
+    """The two robots as two minds, each its own model, coupled to the corridor: one closed
+    System whose components ``a``, ``b`` and ``world`` stay leaves."""
     a, b = start
-    ra, rb = robot(a, b, policy_len), robot(b, a, policy_len)
-    return couple(
-        minds={
-            "a": (*ra, agent_step(ra[0], selection=selection)),
-            "b": (*rb, agent_step(rb[0], selection=selection)),
-        },
-        processes={"world": world(start)},
-        links=list(PORT_LINKS),
-    )
+    parts = {"a": robot(a, b, policy_len), "b": robot(b, a, policy_len), "world": world(start)}
+    return couple(parts, list(BINDINGS))
+
+
+def coupled_steps(selection="deterministic") -> dict:
+    """How each leaf of :func:`coupled` steps: each robot plans (``plan()``), the corridor is
+    sampled forward from its declarations (``sample()``)."""
+    return {"a": plan(selection=selection), "b": plan(selection=selection), "world": sample()}
 
 
 def coupled_episode(key, start=SYMMETRIC, selection="deterministic", ticks: int = 8):
-    """One episode of the two minds through ``run``. Returns each robot's cell per tick."""
-    record = run(coupled(start, selection), ticks=ticks, key=key)
-    states = record["world"].states
-    return np.asarray(states["a"]), np.asarray(states["b"])
+    """One episode of the two minds through ``run``. Returns each robot's cell per tick, read
+    off the corridor's state (its carry), ``(ticks + 1,)``."""
+    system, params = coupled(start)
+    record = run(system, params, ticks, key, coupled_steps(selection), record_carries=True)
+    carries = record["world"].carries
+    a = [int(c["world.a"]) for c in carries]
+    b = [int(c["world.b"]) for c in carries]
+    return np.asarray(a), np.asarray(b)
 
 
 # ----------------------------------------------------------------------- the comparison

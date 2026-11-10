@@ -326,10 +326,10 @@ Design: `design/amortization.md`, FLAG (1)'s amendment of 2026-09-20.
 **Compiled cores.** `replay` and `rollout` check their arguments eagerly and
 then run a compiled core, so a second call with the same model, trace length
 and switches reuses the program; pass the same `policy_fn` object to `rollout`
-to share it. The composition driver's `agent_step` compiles its tick once per
-System and belief layout (a mixture System's first tick pads its priors, so
-twice), with the parameters as an argument rather than a baked-in constant; an
-all-illegal `legal=` mask is refused on the step's first call, where the params are concrete.
+to share it. `run`'s `plan()` step compiles its tick once per view and belief
+layout (a mixture System's first tick pads its priors, so twice), with the parameters as an
+argument rather than a baked-in constant; an all-illegal `legal=` mask is refused on the step's
+reset call, where the params are concrete.
 
 **The training side's episode format.** `train.buffers.Episode` carries the
 engine's columns — `obs`, `action`, `reward`, `cont` (one minus terminal, as
@@ -640,7 +640,7 @@ together.
 A node that is itself a leaf is refused (it is its own planner). A leaf that a caller steps as a
 process is planned here as a self-model: `joint_planner` does not see the caller's steps.
 `joint_planner(merge(...), params)` of a merge plans it exactly as one planning problem, and is
-what `run`, `particle` and `agent_step` take as a composite.
+what `run` plans when a step is given to a non-leaf node (`steps={"agent": plan()}`).
 
 **A link into a control node.** `Link(driver, node)` names a control node of one
 component (`"world.u_location"`), identified with the action node of another (same step) or
@@ -660,7 +660,10 @@ action node nor a state factor is refused, naming both spellings, and a control 
 driver is refused naming its action node. The factor
 spelling of the control node, `Link(..., "world.location")`, is
 refused naming its node: `"world.u_location"` replaces it. Bindings compose in
-any order: a chain of same-step bindings is one node, a node identified with one
+any order: a driven node and its driver's action node are one variable, named by the driver's
+action node, so a binding that names the driven node's own action node (a chain written through
+it) is refused in either order, naming the driver's action node (one action node driving two
+nodes, the join, is the spelling); a node identified with one
 a `Clamp` terminates is terminated with it, and a relay into a node that
 more than one factor reads is refused whichever binding comes first. A lag on a same-step
 read is declared, not configured: an echo state whose table copies a control
@@ -704,7 +707,7 @@ that read `b` reads it, and the two must be the same family with the same table 
 components of one particle; `write_back` is bookkeeping of that home between views, not a
 crossing. Nothing in one participant clamps another participant's parameters: separate minds
 exchange a parameter only as a report of counts through an action node
-(`design/nesting-and-coupling.md` N2, N6). Under `particle` (below) the write-back happens each
+(`design/nesting-and-coupling.md` N2, N6). Under `run` (below) the write-back happens each
 round a view learns and the caller never calls it; `write_back` is for a hand-written loop over
 views. `subsystem` views carry the variables their readers read
 under the composite's names (so a rate key is `"parameter:<component>.<name>"`, which `merge`
@@ -740,9 +743,10 @@ the description length (a slot the map names is no variable of its own, so a cou
 of an identified variable is priced once). Nothing computes the datum inside the
 faces: a hand loop realises the emissions after a round, `system.emit(fold_in(key, EMIT_TAG),
 params, {**beliefs, <control levels>})`, and passes them to the next round's `infer_states` and
-`learn`; `replay` does that after each tick and records them (`Replay.emitted`); the composite
-`run` takes them from the source's carry (`MindCarry.emitted`, filled by `agent_step`), one round
-behind. `mirror` drops every emission of the System (an out-port: the mirror models what the System
+`learn`; `replay` does that after each tick and records them (`Replay.emitted`); `run` takes
+each from what the step that owns it returned (a `plan()` step realises every emission of its
+view from its posterior), as it stands at the reader's turn. `mirror` drops every emission of
+the System (an out-port: the mirror models what the System
 senses) with the `observes` entries.
 
 **A belief read, `Link(source, modality, realise=..., kernel=...)`,** makes a modality of
@@ -752,19 +756,19 @@ no action node. `realise` is required: a read has no default. It is sugar for a 
 component (`rover.cell_obs` for `mission.cell_obs`), and an `observes` entry of the composite
 mapping the modality to it (a name the source's component already uses is refused, naming the
 explicit form: an `Emission` declared on the source's System and `observes` on the reader's). The
-emission is the source's posterior of the previous round, pushed through `kernel` (the identity,
+emission is the source's posterior pushed through `kernel` (the identity,
 or a `Grid`, the indicator of its cells over a continuous source) and realised by `realise`
 (`"sample"`, a draw; `"mode"`, the argmax of a categorical belief or the mean of a continuous
 one; `"stats"`, a categorical belief's probability vector, the filter's soft observation). The
 modality's own parents explain the datum, as for any observation. `merge` records the read on
 the reader's `Subsystem.reads` and carries a component's own `observes` entries too, under its
-prefix. `subsystem` leaves the reading component's modality an ordinary observation, and `run`'s
-composite form supplies every read of a minded component (its own emissions and reads inside it
-as well) each round, in place of the world's sample of that modality: a read of an emission takes
-the value the source mind's step realised from its posterior of the round before
-(`MindCarry.emitted`, which `agent_step` fills with `System.emit` and a custom step fills the same
-way), a draw keyed by the step's key folded with `EMIT_TAG`, and `None` (absent) on the first
-round, before the source has realised one. `agent_step` treats a `None` observation as absent.
+prefix. `subsystem` leaves the reading component's modality an ordinary observation, and `run`
+supplies every read of a stepped node (its own emissions and reads inside it as well) each round:
+a read of an emission takes the value the source's step realised from its posterior (a `plan()`
+step with `System.emit`, a custom step the same way), a draw keyed by the step's key folded with
+`EMIT_TAG`, as it stands at the reader's turn (the round before under `"simultaneous"`, and under
+the other orders when the reader steps before its source), and `None` (absent) before the source
+has realised one. `plan()` treats a `None` observation as absent.
 
 ```python
 from hybrid_aif import Grid
@@ -804,15 +808,14 @@ factor once, so a joint planner has one clock: leaves that declare durations on 
 refused at `joint_planner`, as is a collapse that removes the node carrying them; a merge or a
 coupling keeps each leaf's durations in its `parts`
 (`design/step-durations.md` T1). A slow component is given its own pace by declaring its durations
-under `run` of a closed System (the clocks section below), or by `composition.hold` in the
-composite and wired forms, which returns the stored action for the duration `System.elapsed`
-reports, not by a second clock inside the composite (`design/nesting-and-coupling.md` N4).
+under `run` of a closed System (the clocks section below), not by a second clock inside the
+composite (`design/nesting-and-coupling.md` N4).
 
 **Legality across a merge.** A joint planner's System has one choice point for an action node
 identified with a control node, the driver's, so a mask on the identified node is the driver's
 constraint: key it
 by the driver's node, where it applies as any node's mask does, on `act`,
-`infer_policies`, `replay` and `agent_step`. A mask keyed by the driven node
+`infer_policies`, `replay` and `plan()`. A mask keyed by the driven node
 is refused naming the driver's node, and one keyed by a relayed node is refused
 naming the relay.
 
@@ -906,6 +909,18 @@ their action nodes realised together), then the others in an order that respects
 two). A phase-two node reads a control node driven by another node's **action** as realised this
 round, and every other slot, a control node driven by an **emission** included, at the boundary,
 so what a simultaneous reader sees does not depend on the order the components are listed in.
+The same holds for params under `"simultaneous"`: every node's view in a round is taken from the
+parameter home as the round began, and the params each learner returns are applied at the round's
+boundary, after its last realisation and before the next round's reads. Two nodes of one round
+that write back the same parameter variable are combined only where the variable is Dirichlet
+counts (a `Dirichlet` or `ConditionalDirichlet`): the round-start concentration plus the sum of
+their deltas, the posterior given both nodes' data (a sum that is not positive is refused as
+`write_back` refuses one). For any other form, two `plan()` steps whose `learn` both reach the
+variable (`learn=True` every learnable slot, a sequence or mapping the slots it names) are
+refused before the first round, and two other steps that both wrote it back in one round are
+refused at that round's boundary, each naming the variable and the nodes. Under
+`"sequential"` and `"async"` a write-back is live: the next node's view is taken from the home
+as it then stands.
 `"sequential"` steps the listing's sources, the nodes none of whose control nodes an action
 drives, in listing order, each reading what stands; each driven node steps as soon as the last of
 its drivers has realised, before the sweep returns to nodes made ready earlier (a chain follows its

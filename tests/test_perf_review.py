@@ -145,18 +145,18 @@ def test_the_diagonal_head_density_equals_the_dense_gaussian():
     assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree_util.tree_leaves(g))
 
 
-def test_the_agent_tick_is_compiled_and_equals_the_eager_faces():
-    from hybrid_aif.composition.driver import MindCarry, agent_step
+def test_the_plan_tick_is_compiled_and_equals_the_eager_faces():
+    from hybrid_aif.composition import MindCarry, plan
     from tests.test_system import tmaze_system
 
     system, params = tmaze_system()
-    step = agent_step(system, selection="deterministic")
+    step = plan(selection="deterministic")
     priors = system.initial_priors(params)
     carry = MindCarry(beliefs=priors)
     obs = system.from_positional(
         "observations", tuple(jnp.zeros((), jnp.int32) for _ in system.A_deps)
     )
-    action, new, _ = step(KEY, obs, carry, params)
+    action, new, _ = step(system, KEY, obs, carry, params)
     beliefs, _ = system.infer_states(params, obs, priors=priors)
     want, _, _ = system.act(KEY, params, beliefs, metrics=False, selection="deterministic")
     pushed = system.update_empirical_prior(params, beliefs, want)
@@ -166,7 +166,7 @@ def test_the_agent_tick_is_compiled_and_equals_the_eager_faces():
     ):
         _close(a, b, rtol=1e-6, atol=1e-7)
     #  a second call with different parameters shares the program (params is an argument)
-    action2, _, _ = step(KEY, obs, new, params)
+    action2, _, _ = step(system, KEY, obs, new, params)
     assert action2["a_location"].shape == action["a_location"].shape
 
 

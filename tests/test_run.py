@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from hybrid_aif import Categorical, ConditionalCategorical
+from hybrid_aif import Categorical, ConditionalCategorical, ConditionalDirichlet, Parameter
 from hybrid_aif.composition import (
     Identify,
     MindCarry,
@@ -472,6 +472,124 @@ def test_sequential_derives_the_order_of_a_join_and_of_nodes_ready_together():
     assert calls == ["A", "E2", "E1"]
 
 
+def test_the_action_node_of_a_driven_node_cannot_be_identified_onward_naming_the_driver():
+    """``B.u1`` driven by ``A.a1`` leaves ``B.a1`` with no value of its own, so identifying it
+    with ``C.u1`` would make ``C`` read ``A.a1``: a join on ``A`` written as a chain. Refused in
+    either order of the bindings, naming the driver's action node; the join written out is
+    accepted."""
+    leaf = two_node_leaf
+    parts = {"C": leaf(), "B": leaf(), "A": leaf()}
+    with pytest.raises(ValueError, match=r"'B.a1'.*'B.u1'.*'A.a1' drives.*name 'A.a1'"):
+        couple(parts, [Identify("A.a1", "B.u1"), Identify("B.a1", "C.u1")])
+    with pytest.raises(ValueError, match=r"'B.a1'.*'B.u1' by 'A.a1'.*name 'A.a1'"):
+        couple(parts, [Identify("B.a1", "C.u1"), Identify("A.a1", "B.u1")])
+    with pytest.raises(ValueError, match=r"'B.a1'.*'A.a1' drives"):
+        merge(
+            {n: s for n, (s, _) in parts.items()},
+            {n: p for n, (_, p) in parts.items()},
+            [Identify("A.a1", "B.u1"), Identify("B.a1", "C.u1")],
+        )
+    join, _ = couple(parts, [Identify("A.a1", "B.u1"), Identify("A.a1", "C.u1")])
+    assert dict(join.observes) == {"B.u1": "A.a1", "C.u1": "A.a1"}
+
+
+def shared_field(declaration, own_counts=False):
+    """Two leaves ``A`` and ``B`` shaped as :func:`two_node_leaf`, each reading the parameter
+    variable ``field`` as ``s1``'s transition, identified into one (``A.field``); with
+    ``own_counts`` each ``s2`` transition is a Dirichlet of its own, a slot learned apart from it.
+    Every leaf chooses its own nodes and reads no modality, so the merge is closed."""
+    parts = {}
+    for name in "AB":
+        system, params = two_node_leaf()
+        transition = {**params.transition, "s1": Parameter("field")}
+        if own_counts:
+            transition["s2"] = ConditionalDirichlet(
+                concentration=jnp.ones((3, 3, 3)), parent_ndims=2
+            )
+        params = dataclasses.replace(
+            params, transition=transition, parameters={"field": declaration}
+        )
+        parts[name] = (system, params)
+    return merge(
+        {n: s for n, (s, _) in parts.items()},
+        {n: p for n, (_, p) in parts.items()},
+        [Identify("A.field", "B.field")],
+    )
+
+
+def field_step(name, by):
+    """A custom step choosing level 0 on both nodes and returning its view's ``field`` moved by
+    ``by`` (its concentration for a Dirichlet, its log-table for a table), or as given for
+    ``None``."""
+
+    def step(system, key, obs, carry, params):
+        if obs is None:
+            return {}, carry, params
+        out = {f"{name}.a1": jnp.asarray(0, jnp.int32), f"{name}.a2": jnp.asarray(0, jnp.int32)}
+        if by is None:
+            return out, carry, params
+        held = system._params_in(params, "test")
+        field = held.parameters["A.field"]
+        moved = jax.tree_util.tree_map(lambda x: x + by, field)
+        held = dataclasses.replace(held, parameters={**held.parameters, "A.field": moved})
+        for slot, i, home in held.references:
+            container = list(getattr(held, slot))
+            container[i] = held.parameters[home]
+            held = dataclasses.replace(held, **{slot: tuple(container)})
+        return out, carry, system._params_out(held)
+
+    return step
+
+
+COUNTS = ConditionalDirichlet(concentration=jnp.ones((3, 3, 3)), parent_ndims=2)
+TABLE = ConditionalCategorical(log_table=jnp.log(jnp.full((3, 3, 3), 1 / 3)), parent_ndims=2)
+
+
+def test_two_decays_of_one_dirichlet_summed_at_the_boundary_must_stay_positive():
+    """Each learner decays the shared concentration from 1.0 by 0.6, which alone stays positive;
+    summed at the boundary of a ``"simultaneous"`` round they reach -0.2, refused with
+    ``write_back``'s sentence naming both nodes, as ``"sequential"`` refuses the second write-back
+    on its own."""
+    system, params = shared_field(COUNTS)
+    steps = {"A": field_step("A", -0.6), "B": field_step("B", -0.6)}
+    with pytest.raises(ValueError, match=r"not positive after the views of \['A', 'B'\]"):
+        run(system, params, 1, KEY, steps)
+    with pytest.raises(ValueError, match="not positive after the view of 'B' learned"):
+        run(system, params, 1, KEY, steps, tick_order="sequential")
+
+
+def test_custom_steps_sharing_a_variable_that_is_not_counts_are_checked_at_the_boundary():
+    """A custom step is not known to learn before it returns, so ``"simultaneous"`` runs two
+    custom steps that share a table variable and learn nothing, and refuses them at the boundary
+    of the first round in which both wrote it back, naming the variable, the nodes and the
+    round."""
+    system, params = shared_field(TABLE)
+    run(system, params, 2, KEY, {"A": field_step("A", None), "B": field_step("B", None)})
+    traj = run(system, params, 2, KEY, {"A": field_step("A", 0.5), "B": field_step("B", None)})
+    np.testing.assert_allclose(
+        traj.params.parameters["A.field"].log_table, TABLE.log_table + 1.0, rtol=1e-6
+    )
+    steps = {"A": field_step("A", 0.5), "B": field_step("B", 0.5)}
+    with pytest.raises(
+        ValueError,
+        match=r"'A.field' \(ConditionalCategorical\) was written back by both 'A' and 'B' in "
+        "round 0",
+    ):
+        run(system, params, 2, KEY, steps)
+    run(system, params, 2, KEY, steps, tick_order="sequential")
+
+
+def test_plan_learners_of_one_variable_that_is_not_counts_are_refused_up_front_by_their_slots():
+    """Two ``plan(learn=True)`` both reach the shared table, refused before the first round; a
+    ``plan(learn=[...])`` naming only its own counts beside one of them does not reach it."""
+    system, params = shared_field(TABLE, own_counts=True)
+    with pytest.raises(
+        ValueError, match=r"'A.field' \(ConditionalCategorical\) is learned by both"
+    ):
+        run(system, params, 1, KEY, {"A": plan(learn=True), "B": plan(learn=True)})
+    run(system, params, 2, KEY, {"A": plan(learn=True), "B": plan(learn=["transition:B.s2"])})
+
+
 def test_a_sampler_draws_the_action_node_of_a_control_node_nothing_drives():
     system, params = couple(
         {"model": pusher(), "world": mirror(*pusher(), lower=True)},
@@ -793,7 +911,6 @@ def test_plan_learn_writes_the_learned_variable_back_and_keeps_its_learning_carr
 def test_a_simultaneous_kernel_run_is_pinned_under_the_round_keys():
     """The zoo pair against its own mirror, a kernel on the agent's node: the agent's node is
     realised with the last key of the round (phase one), the mirror steps on it; pinned."""
-    from hybrid_aif.composition.driver import ancestral_step
     from tests.test_couple import KERNEL5
     from tests.test_merge import OBSERVATION_BINDINGS
 
@@ -803,15 +920,9 @@ def test_a_simultaneous_kernel_run_is_pinned_under_the_round_keys():
     )
     cp = dataclasses.replace(cp, actuator={"agent.a_location": KERNEL5})
     system, params = with_mirror(composite, cp)
-    held = {}
+    from tests.test_run_parity import ancestral
 
-    def ancestral(view, key, obs, carry, p):
-        if obs is None:
-            return {}, carry, p
-        held.setdefault("step", ancestral_step(view))
-        return held["step"](key, obs, carry, p)
-
-    steps = {"model.agent": plan(), "model.world": ancestral, "world": sample()}
+    steps = {"model.agent": plan(), "model.world": ancestral(), "world": sample()}
     traj = run(system, params, 12, KEY, steps, record_carries=True)
     assert traj["model.agent"].emitted["a_location"].tolist() == [
         4,

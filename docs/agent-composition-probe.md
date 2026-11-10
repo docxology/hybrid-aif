@@ -182,4 +182,5 @@ the artefact it was.
 Both corrections are folded into `docs/composing-systems.md`.
 
 3. **`couple()` at the time of the probe was the Systems-composition call.** It is now
-   `merge()`; `couple()` joins separate particles into a `Wiring` (`design/nesting-and-coupling.md` N2).
+   `merge()`; `couple()` joins separate particles through their ports into one closed System
+   (`design/nesting-and-coupling.md` N2).

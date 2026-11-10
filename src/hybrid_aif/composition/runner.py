@@ -47,6 +47,17 @@ stands at its turn and each driven node placed by the same derived rule; there i
 read. Sequential is a systematic scan, async a random scan,
 simultaneous a synchronous update. A cycle of action-to-control identifications is refused.
 
+**Write-backs.** Under ``"simultaneous"`` every node's view in a round is taken from the parameter
+home as the round began, and the params each learner returns are applied at the round's boundary,
+after its last realisation and before the next round's reads. Two nodes of one round that wrote
+back one parameter variable are combined only where it is Dirichlet counts: the round-start
+concentration plus the sum of their deltas, the posterior given both nodes' data, and a sum that
+is not positive is refused as ``write_back`` refuses one; for any other form two ``plan()`` steps
+whose ``learn`` both reach the variable are refused before the first round, and two other steps
+that both wrote it back in one round are refused at that round's boundary. Under
+``"sequential"`` and ``"async"`` a write-back is live: the next view is taken from the home as it
+then stands.
+
 **Clocks.** A stepped node whose view declares durations (``params.durations``, one control node
 of the node carrying a duration per level) decides once per option. On a decision round it steps
 and ``run`` reads the duration of the level it chose (the entry of ``params.durations`` at the
@@ -76,6 +87,7 @@ C13.
 """
 
 import dataclasses
+import fnmatch
 import inspect
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, NamedTuple
@@ -98,6 +110,7 @@ from hybrid_aif.composition.driver import (
 from hybrid_aif.composition.joint import joint_planner
 from hybrid_aif.composition.merge import (
     SEPARATOR,
+    MixtureRefusal,
     _inputs_of,
     _subsystem_meta,
     driven_nodes,
@@ -106,7 +119,7 @@ from hybrid_aif.composition.merge import (
     write_back,
 )
 from hybrid_aif.controls import FLOAT, LEVEL
-from hybrid_aif.distributions import Categorical
+from hybrid_aif.distributions import Categorical, ConditionalDirichlet, Dirichlet
 from hybrid_aif.planning.base import Planner
 from hybrid_aif.reads import EMIT_TAG
 from hybrid_aif.system import System, SystemParams
@@ -817,12 +830,12 @@ def _run(
     ports = system.ports(params)
     types = dict(ports.outs)
     views = _Views(system, steps)
-    clocked = {n.name for n in nodes if views.get(n, params, _uniform(n))[1].durations}
+    declared_by = {n.name: _declared_durations(params, n.name) for n in nodes}
+    clocked = {name for name, declared in declared_by.items() if declared}
     scales = _check_clocks(clocks, names, clocked)
     for node in nodes:
         if node.name in clocked:
-            view, vparams = views.get(node, params, _uniform(node))
-            declared = _driver._durations_node(view, vparams)
+            declared = next(iter(declared_by[node.name]))
             if declared in node.driven:
                 raise ValueError(
                     f"run: node {node.name!r} declares durations on its control node {declared!r}, "
@@ -843,13 +856,16 @@ def _run(
                     "actuator, or drop its durations"
                 )
 
+    if tick_order == "simultaneous":
+        _check_shared_learning(nodes, views, params)
+
     values: dict[str, Array | None] = {v: None for n in nodes for v in n.outs}
     live_carry = {n.name: (carries or {}).get(n.name) for n in nodes}
     home = params
     key, k_reset = jax.random.split(key)
     # ---- the reset calls
     for node, k in zip(nodes, _reset_keys(k_reset, count), strict=True):
-        view, vparams = views.get(node, home, _uniform(node))
+        view, vparams = _reset_view(views, node, home)
         out, live_carry[node.name], _ = node.step(view, k, None, live_carry[node.name], vparams)
         out = _check_out(node, out, types, system, reset=True)
         values.update(out)
@@ -887,8 +903,11 @@ def _run(
 
     def turn(node: _Node, k: Array, at_boundary: Mapping[str, Any]) -> dict[str, Array]:
         """``node`` stepped on what it reads, its return checked, its emissions stored; the
-        action nodes it chose (intended) are returned, to be realised by the caller."""
+        action nodes it chose (intended) are returned, to be realised by the caller. Under
+        ``"simultaneous"`` the view is taken from the home as the round began and a write-back is
+        held for the round's boundary; otherwise both are live."""
         nonlocal home
+        base = round_home if tick_order == "simultaneous" else home
         seen = read(node, values, at_boundary)
         wanted = ()
         if getattr(node.step, "sliced", False):
@@ -896,7 +915,7 @@ def _run(
                 (v, _level_of((values if stands(node, v) else at_boundary).get(v)))
                 for v in node.inputs
             )
-        view, vparams = views.get(node, home, wanted)
+        view, vparams = views.get(node, base, wanted)
         sliced = {s for s, v in node.driven.items() if v in {w for w, _ in wanted}}
         obs = {s: x for s, x in seen.items() if s not in sliced}
         out, live_carry[node.name], learned = node.step(
@@ -908,12 +927,15 @@ def _run(
                     f"run: the step of {node.name!r} returned {type(learned).__name__} as its "
                     "params; a step returns the SystemParams it was given, or learned ones"
                 )
-            learned, written = _own_slots(view, node, vparams, learned, wanted, home)
+            learned, written = _own_slots(view, node, vparams, learned, wanted, base)
             _check_parameters_only(view, node.name, vparams, learned)
-            home = write_back(system, home, node.name, vparams, learned)
-            if written:
-                home = dataclasses.replace(home, **written(home))
-                views.clear()
+            new = write_back(system, base, node.name, vparams, learned)
+            if tick_order == "simultaneous":
+                pending.append((node.name, new, written))
+            else:
+                home = new if not written else dataclasses.replace(new, **written(new))
+                if written:
+                    views.clear()
         received[node.name].append(seen)
         out = _check_out(node, out, types, system, reset=False)
         for e in node.emissions:
@@ -944,10 +966,14 @@ def _run(
         decided[node.name].append(True)
         return turn(node, k, at_boundary)
 
-    for _ in range(ticks):
+    round_home = home
+    pending: list = []
+    for round_ in range(ticks):
         key, k_tick = jax.random.split(key)
         keys = _round_keys(k_tick, count)
         boundary = dict(values)
+        round_home = home
+        pending.clear()
         if tick_order == "simultaneous":
             chosen: dict[str, Array] = {}
             for node in first:
@@ -968,6 +994,10 @@ def _run(
                 realise(
                     keys[count + node.index], decide(node, keys[node.index], boundary), node.chosen
                 )
+            if pending:
+                home = _at_the_boundary(system, round_home, pending, round_)
+                if any(written for _, _, written in pending):
+                    views.clear()
         for node in nodes:
             emitted[node.name].append({v: values[v] for v in node.outs})
             carry_log[node.name].append(live_carry[node.name])
@@ -1066,6 +1096,143 @@ def _level_of(value) -> "int | Array | None":
         return None
     array = jnp.asarray(value)
     return int(array) if array.ndim == 0 and jnp.issubdtype(array.dtype, jnp.integer) else array
+
+
+def _learned_variables(step: Callable, variables) -> set[str]:
+    """The parameter variables among ``variables`` that ``step`` is known to learn: a ``plan()``
+    step given ``learn`` learns a variable unless its rates leave it at a static zero
+    (``learn=True`` learns every learnable slot, a sequence of slot keys only the slots named, a
+    mapping the slots its ``lr`` and ``lr_by_slot`` reach). Any other step is not known in advance
+    and is checked at the round's boundary."""
+    if not isinstance(step, _Plan) or step.learn is None:
+        return set()
+    keywords = _learn_keywords(step.learn)
+    lr = keywords.get("lr", 1.0)
+    rates = dict(keywords.get("lr_by_slot") or {})
+    out = set()
+    for variable in variables:
+        key = f"parameter:{variable}"
+        if key in rates:
+            rate = rates[key]
+        else:
+            matched = [r for k, r in rates.items() if "*" in k and fnmatch.fnmatchcase(key, k)]
+            rate = matched[0] if matched else lr
+        if not (isinstance(rate, int | float) and rate == 0):
+            out.add(variable)
+    return out
+
+
+def _conjugate(declaration) -> bool:
+    """Whether two write-backs of a variable of this form combine exactly by summing their
+    deltas: Dirichlet concentrations, which are counts."""
+    return isinstance(declaration, Dirichlet | ConditionalDirichlet)
+
+
+def _check_shared_learning(nodes: list[_Node], views: _Views, home: SystemParams) -> None:
+    """Under ``"simultaneous"``: refuse, before the first round, two ``plan()`` steps whose
+    ``learn`` both reach one parameter variable whose form is not conjugate counts
+    (``_at_the_boundary`` could not combine their write-backs). Other steps are checked there."""
+    learners: dict[str, list[str]] = {}
+    for node in nodes:
+        variables = _reset_view(views, node, home)[1].parameters
+        for variable in _learned_variables(node.step, variables):
+            learners.setdefault(variable, []).append(node.name)
+    for variable, names in learners.items():
+        declaration = home.parameters[variable]
+        if len(names) > 1 and not _conjugate(declaration):
+            raise ValueError(
+                f"run: parameter variable {variable!r} ({type(declaration).__name__}) is learned "
+                f"by both {names[0]!r} and {names[1]!r} (their plan(learn=...)) under "
+                '"simultaneous", where every write-back of a round lands at its boundary and two '
+                "write-backs of one variable combine only as counts (Dirichlet concentrations, "
+                'their deltas summed); run them under "sequential" or "async", or give one of them '
+                f"a learn= that leaves 'parameter:{variable}' at 0"
+            )
+
+
+def _at_the_boundary(
+    system: System, start: SystemParams, pending: list, round_: int
+) -> SystemParams:
+    """The home after a ``"simultaneous"`` round: ``start`` (the home as the round began) with
+    every write-back of the round applied. A variable one node wrote takes its value; one that
+    several wrote takes the start's concentration plus the sum of their deltas, the posterior
+    given every node's data (Dirichlet counts only, refused for any other form, and refused, as
+    ``write_back`` refuses one write-back, where the sum is not positive); each node's own learned
+    tables are written under their names."""
+    held = system._params_in(start, "run")
+    homes = dict(held.parameters)
+    writers: dict[str, list[tuple[str, Any]]] = {}
+    for name, new, _ in pending:
+        for variable, declaration in system._params_in(new, "run").parameters.items():
+            if not _same_tree(declaration, homes[variable]):
+                writers.setdefault(variable, []).append((name, declaration))
+    for variable, entries in writers.items():
+        if len(entries) == 1:
+            homes[variable] = entries[0][1]
+            continue
+        begun = homes[variable]
+        names = [name for name, _ in entries]
+        if not _conjugate(begun):
+            raise ValueError(
+                f"run: parameter variable {variable!r} ({type(begun).__name__}) was written back "
+                f"by both {names[0]!r} and {names[1]!r} in round {round_} under "
+                '"simultaneous", where every write-back of a round lands at its boundary and two '
+                "write-backs of one variable combine only as counts (Dirichlet concentrations, "
+                'their deltas summed); run them under "sequential" or "async", or let one node '
+                "learn it"
+            )
+        total = begun.concentration + sum(d.concentration - begun.concentration for _, d in entries)
+        if not bool(jnp.all(total > 0.0)):
+            raise ValueError(
+                f"write_back: parameter variable {variable!r} has a concentration that is not "
+                f"positive after the views of {names} learned, their deltas summed at the "
+                f"boundary of round {round_} (a decay or rate that overshoots the anchor); it is "
+                "not a Dirichlet and is not written"
+            )
+        homes[variable] = eqx.tree_at(lambda d: d.concentration, begun, total)
+    out = dataclasses.replace(held, parameters=homes)
+    for slot, i, variable in held.references:
+        container = list(getattr(out, slot))
+        container[i] = homes[variable]
+        out = dataclasses.replace(out, **{slot: tuple(container)})
+    out = system._params_out(out)
+    for _, _, written in pending:
+        if written:
+            out = dataclasses.replace(out, **written(out))
+    return out
+
+
+def _declared_durations(params: SystemParams, name: str) -> dict:
+    """The durations a view of the stepped node ``name`` declares, keyed by control node, read
+    from the home with no view built (a view at no realised level may not exist): with
+    ``subsystem``'s precedence, the System's own ``params.durations`` where it holds any (its
+    entries on nodes at or beneath ``name``), else the ``parts`` of the leaves at or beneath it."""
+
+    def beneath(key: str) -> bool:
+        return key == name or key.startswith(f"{name}{SEPARATOR}")
+
+    if params.durations:
+        return {node: d for node, d in params.durations.items() if beneath(node)}
+    out: dict = {}
+    for leaf, part in (params.parts or {}).items():
+        if beneath(leaf):
+            out.update(part.durations or {})
+    return out
+
+
+def _reset_view(views: _Views, node: _Node, home: SystemParams):
+    """The view of a node's reset call: averaged uniformly over its driven inputs, or, where
+    ``subsystem`` refuses that average with a :class:`MixtureRefusal` (a Gaussian target or a
+    linear-Gaussian transition conditional on a driven node would be a mixture), sliced at the
+    first level of each input. A reset call reads no table, so the level
+    is immaterial."""
+    try:
+        return views.get(node, home, _uniform(node))
+    except MixtureRefusal:
+        levels = _uniform(node)
+        if not levels:
+            raise
+        return views.get(node, home, tuple((v, 0) for v, _ in levels))
 
 
 def _uniform(node: _Node) -> tuple:

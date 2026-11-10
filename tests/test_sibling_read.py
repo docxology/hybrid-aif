@@ -1,8 +1,18 @@
 """The sibling-belief read (design: nesting-and-coupling.md N3): a modality of one component
 observes an emission of another, the source's belief through a kernel, realised; ``merge`` carries
-the pair, ``subsystem`` leaves the modality an observation, and ``run`` supplies it each round."""
+the pair, ``subsystem`` leaves the modality an observation, and ``run`` supplies it each round.
+
+The runs couple the composite to its own mirror (``with_mirror``: the composite's leaves under
+``model.``, the world under ``world.``) and step each perceiver with ``plan()``. Under
+``"simultaneous"`` (the default) a reader reads the emission at the round's boundary, the source's
+posterior of the round before; under ``"sequential"`` a reader that steps after its source in the
+round reads this round's. ``tests/data/migration_particle.npz`` holds what the composite form of
+``run`` recorded on the same composites, compared under the key layout of that form.
+"""
 
 import dataclasses
+import functools
+import pathlib
 
 import jax
 import jax.numpy as jnp
@@ -29,11 +39,14 @@ from hybrid_aif.composition import (
     Identify,
     Link,
     MindCarry,
-    agent_step,
+    joint_planner,
     merge,
     nested,
+    plan,
     run,
+    sample,
     subsystem,
+    with_mirror,
 )
 from hybrid_aif.distributions import ConditionalGaussian
 from hybrid_aif.reads import Emission
@@ -44,6 +57,8 @@ CELLS = GRID.n_cells
 READ = "mission.cell_obs"
 SOURCE = "rover.x"
 EMITTED = "rover.cell_obs"  # the emission the belief read declares on the source's component
+M = "model."  # the prefix of the composite's leaves in the closed System ``with_mirror`` makes
+FIXTURE = pathlib.Path(__file__).parent / "data" / "migration_particle.npz"
 
 
 def _rover(
@@ -130,31 +145,57 @@ def _composite(
 
 
 def _recorded(step, log, mind: str):
-    def wrapped(key, obs, carry, params):
-        log.append((mind, dict(obs), carry))
-        return step(key, obs, carry, params)
+    """``step`` logging ``(mind, obs seen, carry in)`` on every call but the reset."""
+
+    @functools.wraps(step)
+    def wrapped(system, key, obs, carry, params):
+        if obs is not None:
+            log.append((mind, dict(obs), carry))
+        return step(system, key, obs, carry, params)
 
     return wrapped
 
 
-def _posterior(view, entry, mind_prefix: str = "rover"):
-    """The posterior ``view`` held at a step: its logged ``(obs, carry in)`` filtered again."""
+def _posterior(view, entry):
+    """The posterior ``view`` held at a step: its logged ``(obs, carry in)`` filtered again, each
+    slot's value keyed by the variable it observes and an absent one marked absent, as ``plan()``
+    does."""
     obs, carry = entry
-    return view[0].infer_states(view[1], obs, priors=carry.beliefs)[0]
+    renamed = dict(view[0].observes)
+    seen = {renamed.get(k, k): v for k, v in obs.items()}
+    absent = {k: False for k, v in seen.items() if v is None}
+    return view[0].infer_states(view[1], seen, priors=carry.beliefs, present=absent or None)[0]
 
 
-def _run(composite, params, ticks: int, key=0):
-    """Run the two perceivers; the log holds ``(mind, obs seen, carry in)`` per step. Returns the
-    trajectory, one record per round (the ``obs`` the mission saw, both carries in, and the
-    rover's posterior at the round) and the mission's view."""
+def _closed(composite, params):
+    """The composite coupled to its own mirror, and the steps that run its two perceivers."""
+    system, home = with_mirror(composite, params)
+    return system, home
+
+
+def _run(composite, params, ticks: int, key=0, tick_order="simultaneous", run_=run):
+    """Run the two perceivers against the composite's mirror; the log holds ``(mind, obs seen,
+    carry in)`` per step. Returns the trajectory, one record per round (the ``obs`` the mission
+    saw, keyed by its slots under ``model.``, both carries in, and the rover's posterior at the
+    round) and the mission's view. ``run_`` is the runner (a key layout may be patched in)."""
     log: list = []
-    rover = subsystem(composite, params, "rover")
-    mission = subsystem(composite, params, "mission")
-    minds = {
-        "rover": _recorded(agent_step(rover[0]), log, "rover"),
-        "mission": _recorded(agent_step(mission[0]), log, "mission"),
+    system, home = _closed(composite, params)
+    rover = subsystem(system, home, f"{M}rover")
+    mission = subsystem(system, home, f"{M}mission")
+    steps = {
+        f"{M}rover": _recorded(plan(), log, "rover"),
+        f"{M}mission": _recorded(plan(), log, "mission"),
+        "world": sample(),
     }
-    trajectory = run(composite, params, minds, ticks, jax.random.PRNGKey(key))
+    trajectory = run_(
+        system,
+        home,
+        ticks,
+        jax.random.PRNGKey(key),
+        steps,
+        tick_order=tick_order,
+        record_carries=True,
+    )
     rounds = []
     for t in range(ticks):
         entries = {m: (o, c) for m, o, c in log[2 * t : 2 * t + 2]}
@@ -163,10 +204,34 @@ def _run(composite, params, ticks: int, key=0):
                 "obs": entries["mission"][0],
                 "rover": entries["rover"][1],
                 "mission": entries["mission"][1],
-                "posterior": _posterior(rover, entries["rover"])[SOURCE],
+                "posterior": _posterior(rover, entries["rover"])[M + SOURCE],
             }
         )
     return trajectory, rounds, mission
+
+
+def _datum(round_):
+    return round_["obs"][M + READ]
+
+
+@pytest.mark.parametrize(
+    "case, realise, ticks, key", [("mode", "mode", 8, 0), ("sample", "sample", 12, 3)]
+)
+def test_the_reads_are_what_the_composite_form_recorded_under_its_key_layout(
+    case, realise, ticks, key
+):
+    """The datum the mission read each round and the rover's true position, bit for bit against
+    the composite form of ``run`` on the same composite (the world was the composite's own model
+    run forward; here it is the mirror, stepped by ``sample()``)."""
+    from tests.test_run_parity import _run_old_keys
+
+    fixture = np.load(FIXTURE)
+    comp, params = _composite(realise=realise)
+    traj, rounds, _ = _run(comp, params, ticks, key, run_=lambda *a, **k: _run_old_keys(2, *a, **k))
+    data = [-1 if _datum(r) is None else int(_datum(r)) for r in rounds]
+    np.testing.assert_array_equal(data, fixture[f"sibling/{case}/datum"])
+    x = np.stack([np.asarray(c["world.rover.x"]) for c in traj["world"].carries])
+    np.testing.assert_array_equal(x, fixture[f"sibling/{case}/rover.x"])
 
 
 def _mass(round_):
@@ -180,9 +245,9 @@ def _mass(round_):
 def test_mode_datum_is_the_argmax_of_the_cell_mass_of_the_carried_belief():
     comp, params = _composite(realise="mode")
     _, rounds, _ = _run(comp, params, 8)
-    assert rounds[0]["obs"][READ] is None  # the source has no carry yet: absent
+    assert _datum(rounds[0]) is None  # the source has no carry yet: absent
     for before, r in zip(rounds[:-1], rounds[1:], strict=True):
-        datum = r["obs"][READ]
+        datum = _datum(r)
         assert datum.dtype == jnp.int32
         assert int(datum) == int(np.argmax(_mass(before)))  # the posterior of the round before
 
@@ -199,7 +264,7 @@ def test_sample_frequency_matches_the_cell_mass_and_mode_would_not():
     masses = np.array([_mass(r) for r in rounds[:-1]])
     mean_mass = masses.mean(axis=0)
     assert abs(mean_mass[0] - 0.5) < 0.05 and abs(mean_mass[2] - 0.5) < 0.05
-    drawn = np.array([int(r["obs"][READ]) for r in rounds[1:]])
+    drawn = np.array([int(_datum(r)) for r in rounds[1:]])
     freq = np.bincount(drawn, minlength=CELLS) / (ticks - 1)
     tol = 4 * np.sqrt(0.25 / (ticks - 1))  # four binomial standard errors at p = 1/2
     assert np.abs(freq - mean_mass).max() < tol
@@ -239,8 +304,8 @@ def test_sample_draws_are_keyed_by_the_round_and_reproducible():
     comp, params = _composite(realise="sample")
     _, a, _ = _run(comp, params, 12, key=3)
     _, b, _ = _run(comp, params, 12, key=3)
-    assert [r["obs"][READ] is None or int(r["obs"][READ]) for r in a] == [
-        r["obs"][READ] is None or int(r["obs"][READ]) for r in b
+    assert [_datum(r) is None or int(_datum(r)) for r in a] == [
+        _datum(r) is None or int(_datum(r)) for r in b
     ]
 
 
@@ -248,43 +313,39 @@ def test_stats_datum_is_the_cell_mass_and_the_posterior_is_the_soft_observation_
     comp, params = _composite(realise="stats")
     trajectory, rounds, mission = _run(comp, params, 6)
     view, view_params = mission
-    log_a = jax.nn.log_softmax(view_params.likelihood[READ].log_table, axis=0)
+    log_a = jax.nn.log_softmax(view_params.likelihood[M + READ].log_table, axis=0)
     for before, r in zip(rounds[:-1], rounds[1:], strict=True):
-        datum = r["obs"][READ]
+        datum = _datum(r)
         np.testing.assert_allclose(np.asarray(datum), _mass(before), rtol=1e-5, atol=1e-7)
-        prior = r["mission"].beliefs["mission.visit"]
+        prior = r["mission"].beliefs[M + "mission.visit"]
         # the filter's soft observation: the expected log-likelihood under the vector
         want = jax.nn.softmax(prior.logits + datum @ log_a)
-        got, _ = view.infer_states(view_params, {READ: datum}, priors=r["mission"].beliefs)
+        got, _ = view.infer_states(view_params, {M + READ: datum}, priors=r["mission"].beliefs)
         np.testing.assert_allclose(
-            np.asarray(got["mission.visit"].probs), np.asarray(want), rtol=1e-5, atol=1e-7
+            np.asarray(got[M + "mission.visit"].probs), np.asarray(want), rtol=1e-5, atol=1e-7
         )
     # the mind's own carry is what the recorded observations give, round by round
-    step, carry = agent_step(view), MindCarry()
+    step, carry = plan(), MindCarry()
     for t, r in enumerate(rounds):
-        _, carry, _ = step(jax.random.PRNGKey(t), r["obs"], carry, view_params)
+        _, carry, _ = step(view, jax.random.PRNGKey(t), r["obs"], carry, view_params)
     np.testing.assert_allclose(
-        np.asarray(carry.beliefs["mission.visit"].probs),
-        np.asarray(trajectory.carries["mission"].beliefs["mission.visit"].probs),
+        np.asarray(carry.beliefs[M + "mission.visit"].probs),
+        np.asarray(trajectory[f"{M}mission"].carry.beliefs[M + "mission.visit"].probs),
         rtol=1e-5,
         atol=1e-7,
     )
 
 
-def test_a_read_is_one_tick_behind_under_sequential_order_too():
+def test_a_read_under_sequential_is_the_posterior_of_this_round_when_the_reader_steps_after():
+    """Under ``"sequential"`` a read is the value standing at the reader's turn: the rover steps
+    first (listing order, both are sources), so the mission reads the posterior the rover formed
+    this round. The composite form of ``run`` held a read one round behind under every order;
+    under ``"simultaneous"`` the read is the round before's (the other tests here)."""
     comp, params = _composite(realise="mode")
-    log: list = []
-    rover, mission = subsystem(comp, params, "rover"), subsystem(comp, params, "mission")
-    minds = {
-        "rover": _recorded(agent_step(rover[0]), log, "rover"),
-        "mission": _recorded(agent_step(mission[0]), log, "mission"),
-    }
-    run(comp, params, minds, 5, jax.random.PRNGKey(1), tick_order="sequential")
-    for t in range(1, 5):
-        # the rover responds first; the mission reads the posterior of the round before
-        rover_before = _posterior(rover, log[2 * (t - 1)][1:])[SOURCE]
-        datum = log[2 * t + 1][1][READ]
-        assert int(datum) == int(np.argmax(np.asarray(cell_mass(rover_before, GRID))))
+    _, rounds, _ = _run(comp, params, 5, key=1, tick_order="sequential")
+    assert _datum(rounds[0]) is not None  # the rover has emitted before the mission's turn
+    for r in rounds:
+        assert int(_datum(r)) == int(np.argmax(_mass(r)))
 
 
 def test_the_pushed_belief_may_be_a_mixture_and_the_identity_kernel_reads_the_mean():
@@ -484,9 +545,20 @@ def test_a_read_round_trips_through_the_description_document():
         strict=True,
     ):
         assert np.array_equal(np.asarray(a), np.asarray(b))
-    # the rebuilt composite runs the read the same way
-    _, rounds, _ = _run(rebuilt, rebuilt_params, 3)
-    assert rounds[0]["obs"][READ] is None and rounds[2]["obs"][READ] is not None
+    # the rebuilt composite runs the read as the original does, each component a leaf
+    data = []
+    for composite, home in ((comp, cparams), (rebuilt, rebuilt_params)):
+        log: list = []
+        system, closed_home = _closed(composite, home)
+        steps = {
+            f"{M}rover": plan(),
+            f"{M}mission": _recorded(plan(), log, "mission"),
+            "world": sample(),
+        }
+        run(system, closed_home, 3, jax.random.PRNGKey(0), steps)
+        data.append([None if obs[M + READ] is None else int(obs[M + READ]) for _, obs, _ in log])
+    assert data[0][0] is None and data[0][2] is not None
+    assert data[1] == data[0]
 
 
 def test_an_own_read_in_one_system_round_trips():
@@ -535,23 +607,28 @@ def test_a_components_own_emissions_are_supplied_from_its_own_posterior_under_ru
     other, other_params = _scheduler()
     comp, cparams = merge({"a": system, "mission": other}, {"a": params, "mission": other_params})
     log: list = []
-    view = subsystem(comp, cparams, "a")
-    minds = {
-        "a": _recorded(agent_step(view[0]), log, "a"),
-        "mission": _recorded(agent_step(subsystem(comp, cparams, "mission")[0]), log, "mission"),
+    system, home = _closed(comp, cparams)
+    view = subsystem(system, home, f"{M}a")
+    steps = {
+        f"{M}a": _recorded(plan(), log, "a"),
+        f"{M}mission": _recorded(plan(), log, "mission"),
+        "world": sample(),
     }
-    run(comp, cparams, minds, 5, jax.random.PRNGKey(0))
+    run(system, home, 5, jax.random.PRNGKey(0), steps)
     seen = [(obs, carry) for m, obs, carry in log if m == "a"]
-    # the view's modalities take their data keyed by the variables they observe
-    assert seen[0][0]["a.x_mean"] is None and seen[0][0]["a.kind_vector"] is None
-    assert "a.prev_x" not in seen[0][0]
+    # a step is handed each modality by its own slot name (``plan()`` keys it by the variable
+    # the slot observes for inference)
+    assert seen[0][0][f"{M}a.prev_x"] is None and seen[0][0][f"{M}a.prev_type"] is None
+    assert f"{M}a.x_mean" not in seen[0][0]
     for t, (obs, _) in enumerate(seen[1:], start=1):  # the posterior of the round before
         before = _posterior(view, seen[t - 1])
         np.testing.assert_allclose(
-            np.asarray(obs["a.x_mean"]), np.asarray(before["a.x"].mean()), rtol=1e-6
+            np.asarray(obs[f"{M}a.prev_x"]), np.asarray(before[f"{M}a.x"].mean()), rtol=1e-6
         )
         np.testing.assert_allclose(
-            np.asarray(obs["a.kind_vector"]), np.asarray(before["a.kind"].probs), rtol=1e-6
+            np.asarray(obs[f"{M}a.prev_type"]),
+            np.asarray(before[f"{M}a.kind"].probs),
+            rtol=1e-6,
         )
 
 
@@ -567,17 +644,19 @@ def test_a_sibling_read_inside_an_inner_composite_is_supplied_when_it_is_one_min
     )
     assert table["tier.mission"].boundary == "blanket" and table["tier"].reads == ()
     log: list = []
-    view = subsystem(outer, params, "tier")
-    minds = {
-        "tier": _recorded(agent_step(view[0]), log, "tier"),
-        "other": _recorded(agent_step(subsystem(outer, params, "other")[0]), log, "other"),
+    system, home = _closed(outer, params)
+    view = joint_planner(system, home, f"{M}tier")  # the inner composite planned as one mind
+    steps = {
+        f"{M}tier": _recorded(plan(), log, "tier"),
+        f"{M}other": _recorded(plan(), log, "other"),
+        "world": sample(),
     }
-    run(outer, params, minds, 6, jax.random.PRNGKey(0))
+    run(system, home, 6, jax.random.PRNGKey(0), steps)
     seen = [(obs, carry) for m, obs, carry in log if m == "tier"]
-    assert seen[0][0]["tier.rover.cell_obs"] is None
+    assert seen[0][0][f"{M}tier.mission.cell_obs"] is None
     for t, (obs, _) in enumerate(seen[1:], start=1):
-        belief = _posterior(view, seen[t - 1])["tier.rover.x"]
-        assert int(obs["tier.rover.cell_obs"]) == int(
+        belief = _posterior(view, seen[t - 1])[f"{M}tier.rover.x"]
+        assert int(obs[f"{M}tier.mission.cell_obs"]) == int(
             np.argmax(np.asarray(cell_mass(belief, GRID)))
         )
 

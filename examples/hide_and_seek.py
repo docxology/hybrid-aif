@@ -3,7 +3,8 @@
 The model behind ``examples/hide_and_seek.ipynb`` (the composition vignette). A ``N × N`` grid
 with five moves (stay and the four directions; a move into a wall stays, and any other move
 fails with probability ``slip``). Two minds, each a :class:`System` of its own with its own
-objective and planner, and one world process holding both positions:
+objective and planner, and one world holding both positions (the mirror of
+:func:`world_model`, sampled forward from its declarations):
 
     world       prey, predator   each moved by its own action input
                 prey_pos, pred_pos   exact observations of the positions
@@ -11,10 +12,10 @@ objective and planner, and one world process holding both positions:
 
     mind        me       {cell}    moved by the mind's action node ``move``
                 other    {cell}    the other mind, modelled as chasing or fleeing
-                me_obs, other_obs, distance   wired from the world's observations
+                me_obs, other_obs, distance   identified with the world's emissions
 
 The prey models the predator as chasing (a move that shortens the distance is likelier) and
-the predator models the prey as fleeing; neither sees the other's objective, and the wiring
+the predator models the prey as fleeing; neither sees the other's objective, and the coupling
 is the only route between them: what crosses it is action and sensation, never a belief
 (``docs/design/nesting-and-coupling.md`` N1, ``docs/design/control-states.md`` C13).
 Each mind's objective is its own declaration, which is what the vignette turns.
@@ -26,7 +27,6 @@ Run the smallest case::
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 
 import jax
@@ -34,8 +34,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import Link, agent_step, couple, run
+from hybrid_aif.composition import Identify, couple, plan, run, sample
 from hybrid_aif.system import System, SystemParams
+from hybrid_aif.system.mirror import mirror
 
 MOVES = ("stay", "north", "south", "east", "west")
 DISTANCES = ("caught", "adjacent", "two away", "three or more")
@@ -193,55 +194,58 @@ def world_model(n: int = 4, slip: float = 0.2) -> tuple[System, SystemParams]:
     return system, params
 
 
-def world(n: int = 4, slip: float = 0.2):
-    """The arena as a process: both positions, moved by two action inputs, emitting the two
-    positions and their binned distance; the prey starts in the first cell, the predator in
-    the last."""
-    system, params = world_model(n, slip)
-    env, ep = system.as_env(params)
-    return env, dataclasses.replace(ep, actuator={})
+def world(n: int = 4, slip: float = 0.2) -> tuple[System, SystemParams]:
+    """The arena as the minds meet it: the mirror of :func:`world_model`, a System whose control
+    nodes ``u_prey`` and ``u_pred`` the minds' moves drive and whose emissions ``prey_pos``,
+    ``pred_pos`` and ``distance`` are what the minds observe; the prey starts in the first cell,
+    the predator in the last."""
+    return mirror(*world_model(n, slip), lower=True)
 
 
-PORT_LINKS = (
-    Link("prey.move", "world.prey_move"),
-    Link("predator.move", "world.pred_move"),
-    Link("world.prey_pos", "prey.me_obs"),
-    Link("world.pred_pos", "prey.other_obs"),
-    Link("world.distance", "prey.distance"),
-    Link("world.pred_pos", "predator.me_obs"),
-    Link("world.prey_pos", "predator.other_obs"),
-    Link("world.distance", "predator.distance"),
+BINDINGS = (
+    Identify("prey.move", "world.u_prey"),
+    Identify("predator.move", "world.u_pred"),
+    Identify("world.prey_pos", "prey.me_obs"),
+    Identify("world.pred_pos", "prey.other_obs"),
+    Identify("world.distance", "prey.distance"),
+    Identify("world.pred_pos", "predator.me_obs"),
+    Identify("world.prey_pos", "predator.other_obs"),
+    Identify("world.distance", "predator.distance"),
 )
 
 
-def wiring(prey, predator, n: int = 4, slip: float = 0.2):
-    """The two minds and the arena, wired: each mind's action node drives its position, and
-    both minds see both positions and the distance."""
-    return couple(
-        minds={
-            "prey": (*prey, agent_step(prey[0])),
-            "predator": (*predator, agent_step(predator[0])),
-        },
-        processes={"world": world(n, slip)},
-        links=list(PORT_LINKS),
-    )
+def coupling(prey, predator, n: int = 4, slip: float = 0.2) -> tuple[System, SystemParams]:
+    """The two minds and the arena coupled into one closed System: each mind's action node drives
+    its position, and both minds observe both positions and the distance."""
+    return couple({"prey": prey, "predator": predator, "world": world(n, slip)}, list(BINDINGS))
 
 
 def play(prey, predator, ticks: int, key, tick_order: str = "simultaneous", n: int = 4, slip=0.2):
-    """One game: the record keyed by participant (``prey``, ``predator``, ``world``).
+    """One game: ``run`` over the coupling, each mind on ``plan()`` and the arena on ``sample()``;
+    the trajectory has one node per component (``prey``, ``predator``, ``world``).
 
-    A round is one tick under every order and the world steps once per round, so the minds'
-    one-move-per-tick tables hold under all three; ``"simultaneous"`` has both minds read the
-    round's boundary, ``"sequential"`` and ``"async"`` let a later mind read an earlier one's
-    act on a direct wire, of which this wiring has none.
+    A round is one tick under every order and every node steps once, so the minds'
+    one-move-per-tick tables hold under all three; the arena's control nodes are driven by the
+    minds' moves, so it steps after both have moved in the round. ``"simultaneous"`` has both
+    minds read the arena as the round began; under ``"sequential"`` and ``"async"`` a mind reads
+    what stands at its turn, and the arena's emissions stand from the round before whatever the
+    order, since it steps after the minds.
     """
-    return run(wiring(prey, predator, n, slip), ticks=ticks, key=key, tick_order=tick_order)
+    system, params = coupling(prey, predator, n, slip)
+    steps = {"prey": plan(), "predator": plan(), "world": sample()}
+    return run(system, params, ticks, key, steps, tick_order=tick_order)
 
 
 def tally(record) -> dict:
-    """What a game came to: ticks caught, the mean distance, and where the prey spent its time."""
-    distance = np.asarray(record["world"].observations["distance"])
-    cells = np.asarray(record["world"].observations["prey_pos"])
+    """What a game came to: ticks caught, the mean distance, and where the prey spent its time
+    (the arena's emissions entering round 0 and after each round)."""
+
+    def emitted(port):
+        world = record["world"]
+        return np.concatenate([np.asarray(world.start[port])[None], world.emitted[port]])
+
+    distance = emitted("distance")
+    cells = emitted("prey_pos")
     return {
         "caught": int((distance == 0).sum()),
         "mean_distance_bin": float(distance.mean()),

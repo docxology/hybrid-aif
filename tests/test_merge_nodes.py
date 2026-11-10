@@ -23,9 +23,8 @@ import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import joint_planner
-from hybrid_aif.composition.driver import MindCarry, agent_step
-from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
+from hybrid_aif.composition import joint_planner, plan
+from hybrid_aif.composition.merge import Clamp, Identify, Link, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
@@ -248,7 +247,9 @@ def test_a_driver_that_is_neither_a_node_nor_a_state_is_refused_naming_both():
         merge(subs, ps, [Link("agent.a_location", "agent.u_location")])
     with pytest.raises(ValueError, match="which 'agent.a_location' already drives"):
         merge(subs, ps, [SAME_STEP, SAME_STEP])
-    with pytest.raises(ValueError, match="cannot be driven by its own action node"):
+    #  'world.a_location' is the action node of the node 'agent.a_location' drives: one variable,
+    #  named by the driver's action node, so naming it is refused before the cycle is reached
+    with pytest.raises(ValueError, match="names 'world.a_location'.*'agent.a_location' drives"):
         merge(subs, ps, [SAME_STEP, Link("world.a_location", "agent.u_location")])
 
 
@@ -272,8 +273,8 @@ def test_a_mask_on_a_bound_away_node_names_the_node_it_became():
     assert "key it by 'agent.u_location', the node it became" in str(err.value)
     with pytest.raises(ValueError, match="key it by 'agent.u_location'"):
         composite.infer_policies(cp, beliefs, legal={"world.u_location": mask})
-    with pytest.raises(ValueError, match="agent_step: legal names 'world.u_location'"):
-        agent_step(composite, legal={"world.u_location": mask})(KEY, {}, MindCarry(), cp)
+    with pytest.raises(ValueError, match="plan: legal names 'world.u_location'"):
+        plan(legal={"world.u_location": mask})(composite, KEY, None, None, cp)
     with pytest.raises(ValueError, match="actions names 'world.a_location'"):
         composite.update_empirical_prior(
             cp, beliefs, {"agent.a_location": 0, "world.a_location": 0}
@@ -281,7 +282,7 @@ def test_a_mask_on_a_bound_away_node_names_the_node_it_became():
     #  the driven mind's view has no node to mask: the choice is the driver's
     world_view, wvp = subsystem(composite, cp, "world")
     with pytest.raises(ValueError, match="which another subsystem chooses"):
-        agent_step(world_view, legal={"world.u_location": mask})(KEY, {}, MindCarry(), wvp)
+        plan(legal={"world.u_location": mask})(world_view, KEY, None, None, wvp)
 
     #  a mask keyed by the driver's node applies as any node's mask does
     only = jnp.zeros(5, bool).at[2].set(True)
@@ -300,9 +301,7 @@ def test_a_mask_on_a_relayed_node_names_the_relay():
     assert "constrain the choice that moves 'agent.location'" in str(err.value)
     world_view, wvp = subsystem(composite, cp, "world")
     with pytest.raises(ValueError, match="identified with the state 'agent.location'"):
-        agent_step(world_view, legal={"world.u_location": jnp.ones(5, bool)})(
-            KEY, {}, MindCarry(), wvp
-        )
+        plan(legal={"world.u_location": jnp.ones(5, bool)})(world_view, KEY, None, None, wvp)
 
 
 def test_a_target_on_a_bound_away_node_is_refused_naming_the_drivers_node():
@@ -460,12 +459,23 @@ def _refusal(subs, ps, bindings) -> str:
     return str(err.value)
 
 
-def test_a_chain_of_same_step_bindings_is_one_node_in_either_order():
+def test_a_chain_of_same_step_bindings_is_refused_and_the_join_it_meant_is_one_node():
+    """A driven control node and its driver's action node are one variable, named by the
+    driver's action node: once ``w1.u_location`` is driven by ``agent.a_location``, the action
+    node ``w1.a_location`` has no value of its own, so a binding that names it (a chain written
+    through it) is refused in either order of the bindings, naming the driver's action node. The
+    join written out, ``agent.a_location`` driving both worlds, is one node in either order."""
     subs, ps = _three()
     first = Link("agent.a_location", "w1.u_location")
     second = Link("w1.a_location", "w2.u_location")
-    forward = joint_planner(*merge(subs, ps, [first, second]))
-    _assert_same_composite(forward, joint_planner(*merge(subs, ps, [second, first])))
+    for bindings in ([first, second], [second, first]):
+        with pytest.raises(ValueError, match=r"'w1.a_location'.*'agent.a_location'.*name"):
+            merge(subs, ps, bindings)
+    with pytest.raises(ValueError, match=r"'w1.a_location'.*'agent.a_location' drives"):
+        merge(subs, ps, [first, Identify("w1.a_location", "w2.u_location")])
+    joined = Link("agent.a_location", "w2.u_location")
+    forward = joint_planner(*merge(subs, ps, [first, joined]))
+    _assert_same_composite(forward, joint_planner(*merge(subs, ps, [joined, first])))
     composite, cp = forward
     assert composite.names.controls == ("agent.u_location",)
     meta = dict(composite.subsystems)

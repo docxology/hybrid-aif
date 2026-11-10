@@ -1,34 +1,41 @@
-"""Coupling through blankets: minds and processes joined by typed wires, run by the driver.
+"""Coupling through blankets: Systems joined by identifications of their ports, run as one
+closed System.
 
-A run's participants are minds (a System with a step function) and processes (a keyed env);
-a wire is an identity from an action node to a process input or a mind's modality, or from a
-process observation to a mind's modality. An action node is realised once per step from its
-mind's actuator and every wire from it carries that value. A merged composite run by name is the
-one-process case, bitwise.
+A coupling's components are Systems; an ``Identify`` joins an out-port (an action node or an
+emission) to an in-port of another component (a modality, or a control node it then drives). An
+action node is realised once per round from its node's actuator and every identification of it
+carries that value. A merged composite is run against its own mirror (``with_mirror``). Each run
+is held bitwise to the wired or composite form's run of the same case, under that form's key layout:
+by ``tests/test_run_parity.py`` where it records the case, else by ``migration_couple.npz``. The
+tests of sections 7 and 8 are of the wired form's own contract and go with it.
 
 Design: docs/design/control-states.md C12, C13; docs/design/nesting-systems.md principle 6.
 """
 
 import dataclasses
+import pathlib
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition import (
+    Identify,
     Link,
     MindCarry,
-    MindRecord,
-    ProcessRecord,
     Wiring,
     agent_step,
     ancestral_step,
     couple,
     merge,
+    plan,
     run,
+    sample,
     subsystem,
+    with_mirror,
 )
 from hybrid_aif.controls import Box
 from hybrid_aif.distributions import ConditionalGaussian, Gaussian
@@ -36,8 +43,11 @@ from hybrid_aif.envs import GenerativeEnv
 from hybrid_aif.envs._process import DiscreteProcess
 from hybrid_aif.factors import LinearGaussianObservation, LinearGaussianTransition
 from hybrid_aif.system import System, SystemParams
+from hybrid_aif.system.mirror import mirror
 from tests.test_action_nodes import KERNEL, pusher
+from tests.test_emissions import world as emitting_world
 from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world
+from tests.test_system import tmaze_system
 
 KEY = jax.random.PRNGKey(0)
 
@@ -87,10 +97,34 @@ def equal(a, b):
     return bool(jnp.array_equal(a, b))
 
 
-# --------------------------------------------------------------------- 1. the composite as sugar
+def ancestral():
+    """The habit draw of ``tests/test_run_parity.py`` (imported on use: that module imports this
+    one)."""
+    from tests.test_run_parity import ancestral as step
+
+    return step()
+
+
+def _run_old_keys(minds, *args, **kwargs):
+    """``run`` under the key layout of the wired and composite forms
+    (``tests/test_run_parity.py``)."""
+    from tests.test_run_parity import _run_old_keys as patched
+
+    return patched(minds, *args, **kwargs)
+
+
+# --------------------------------------------------------- 1. a composite against its mirror
+
+FIXTURE = np.load(pathlib.Path(__file__).parent / "data" / "migration_couple.npz")
+
+
+def same(got, name):
+    np.testing.assert_array_equal(np.asarray(got), FIXTURE[name], err_msg=name)
 
 
 def _two_minds(kernel):
+    """The zoo pair as a composite, a view per component, and the composite form's steps; the
+    signature test of the composite form (section 8) runs it."""
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)
     composite, cp = merge(
         {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
@@ -106,267 +140,378 @@ def _two_minds(kernel):
     return composite, cp, views, responds
 
 
-def _sugar(composite, cp, views, responds):
-    """The composite as one process, the minds on their views, the links by name."""
-    links = []
-    for name, (view, _) in views.items():
-        links += [Link(f"{name}.{a}", f"env.{a}") for a in view.names.actions]
-        links += [Link(f"env.{m}", f"{name}.{m}") for m in view.names.modalities]
-    minds = {name: (view, vp, responds[name]) for name, (view, vp) in views.items()}
-    return couple(minds=minds, processes={"env": process(composite, cp)}, links=links)
+def _zoo_closed(kernel):
+    """The zoo pair coupled to its own mirror: the agent plans, the world component draws its
+    node from its habit, the mirror is sampled."""
+    (agent, ap), (world, wp) = agent_and_world(policy_len=1)
+    composite, cp = merge(
+        {"agent": agent, "world": world}, {"agent": ap, "world": wp}, OBSERVATION_BINDINGS
+    )
+    if kernel:
+        cp = dataclasses.replace(cp, actuator={"agent.a_location": KERNEL5})
+    system, params = with_mirror(composite, cp)
+    steps = {"model.agent": plan(), "model.world": ancestral(), "world": sample()}
+    return system, params, steps
+
+
+def _states(trajectory, factor, node="world"):
+    return jnp.stack([jnp.asarray(c[factor]) for c in trajectory[node].carries])
 
 
 @pytest.mark.parametrize("kernel", [False, True], ids=["delta", "kernel"])
-def test_the_composite_run_is_the_one_process_wiring_bitwise(kernel):
-    """Under ``"simultaneous"``; under the other orders the composite steps each component's
-    factors at its turn, which a wiring of one process cannot (the driver docstring)."""
-    tick_order = "simultaneous"
-    composite, cp, views, responds = _two_minds(kernel)
-    traj = run(composite, cp, responds, ticks=12, key=KEY, tick_order=tick_order)
-    record = run(_sugar(composite, cp, views, responds), ticks=12, key=KEY, tick_order=tick_order)
-    env = record["env"]
-    assert isinstance(env, ProcessRecord)
-    for f, rows in traj.states.items():
-        assert equal(env.states[f], rows), f
-    for m, rows in traj.observations.items():
-        assert equal(env.observations[m], rows), m
-    for name in ("agent", "world"):
-        mind = record[name]
-        assert isinstance(mind, MindRecord)
-        for a in views[name][0].names.actions:
-            assert equal(mind.actions[a], traj.actions[a]), a
-            assert equal(mind.realised[a], traj.realised[a]), a
+def test_a_composite_against_its_mirror_routes_each_nodes_actions_and_the_worlds_emissions(kernel):
+    """Each model leaf realises its own action node, the world steps on the realised values, and
+    under ``"simultaneous"`` the agent receives the world's emissions as they stood at the round's
+    boundary. The run is held bitwise to the composite form by the zoo case of
+    ``tests/test_run_parity.py`` (every order, with and without a kernel)."""
+    system, params, steps = _zoo_closed(kernel)
+    traj = run(system, params, 12, KEY, steps, record_carries=True)
+    agent, world = traj["model.agent"], traj["world"]
+    assert list(agent.emitted) == list(agent.intended) == ["a_location"]
+    assert list(traj["model.world"].emitted) == ["a_location"]
+    for m in ("location_obs", "reward", "cue"):
+        emitted = jnp.concatenate([world.start[f"agent.{m}"][None], world.emitted[f"agent.{m}"]])
+        assert equal(agent.received[m], emitted), m
+        assert bool(jnp.all(agent.present[m]))
+    #  the world's copy of each node carries the realised value of the model's
+    assert equal(world.received["agent.u_location"][:-1], agent.emitted["a_location"])
+    assert equal(world.received["world.u_location"][:-1], traj["model.world"].emitted["a_location"])
     if kernel:  # the kernel moved some draw off the intended level
-        assert not equal(traj.realised["agent.a_location"], traj.actions["agent.a_location"])
-    if tick_order == "simultaneous":  # the agent received the process's rows
-        for m in views["agent"][0].names.modalities:
-            assert equal(record["agent"].observations[m], traj.observations[m])
+        assert not equal(agent.emitted["a_location"], agent.intended["a_location"])
+    else:
+        assert equal(agent.emitted["a_location"], agent.intended["a_location"])
 
 
 def _three_pushers(order):
-    """Three merged pushers, a kernel on every action node, minds and wires in ``order``."""
-    comps = ("a", "b", "c")
-    parts = {n: pusher() for n in comps}
+    """Three merged pushers, listed in ``order``, a kernel on every action node, coupled to their
+    mirror: ``a`` plans, ``b`` and ``c`` draw from the habit."""
+    parts = {n: pusher() for n in order}
     composite, cp = merge(
         {n: s for n, (s, _) in parts.items()}, {n: p for n, (_, p) in parts.items()}, []
     )
-    cp = dataclasses.replace(cp, actuator={f"{n}.push": KERNEL for n in comps})
-    views = {n: subsystem(composite, cp, n) for n in order}
-    responds = {n: (agent_step if n == "a" else ancestral_step)(views[n][0]) for n in order}
-    return composite, cp, views, responds
+    cp = dataclasses.replace(cp, actuator={f"{n}.push": KERNEL for n in order})
+    system, params = with_mirror(composite, cp)
+    steps = {f"model.{n}": plan() if n == "a" else ancestral() for n in order}
+    return system, params, {**steps, "world": sample()}
 
 
-def test_three_minds_in_component_order_match_the_composite_bitwise():
-    composite, cp, views, responds = _three_pushers(("a", "b", "c"))
-    key = jax.random.PRNGKey(3)
-    traj = run(composite, cp, responds, ticks=8, key=key)
-    record = run(_sugar(composite, cp, views, responds), ticks=8, key=key)
-    for f, rows in traj.states.items():
-        assert equal(record["env"].states[f], rows), f
-    for m, rows in traj.observations.items():
-        assert equal(record["env"].observations[m], rows), m
+def test_three_merged_pushers_against_their_mirror_realise_each_node_through_its_kernel():
+    """Each pusher's node is realised through its own kernel and recorded under its own leaf.
+    Held bitwise to the composite form by the pushers case of ``tests/test_run_parity.py``."""
+    system, params, steps = _three_pushers(("a", "b", "c"))
+    traj = run(system, params, 8, jax.random.PRNGKey(3), steps)
     for name in ("a", "b", "c"):
-        a = f"{name}.push"
-        assert equal(record[name].actions[a], traj.actions[a]), a
-        assert equal(record[name].realised[a], traj.realised[a]), a
-        assert not equal(traj.realised[a], traj.actions[a]), a
+        leaf = traj[f"model.{name}"]
+        assert list(leaf.intended) == list(leaf.emitted) == ["push"]
+        assert not equal(leaf.emitted["push"], leaf.intended["push"]), name
+        assert equal(traj["world"].received[f"{name}.u_push"][:-1], leaf.emitted["push"])
 
 
-def test_minds_out_of_component_order_run_and_record_by_participant():
-    composite, cp, views, responds = _three_pushers(("c", "a", "b"))
-    record = run(_sugar(composite, cp, views, responds), ticks=4, key=KEY, tick_order="async")
-    assert list(record) == ["c", "a", "b", "env"]
+def test_components_out_of_order_run_and_record_by_node():
+    """The model's components listed ``c, a, b``: the record is a tree in that listing, each leaf
+    holding its own action node and modality, the world one leaf holding every factor."""
+    system, params, steps = _three_pushers(("c", "a", "b"))
+    traj = run(system, params, 4, KEY, steps, tick_order="async", record_carries=True)
+    assert list(traj.parts) == ["model", "world"]
+    assert list(traj["model"].parts) == ["c", "a", "b"]
     for name in ("c", "a", "b"):
-        assert list(record[name].actions) == list(record[name].realised) == [f"{name}.push"]
-        assert record[name].realised[f"{name}.push"].shape == (4,)
-        assert list(record[name].observations) == [f"{name}.see"]
-    assert set(record["env"].states) == {"a.x", "b.x", "c.x"}
+        leaf = traj[f"model.{name}"]
+        assert list(leaf.intended) == list(leaf.emitted) == ["push"]
+        assert leaf.emitted["push"].shape == (4,)
+        assert list(leaf.received) == ["see"]
+    assert set(traj["world"].carry) == {"world.a.x", "world.b.x", "world.c.x"}
 
 
 # ------------------------------------------------------------ 2. two minds, two processes
 
 
-def test_two_minds_on_two_processes_record_by_participant_and_match_a_hand_loop():
-    a_sys, a_par = pusher()
-    b_sys, b_par = watcher()
-    wiring = couple(
-        minds={
-            "A": (a_sys, a_par, agent_step(a_sys)),
-            "B": (b_sys, b_par, ancestral_step(b_sys)),
+def _two_processes():
+    system, params = couple(
+        {
+            "A": pusher(),
+            "B": watcher(),
+            "P1": mirror(*pusher(), lower=True),
+            "P2": mirror(*pusher(), lower=True),
         },
-        processes={"P1": process(*pusher()), "P2": process(*pusher())},
-        links=[
-            Link("A.push", "P1.push"),
-            Link("P1.see", "A.see"),
-            Link("P1.see", "B.see"),
-            Link("B.push", "P2.push"),
-            Link("P2.see", "B.see2"),
+        [
+            Identify("A.push", "P1.u_push"),
+            Identify("P1.see", "A.see"),
+            Identify("P1.see", "B.see"),
+            Identify("B.push", "P2.u_push"),
+            Identify("P2.see", "B.see2"),
         ],
     )
-    ticks = 5
-    record = run(wiring, ticks=ticks, key=KEY)
-    assert list(record) == ["A", "B", "P1", "P2"]
-    assert set(record["A"].observations) == {"see"}
-    assert set(record["B"].observations) == {"see", "see2"}
-    for name in ("A", "B"):
-        mind = record[name]
-        assert all(v.shape == (ticks + 1,) for v in mind.observations.values())
-        assert list(mind.actions) == list(mind.realised) == ["push"]
-        assert mind.actions["push"].shape == mind.realised["push"].shape == (ticks,)
-        assert isinstance(mind.carry, MindCarry)
-    for name in ("P1", "P2"):
-        proc = record[name]
-        assert list(proc.states) == ["x"] and list(proc.observations) == ["see"]
-        assert proc.states["x"].shape == proc.observations["see"].shape == (ticks + 1,)
+    return system, params, {"A": plan(), "B": ancestral(), "P1": sample(), "P2": sample()}
 
-    #  the hand loop: the documented key schedule, the processes stepped on the recorded acts
-    (e1, p1), (e2, p2) = wiring.processes["P1"], wiring.processes["P2"]
+
+def test_two_minds_on_two_processes_record_by_node_and_match_a_hand_loop():
+    system, params, steps = _two_processes()
+    ticks = 5
+    traj = run(system, params, ticks, KEY, steps, record_carries=True)
+    assert list(traj.parts) == ["A", "B", "P1", "P2"]
+    assert set(traj["A"].received) == {"see"}
+    assert set(traj["B"].received) == {"see", "see2"}
+    for name in ("A", "B"):
+        node = traj[name]
+        assert all(v.shape == (ticks + 1,) for v in node.received.values())
+        assert list(node.intended) == list(node.emitted) == ["push"]
+        assert node.intended["push"].shape == node.emitted["push"].shape == (ticks,)
+    assert isinstance(traj["A"].carry, MindCarry)
+    for name in ("P1", "P2"):
+        assert list(traj[name].emitted) == ["see"] and traj[name].emitted["see"].shape == (ticks,)
+
+    #  the hand loop: the documented keys (node j of N = 4 steps with key j of the round, reset
+    #  with fold_in(k_reset, j)), the processes sampled on the recorded realised actions
+    count = 4
     key, k_reset = jax.random.split(KEY)
-    _, s1 = e1.reset(k_reset, p1)
-    _, s2 = e2.reset(jax.random.fold_in(k_reset, 1), p2)
-    want1, want2 = [s1["x"]], [s2["x"]]
+    views = {p: subsystem(system, params, p) for p in ("P1", "P2")}
+    drivers = {"P1": "A", "P2": "B"}
+    state = {
+        p: views[p][0].sample_initial(jax.random.fold_in(k_reset, j), views[p][1])[1]
+        for j, p in ((2, "P1"), (3, "P2"))
+    }
+    want = {p: [state[p][f"{p}.x"]] for p in state}
     for t in range(ticks):
         key, k_tick = jax.random.split(key)
-        k = jax.random.split(k_tick, 2 * 2 + 2)[-1]
-        _, s1 = e1.step(k, s1, {"push": record["A"].realised["push"][t]}, p1)
-        _, s2 = e2.step(jax.random.fold_in(k, 1), s2, {"push": record["B"].realised["push"][t]}, p2)
-        want1.append(s1["x"])
-        want2.append(s2["x"])
-    assert equal(record["P1"].states["x"], jnp.stack(want1))
-    assert equal(record["P2"].states["x"], jnp.stack(want2))
-    #  what A and B received of P1 is P1's emission, row for row
-    assert equal(record["A"].observations["see"], record["P1"].observations["see"])
-    assert equal(record["B"].observations["see"], record["P1"].observations["see"])
+        keys = jax.random.split(k_tick, 2 * count + 1)
+        for j, p in ((2, "P1"), (3, "P2")):
+            inputs = {f"{p}.u_push": traj[drivers[p]].emitted["push"][t]}
+            _, state[p] = views[p][0].sample_step(keys[j], views[p][1], state[p], inputs)
+            want[p].append(state[p][f"{p}.x"])
+    for p in ("P1", "P2"):
+        assert equal(_states(traj, f"{p}.x", p), jnp.stack(want[p])), p
+    #  what A and B received of P1 is P1's emission as it stood at each round's boundary
+    p1 = jnp.concatenate([traj["P1"].start["see"][None], traj["P1"].emitted["see"]])
+    assert equal(traj["A"].received["see"], p1)
+    assert equal(traj["B"].received["see"], p1)
+
+
+def test_two_minds_on_two_processes_are_the_wired_form_bitwise():
+    """The wired form's run of the same participants (``migration_couple.npz``), replayed under
+    its key layout: actions, both processes' states and emissions, bit for bit."""
+    system, params, steps = _two_processes()
+    traj = _run_old_keys(2, system, params, 5, KEY, steps, record_carries=True)
+    same(traj["A"].intended["push"], "two_procs/A/intended")
+    same(traj["A"].emitted["push"], "two_procs/A/realised")
+    same(traj["B"].emitted["push"], "two_procs/B/realised")
+    for p in ("P1", "P2"):
+        same(_states(traj, f"{p}.x", p), f"two_procs/{p}/x")
+        emitted = jnp.concatenate([traj[p].start["see"][None], traj[p].emitted["see"]])
+        same(emitted, f"two_procs/{p}/see")
 
 
 # ------------------------------------------------------------------------- 3. a direct wire
 
 
 def _direct(tick_order, kernel=None):
-    a_sys, a_par = pusher(kernel=kernel)
-    b_sys, b_par = pusher()
-    wiring = couple(
-        minds={
-            "A": (a_sys, a_par, ancestral_step(a_sys)),
-            "B": (b_sys, b_par, ancestral_step(b_sys)),
-        },
-        processes={"P1": process(*pusher(noise=0.0))},
-        links=[
-            Link("A.push", "P1.push"),
-            Link("A.push", "B.see"),
-            Link("B.push", "A.see"),
-        ],
+    """Two habit-drawing pushers seeing each other's action node, ``A``'s node also driving a
+    noiseless process. Held bitwise to the wired form, every order and both kernels, by the
+    direct-wire case of ``tests/test_run_parity.py``."""
+    system, params = couple(
+        {"A": pusher(kernel=kernel), "B": pusher(), "P1": mirror(*pusher(noise=0.0), lower=True)},
+        [Identify("A.push", "P1.u_push"), Identify("A.push", "B.see"), Identify("B.push", "A.see")],
     )
-    return run(wiring, ticks=12, key=KEY, tick_order=tick_order)
+    steps = {"A": ancestral(), "B": ancestral(), "P1": sample()}
+    return run(system, params, 12, KEY, steps, tick_order=tick_order, record_carries=True)
 
 
-def test_a_direct_wire_lags_a_tick_when_simultaneous():
-    record = _direct("simultaneous")
-    a, b = record["A"], record["B"]
-    assert int(b.observations["see"][0]) == 0 and int(a.observations["see"][0]) == 0  # null
-    assert equal(b.observations["see"][1:], a.realised["push"])
-    assert equal(a.observations["see"][1:], b.realised["push"])
+def test_a_direct_wire_lags_a_round_when_simultaneous():
+    """Under ``"simultaneous"`` each pusher reads the other's action node at the round's boundary:
+    absent at round 0 (no action realised yet), then the other's realised action of the round
+    before."""
+    traj = _direct("simultaneous")
+    a, b = traj["A"], traj["B"]
+    assert not bool(a.present["see"][0]) and not bool(b.present["see"][0])
+    assert equal(b.received["see"][1:], a.emitted["push"])
+    assert equal(a.received["see"][1:], b.emitted["push"])
 
 
-def test_a_later_mind_sees_an_earlier_minds_act_this_tick_when_sequential():
-    """A mind's row t is what it responded to at tick t: B's row t holds A's act of tick t, and
-    A's row t + 1 holds B's act of tick t."""
-    record = _direct("sequential")
-    a, b = record["A"], record["B"]
-    #  B responds after A: what B received at tick t is A's act of tick t
-    assert equal(b.observations["see"][:-1], a.actions["push"])
-    #  A responds first: what A received at tick t is B's act of tick t - 1, null at the reset
-    assert int(a.observations["see"][0]) == 0
-    assert equal(a.observations["see"][1:], b.actions["push"])
-    assert not equal(a.observations["see"][:-1], b.actions["push"])
+def test_a_later_mind_sees_an_earlier_minds_act_this_round_when_sequential():
+    """Entry ``t`` of ``received`` is what the node stepped on at round ``t``. ``A`` and ``B`` are
+    sources stepping in listing order (the process ``A`` drives steps right after ``A``): ``B``'s
+    entry ``t`` holds ``A``'s act of round ``t``, and ``A``'s entry ``t + 1`` holds ``B``'s act of
+    round ``t``, absent at round 0."""
+    traj = _direct("sequential")
+    a, b = traj["A"], traj["B"]
+    assert equal(b.received["see"][:-1], a.intended["push"])
+    assert not bool(a.present["see"][0])
+    assert equal(a.received["see"][1:], b.intended["push"])
+    assert not equal(a.received["see"][:-1], b.intended["push"])
 
 
-def test_an_action_node_is_drawn_once_and_every_wire_carries_the_draw():
-    record = _direct("simultaneous", kernel=KERNEL)
-    a, b, p1 = record["A"], record["B"], record["P1"]
+def _moves(traj):
+    x = _states(traj, "P1.x", "P1")
+    return (x[1:] - x[:-1]) % 3
+
+
+def test_an_action_node_is_drawn_once_and_every_identification_carries_the_draw():
+    traj = _direct("simultaneous", kernel=KERNEL)
+    a, b = traj["A"], traj["B"]
     #  P1 is x' = x + a (mod 3), noiseless, so its states give the action it stepped on
-    x = p1.states["x"]
-    stepped = (x[1:] - x[:-1]) % 3
-    assert equal(stepped, a.realised["push"])
-    assert equal(b.observations["see"][1:], a.realised["push"])
-    assert not equal(a.realised["push"], a.actions["push"])  # the kernel moved some draw
+    assert equal(_moves(traj), a.emitted["push"])
+    assert equal(b.received["see"][1:], a.emitted["push"])
+    assert not equal(a.emitted["push"], a.intended["push"])  # the kernel moved some draw
 
 
 def test_under_sequential_a_draw_is_consumed_once_and_carried_to_the_later_mind():
-    """A's node, wired to P1 and to B, is drawn once when A chooses: P1's one step in the
-    tick moves on that draw, B (after A) receives it, and A.realised records it."""
-    record = _direct("sequential", kernel=KERNEL)
-    a, b, p1 = record["A"], record["B"], record["P1"]
-    x = p1.states["x"]
-    #  P1 is x' = x + a (mod 3), stepped once at the end of the tick: one move of one value
-    assert equal((x[1:] - x[:-1]) % 3, a.realised["push"])
-    assert equal(b.observations["see"][:-1], a.realised["push"])
-    assert not equal(a.realised["push"], a.actions["push"])
+    """A's node, identified with P1's control node and B's modality, is drawn once when A
+    chooses: P1 (driven by A, so stepping right after it) moves on that draw, B (after A)
+    receives it, and A's ``emitted`` records it."""
+    traj = _direct("sequential", kernel=KERNEL)
+    a, b = traj["A"], traj["B"]
+    assert equal(_moves(traj), a.emitted["push"])
+    assert equal(b.received["see"][:-1], a.emitted["push"])
+    assert not equal(a.emitted["push"], a.intended["push"])
 
 
-def test_the_composite_moves_each_component_once_on_its_own_draw_under_sequential():
-    """Two merged noiseless pushers, a kernel on ``a.push`` only: each tick a's state steps
-    at a's turn on a's one draw, and b's at b's turn on b's choice; neither moves twice."""
+def test_the_per_component_mirror_moves_each_component_once_on_its_own_draw_under_sequential():
+    """Two merged noiseless pushers, a kernel on ``a.push`` only, coupled to the merge of one
+    mirror per component: each round ``world.a`` steps right after ``model.a`` on a's one draw
+    and ``world.b`` after ``model.b`` on b's choice, neither moving twice, as the composite form
+    stepped each component's factors at its turn. Bitwise to the composite form's run
+    (``migration_couple.npz``) under its key layout, states included."""
     parts = {n: pusher(noise=0.0) for n in ("a", "b")}
     composite, cp = merge(
         {n: s for n, (s, _) in parts.items()}, {n: p for n, (_, p) in parts.items()}, []
     )
     cp = dataclasses.replace(cp, actuator={"a.push": KERNEL})
-    minds = {n: ancestral_step(subsystem(composite, cp, n)[0]) for n in ("a", "b")}
-    traj = run(composite, cp, minds, ticks=12, key=KEY, tick_order="sequential")
-    xa, xb = traj.states["a.x"], traj.states["b.x"]
-    assert equal((xa[1:] - xa[:-1]) % 3, traj.realised["a.push"])
-    assert equal((xb[1:] - xb[:-1]) % 3, traj.realised["b.push"])
-    assert not equal(traj.realised["a.push"], traj.actions["a.push"])
+    system, params = with_mirror(composite, cp, per_component=True)
+    steps = {
+        "model.a": ancestral(),
+        "model.b": ancestral(),
+        "world.a": sample(),
+        "world.b": sample(),
+    }
+    traj = _run_old_keys(
+        2, system, params, 12, KEY, steps, tick_order="sequential", record_carries=True
+    )
+    for n in ("a", "b"):
+        leaf = traj[f"model.{n}"]
+        x = _states(traj, f"world.{n}.x", f"world.{n}")
+        assert equal((x[1:] - x[:-1]) % 3, leaf.emitted["push"])
+        same(leaf.intended["push"], f"composite_seq/{n}/intended")
+        same(leaf.emitted["push"], f"composite_seq/{n}/realised")
+        same(x, f"composite_seq/{n}/x")
+    assert not equal(traj["model.a"].emitted["push"], traj["model.a"].intended["push"])
 
 
 def test_a_simultaneous_kernel_run_is_pinned():
-    """Under simultaneous a node with a kernel is drawn at the tick's one step with the env
-    actuator's keys, ``split(fold_in(k, ACTUATOR_TAG), n)[i]`` in composite action order; the
-    world's node has none, so it is realised as intended; pinned."""
-    composite, cp, _, responds = _two_minds(True)
-    traj = run(composite, cp, responds, ticks=12, key=KEY)
-    assert traj.realised["agent.a_location"].tolist() == [4, 4, 3, 4, 1, 1, 2, 3, 4, 0, 1, 2]
-    assert traj.realised["world.a_location"].tolist() == [1, 2, 2, 0, 1, 4, 2, 4, 1, 4, 0, 4]
-    assert traj.states["world.location"].tolist() == [0, 0, 0, 0, 0, 0, 4, 2, 4, 1, 4, 0, 4]
+    """Under ``"simultaneous"`` the agent's node, with a kernel, is realised with the last key of
+    the round (phase one), ``split(fold_in(k, ACTUATOR_TAG), n)[i]`` over the System's action
+    nodes; the world component's node has none, so it is realised as intended. Under the
+    composite form's key layout the run is the composite form's, value for value; under the
+    round keys of ``run`` the agent's draws move and the rest stands."""
+    system, params, steps = _zoo_closed(True)
+    traj = _run_old_keys(2, system, params, 12, KEY, steps, record_carries=True)
+    assert traj["model.agent"].emitted["a_location"].tolist() == [
+        4,
+        4,
+        3,
+        4,
+        1,
+        1,
+        2,
+        3,
+        4,
+        0,
+        1,
+        2,
+    ]
+    assert traj["model.world"].emitted["a_location"].tolist() == [
+        1,
+        2,
+        2,
+        0,
+        1,
+        4,
+        2,
+        4,
+        1,
+        4,
+        0,
+        4,
+    ]
+    location = [0, 0, 0, 0, 0, 0, 4, 2, 4, 1, 4, 0, 4]
+    assert _states(traj, "world.world.location").tolist() == location
+    traj = run(system, params, 12, KEY, steps, record_carries=True)
+    assert traj["model.agent"].emitted["a_location"].tolist() == [
+        4,
+        0,
+        3,
+        4,
+        3,
+        0,
+        0,
+        1,
+        4,
+        0,
+        2,
+        2,
+    ]
+    assert traj["model.world"].emitted["a_location"].tolist() == [
+        1,
+        2,
+        2,
+        0,
+        1,
+        4,
+        2,
+        4,
+        1,
+        4,
+        0,
+        4,
+    ]
+    assert _states(traj, "world.world.location").tolist() == location
 
 
 # ---------------------------------------------------------------------------------- 4. fixed=
 
 
+def _idle_process():
+    return mirror(*pusher(noise=0.0), lower=True)
+
+
 def test_a_fixed_input_advances_the_process_as_an_emitted_one_would():
+    """``fixed=`` clamps the process's control node; a model whose step emits the same constant,
+    identified with that node, moves the noiseless process identically. Both are the wired form's
+    runs (``migration_couple.npz``) under its key layout."""
     ticks = 6
-    fixed = run(
-        couple(processes={"P": process(*pusher(noise=0.0))}, fixed={"P.push": 1}),
-        ticks=ticks,
-        key=KEY,
+    system, params = couple({"P": _idle_process()}, fixed={"P.u_push": 1})
+    assert list(dict(system.subsystems)) == ["P"] and "P.u_push" not in system.names.controls
+    fixed = run(system, params, ticks, KEY, {"P": sample()}, record_carries=True)
+    x = _states(fixed, "P.x", "P")
+    assert equal(x, (x[0] + jnp.arange(ticks + 1)) % 3)
+    patched = _run_old_keys(0, system, params, ticks, KEY, {"P": sample()}, record_carries=True)
+    same(_states(patched, "P.x", "P"), "fixed/P/x")
+    seen = jnp.concatenate([patched["P"].start["see"][None], patched["P"].emitted["see"]])
+    same(seen, "fixed/P/see")
+
+    def constant_step(system, key, obs, carry, params):
+        return ({} if obs is None else {"M.push": jnp.asarray(1, jnp.int32)}), carry, params
+
+    system, params = couple(
+        {"M": pusher(), "P": _idle_process()},
+        [Identify("M.push", "P.u_push"), Identify("P.see", "M.see")],
     )
-    assert list(fixed) == ["P"]
-    #  the hand loop with no minds: two keys per tick, the step on the last
-    env, ep = process(*pusher(noise=0.0))
-    key, k_reset = jax.random.split(KEY)
-    obs, state = env.reset(k_reset, ep)
-    states, seen = [state["x"]], [obs["see"]]
-    for _ in range(ticks):
-        key, k_tick = jax.random.split(key)
-        obs, state = env.step(jax.random.split(k_tick, 2)[-1], state, {"push": 1}, ep)
-        states.append(state["x"])
-        seen.append(obs["see"])
-    assert equal(fixed["P"].states["x"], jnp.stack(states))
-    assert equal(fixed["P"].observations["see"], jnp.stack(seen))
-    assert equal(fixed["P"].states["x"], (fixed["P"].states["x"][0] + jnp.arange(ticks + 1)) % 3)
-    #  a mind emitting the same constant moves the noiseless process identically
-    m_sys, m_par = pusher()
-    emitted = run(
-        couple(
-            minds={"M": (m_sys, m_par, constant(1))},
-            processes={"P": process(*pusher(noise=0.0))},
-            links=[Link("M.push", "P.push"), Link("P.see", "M.see")],
-        ),
-        ticks=ticks,
-        key=KEY,
-    )
-    assert equal(emitted["P"].states["x"], fixed["P"].states["x"])
+    steps = {"M": constant_step, "P": sample()}
+    emitted = run(system, params, ticks, KEY, steps, record_carries=True)
+    y = _states(emitted, "P.x", "P")
+    assert equal(y, (y[0] + jnp.arange(ticks + 1)) % 3)
+    patched_emitted = _run_old_keys(1, system, params, ticks, KEY, steps, record_carries=True)
+    same(_states(patched_emitted, "P.x", "P"), "emitted/P/x")
+    assert equal(_states(patched_emitted, "P.x", "P"), _states(patched, "P.x", "P"))
+
+
+def test_fixed_holds_a_control_node_at_a_level_of_its_range():
+    """``fixed=`` is a Clamp: a level in the node's range, or a probability vector; a scalar float
+    or a name that is no control node is refused."""
+    with pytest.raises(ValueError, match=r"pins level 3, which is not one of its 3 control level"):
+        couple({"P": _idle_process()}, fixed={"P.u_push": 3})
+    with pytest.raises(ValueError, match=r"is the scalar 1.0: a scalar prior is a control \*level"):
+        couple({"P": _idle_process()}, fixed={"P.u_push": 1.0})
+    with pytest.raises(ValueError, match=r"unknown control node 'P.see'"):
+        couple({"P": _idle_process()}, fixed={"P.see": 0})
 
 
 # ---------------------------------------------------------------------------- 5. continuous
@@ -404,37 +549,79 @@ def _continuous(width):
     return system, params
 
 
+def _push_one(system, key, obs, carry, params):
+    return ({} if obs is None else {"M.u": jnp.asarray([1.0], jnp.float32)}), carry, params
+
+
 def test_a_continuous_action_node_drives_a_continuous_input_of_its_width():
-    m_sys, m_par = _continuous(1)
-
-    def push(key, obs, carry, params):
-        return {"u": jnp.asarray([1.0], jnp.float32)}, carry, params
-
-    wiring = couple(
-        minds={"M": (m_sys, m_par, push)},
-        processes={"P": process(*_continuous(1))},
-        links=[Link("M.u", "P.u"), Link("P.pos", "M.pos")],
+    """A model's continuous action node identified with a world's continuous control node of its
+    width; the world's 2-d emission feeds the model. The run is the wired form's
+    (``migration_couple.npz``) under its key layout."""
+    system, params = couple(
+        {"M": _continuous(1), "P": mirror(*_continuous(1), lower=True)},
+        [Identify("M.u", "P.u_u"), Identify("P.pos", "M.pos")],
     )
-    assert wiring.types["M.u"] == wiring.types["P.u"] == ("float", 1)
-    assert wiring.types["P.pos"] == wiring.types["M.pos"] == ("float", 2)
-    record = run(wiring, ticks=4, key=KEY)
-    assert record["M"].actions["u"].shape == (4, 1)
-    assert equal(record["M"].realised["u"], record["M"].actions["u"])
-    assert record["P"].states["x"].shape == (5, 2)
-    assert equal(record["M"].observations["pos"], record["P"].observations["pos"])
-    #  the drift is G u per tick on top of the noise: the mean step is (0.5, 0.5)
-    drift = jnp.mean(jnp.diff(record["P"].states["x"], axis=0), axis=0)
-    assert bool(jnp.all(drift > 0.25))
-    w_sys, w_par = _continuous(2)
-    with pytest.raises(ValueError, match=r"joins continuous, width 2 to continuous, width 1"):
+    outs = system.ports(params).outs
+    assert outs["M.u"] == ("float", 1) and outs["P.pos"] == ("float", 2)
+    steps = {"M": _push_one, "P": sample()}
+    traj = run(system, params, 4, KEY, steps, record_carries=True)
+    assert traj["M"].intended["u"].shape == (4, 1)
+    assert equal(traj["M"].emitted["u"], traj["M"].intended["u"])
+    x = _states(traj, "P.x", "P")
+    assert x.shape == (5, 2)
+    pos = jnp.concatenate([traj["P"].start["pos"][None], traj["P"].emitted["pos"]])
+    assert equal(traj["M"].received["pos"], pos)
+    #  the drift is G u per round on top of the noise: the mean step is (0.5, 0.5)
+    assert bool(jnp.all(jnp.mean(jnp.diff(x, axis=0), axis=0) > 0.25))
+    patched = _run_old_keys(1, system, params, 4, KEY, steps, record_carries=True)
+    same(_states(patched, "P.x", "P"), "continuous/P/x")
+    same(
+        jnp.concatenate([patched["P"].start["pos"][None], patched["P"].emitted["pos"]]),
+        "continuous/P/pos",
+    )
+    with pytest.raises(ValueError, match=r"2 dimensions \(float\).*1 dimensions.*types must be"):
         couple(
-            minds={"M": (w_sys, w_par, push)},
-            processes={"P": process(*_continuous(1))},
-            links=[Link("M.u", "P.u"), Link("P.pos", "M.pos")],
+            {"M": _continuous(2), "P": mirror(*_continuous(1), lower=True)},
+            [Identify("M.u", "P.u_u"), Identify("P.pos", "M.pos")],
         )
 
 
-# ------------------------------------------------------------------------------- 6. refusals
+# ----------------------------------------------------- 6. what a coupling of Systems refuses
+
+
+def test_an_emission_is_an_out_port_of_a_coupling_and_its_type_must_match_the_in_port():
+    """A component's emission is identified with another component's modality like an action
+    node; a type mismatch is refused, and so is a binding that is no Identify or Clamp."""
+    emitter, eparams = emitting_world()
+    agent, aparams = tmaze_system()
+    parts = {"W": (emitter, eparams), "A": (agent, aparams)}
+    system, _ = couple(parts, [Identify("W.fix", "A.cue")])
+    assert dict(system.observes)["A.cue"] == "W.fix"
+    with pytest.raises(ValueError, match="port types must be equal"):
+        couple(parts, [Identify("W.gauge", "A.cue")])
+    with pytest.raises(ValueError, match="is not an Identify or a Clamp"):
+        couple(parts, [("W.fix", "A.cue")])
+
+
+def test_an_unknown_component_or_port_is_refused_naming_the_candidates():
+    """The coupling's counterpart of the wired form's unknown participant or port: an end naming
+    no component lists the components, one naming no port of its component lists that
+    component's out-ports and in-ports."""
+    parts = {"M": pusher(), "P": _idle_process()}
+    with pytest.raises(ValueError, match=r"'Q.u_push', which names no component.*\['M', 'P'\]"):
+        couple(parts, [Identify("M.push", "Q.u_push")])
+    with pytest.raises(
+        ValueError, match=r"'P.shove', which is no port of component 'P'.*in-ports \['P.u_push'\]"
+    ):
+        couple(parts, [Identify("M.push", "P.shove")])
+
+
+def test_a_component_name_with_a_dot_is_refused():
+    with pytest.raises(ValueError, match=r"\['M.1'\] contain the namespace separator"):
+        couple({"M.1": pusher(), "P": _idle_process()})
+
+
+# ---------------------------------------------------------- 7. the wired form's refusals
 
 
 def _parts():
@@ -548,7 +735,7 @@ def test_a_wire_between_two_processes_and_bad_names_are_refused():
         couple(minds=minds, processes={"M": procs["P"]}, links=GOOD)
 
 
-# ----------------------------------------------------------------------------- 7. run's forms
+# ----------------------------------------------------------------------- 8. run's forms
 
 
 def test_run_on_a_wiring_refuses_the_composite_arguments():

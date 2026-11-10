@@ -583,7 +583,7 @@ def test_a_linear_gaussian_and_a_reference_emission_survive_the_round_trip():
 def test_a_merged_world_is_described_with_its_components_emissions():
     cs, cp = _two_worlds()
     d, (built, built_params) = _round_trip(cs, cp)
-    shown = tuple((n, sub._replace(config=(), recognition=())) for n, sub in cs.subsystems)
+    shown = tuple((n, sub._replace(recognition=())) for n, sub in cs.subsystems)
     assert built == dataclasses.replace(cs, subsystems=shown)
     assert dict(built.subsystems)["b"].emissions == ("b.fix", "b.img", "b.gauge")
 

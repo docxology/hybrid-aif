@@ -1087,7 +1087,11 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   kernel when the node decides, an emission by the step that owns it, and a reader reads a variable
   as it stands at its turn. A node whose control node is driven by another node's action steps
   after that action is realised in the round, so `"simultaneous"` runs the undriven nodes on the
-  round's boundary and the driven ones after them. The first call of every step has `obs=None` and
+  round's boundary and the driven ones after them, every view of a round taken from the home as
+  the round began and every write-back applied at its boundary (two of one Dirichlet variable
+  summed as deltas, two write-backs of one variable of another form refused, up front for two
+  `plan(learn=...)` that reach it, at the boundary otherwise; live under
+  `"sequential"` and `"async"`). The first call of every step has `obs=None` and
   is its reset. `with_mirror(system, params)` couples a System to its own mirror and so closes it.
   The wired and composite forms, `particle`, `hold`, `agent_step` and `ancestral_step` are
   unchanged; the composite form returns a `CompositeTrajectory`. A modality may observe another
@@ -1108,7 +1112,33 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   (known limitation: per-use driven nodes are on the roadmap); a control node driven inside the
   System follows its driver when the mirror is sampled alone. Upgrading: a perceiver of another
   node's action node sees it as absent (`None`, handled through `present=`) in round 0 under `run`,
-  where the wired form handed it level 0.
+  where the wired form handed it level 0. **Migration guide** (the 0.18 form -> the form under
+  `run`; the examples, the notebooks and the tests are migrated; the survey runner follows):
+  - `couple(minds={...}, processes={"w": system.as_env(params)}, links=[Link(a, b), ...])` ->
+    `couple({...: (system, params), "w": mirror(system, params, lower=True)}, [Identify(a, b),
+    ...])`, the process input named by an action node becoming that action node's control node
+    (`world.a_move` -> `world.u_a` in `examples/compose_minds.py`);
+  - `run(wiring, ticks=..., key=...)` -> `run(system, params, ticks, key, steps)`;
+  - `run(composite, params, minds, ...)` -> `run(*with_mirror(composite, params), ticks, key,
+    steps)`, the minds keyed `"model.<name>"` and the world `"world"` (`per_component=True` where
+    the composite's components step their own factors, the arena);
+  - `agent_step(view, planner, **kw)` -> `plan(planner, **kw)` (`learn=` and `trace=` for what a
+    hand-written step did; `legal` checked on the reset call);
+  - `ancestral_step(view)` -> `sample()` for a world (another key use), or a custom step drawing
+    from `params.policy_prior`;
+  - `hold(step, ticks_per_unit=k)` -> durations in the node's params and `clocks={node: k}`;
+  - `particle(cs, cp, steps)` inside a wiring -> the merge as a component of the coupling, each of
+    its leaves stepped by name (`steps={"agent.rover": ..., "agent.mission": ...}`);
+  - `MindStep` `step(key, obs, carry, params)` -> `step(system, key, obs, carry, params)`, `obs`
+    `None` on the reset call;
+  - `MindRecord`/`ProcessRecord`/`CompositeTrajectory` (`actions`, `realised`, `observations`,
+    `states`) -> `Trajectory` (`intended`, `emitted`, `received` and `present`, the world's state
+    in `carries` under `record_carries=True`);
+  - an `Identify` or a `Link` (under `merge`) that names the action node of a driven control node
+    is refused in either order of the bindings, naming the driver's action node: a driven node
+    and its driver's action node are one variable, so name the driver's action node itself (a
+    join on it); a chain of same-step `Link`s through a driven node, which `merge` collapsed onto
+    the first driver, is refused the same way.
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
 - **Shipped to robots**: the downstream coverage agent (EFE-driven coverage
   at tuned-heuristic parity with the hand-tuned coefficients removed;

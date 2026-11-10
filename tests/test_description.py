@@ -27,7 +27,7 @@ import pytest
 
 import hybrid_aif as H
 from hybrid_aif import description as D
-from hybrid_aif.composition.driver import agent_step, ancestral_step, run
+from hybrid_aif.composition import plan, sample, with_mirror
 from hybrid_aif.composition.merge import subsystem
 from hybrid_aif.description import (
     Description,
@@ -110,7 +110,6 @@ def _shown(system: H.System) -> H.System:
                 relayed=(),
                 terminated=(),
                 identified=(),
-                config=(),
                 recognition=(),
                 actions=tuple(pair for pair in sub.actions if pair[0] in present),
             ),
@@ -308,21 +307,64 @@ def test_the_composite_record_is_reconstructed_so_run_routes_and_views_agree(mod
     assert dict(rebuilt.subsystems).keys() == dict(system.subsystems).keys()
     assert rebuilt.subsystems == _shown(system).subsystems
 
-    def minds(composite, cp):
-        return {
-            "agent": agent_step(subsystem(composite, cp, "agent")[0]),
-            "world": ancestral_step(subsystem(composite, cp, "world")[0]),
-        }
+    from tests.test_run_parity import _run_old_keys, ancestral
+
+    def coupled(composite, cp):
+        """The merge coupled to its mirror and run three rounds: the agent plans, the world
+        model draws from its habit, the mirror is sampled."""
+        closed, closed_params = with_mirror(composite, cp)
+        steps = {"model.agent": plan(), "model.world": ancestral(), "world": sample()}
+        return _run_old_keys(2, closed, closed_params, 3, KEY, steps, record_carries=True)
 
     for name in ("agent", "world"):
         a, ap = subsystem(system, params, name)
         b, bp = subsystem(rebuilt, rp, name)
         _assert_same(ap, bp)
         assert _shown(a) == _shown(b)
-    want = run(system, params, minds(system, params), ticks=3, key=KEY)
-    got = run(rebuilt, rp, minds(rebuilt, rp), ticks=3, key=KEY)
-    for part in ("states", "observations", "actions", "realised"):
+    #  the rebuilt merge, coupled to its mirror, runs as the original does
+    want, got = coupled(system, params), coupled(rebuilt, rp)
+    for part in ("received", "emitted", "intended"):
         _assert_same(getattr(want, part), getattr(got, part))
+    _assert_same(want["world"].carries, got["world"].carries)
+    #  and both are the composite form's run of the merge (``tests/data/migration_driver.npz``,
+    #  ``described``) under its key layout
+    fixture = np.load(pathlib.Path(__file__).parent / "data" / "migration_driver.npz")
+    for f in system.names.states:
+        held = [c[f"world.{f}"] for c in got["world"].carries]
+        np.testing.assert_array_equal(np.asarray(held), fixture[f"described/states/{f}"])
+    agent = got["model.agent"]
+    np.testing.assert_array_equal(
+        agent.intended["a_location"], fixture["described/actions/agent.a_location"]
+    )
+    np.testing.assert_array_equal(
+        agent.emitted["a_location"], fixture["described/realised/agent.a_location"]
+    )
+    for m, values in agent.received.items():
+        np.testing.assert_array_equal(values, fixture[f"described/observations/agent.{m}"])
+
+
+@pytest.mark.parametrize("field", ["epistemic", "terms"])
+def test_leaves_that_differ_on_a_joined_field_keep_their_own_through_a_round_trip(field):
+    """The composite holds the leaves' ``epistemic`` and ``terms`` joined, not agreed, so a merge
+    whose leaves differ on one writes leaf records: the round-tripped merge gives each leaf its
+    own value, and coupled to its mirror its document is the original's, coupled."""
+    a, ap = tmaze_system(policy_len=1)
+    b, bp = tmaze_system(policy_len=1)
+    if field == "epistemic":
+        b = dataclasses.replace(b, epistemic=False)
+    else:
+        b = dataclasses.replace(b, epistemic=False, terms=("occupancy:transition:location",))
+        bp = dataclasses.replace(bp, obs_targets={})
+    composite, cp = H.composition.merge({"a": a, "b": b}, {"a": ap, "b": bp}, [])
+    document, arrays = describe(composite, cp)
+    assert set(document["components"]["leaves"]) == {"a", "b"}
+    rebuilt, rp = build(json.loads(json.dumps(document)), arrays=arrays)
+    for name in ("a", "b"):
+        want = dict(dict(composite.subsystems)[name].config)
+        assert dict(dict(rebuilt.subsystems)[name].config)[field] == want[field]
+    original = json.loads(json.dumps(describe(*with_mirror(composite, cp)).document))
+    again = json.loads(json.dumps(describe(*with_mirror(rebuilt, rp)).document))
+    assert again == original
 
 
 def test_the_nested_preference_model_is_one_grammar(models):

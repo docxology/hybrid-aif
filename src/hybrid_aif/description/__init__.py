@@ -1198,17 +1198,25 @@ _LEAF_CONFIG = (
 )
 
 
+#: Leaf configuration the composite holds joined (the leaves' keys together), not agreed.
+_JOINED_CONFIG = ("epistemic", "terms")
+
+
 def _write_components(system: System, params: SystemParams, where: str) -> dict[str, Any]:
-    """The ``components`` section of a splice that holds more than its composite fields say: each
-    leaf's own configuration, habit, precision, durations and recognition variables, and the
-    top-level components that are coupled. ``{}`` for a System whose composite fields state it all.
-    ``unset`` lists the planner fields the composite holds ``UNSET`` (a field it states is written
-    in the composite's own configuration)."""
+    """The ``components`` section of a splice that holds more than its composite fields say (leaf
+    parts, an unset planner field, a coupled component, or leaves that differ on ``epistemic`` or
+    ``terms``): each leaf's own configuration, habit, precision, durations and recognition
+    variables, and the top-level components that are coupled. ``{}`` for a System whose composite
+    fields state it all. ``unset`` lists the planner fields the composite holds ``UNSET`` (a field
+    it states is written in the composite's own configuration)."""
     subs = system.subsystems or ()
     leaves = [(name, sub) for name, sub in subs if sub.config]
     unset = any(getattr(system, f) is UNSET for f in _PLANNER_FIELDS)
     coupled = [name for name, sub in subs if sub.boundary == "coupled"]
-    if not leaves or not (params.parts or unset or coupled):
+    #  the composite's own epistemic and terms join the leaves' keys, so a leaf's own value is
+    #  written in its record wherever the leaves differ on one of them
+    differ = any(len({dict(sub.config)[key] for _, sub in leaves}) > 1 for key in _JOINED_CONFIG)
+    if not leaves or not (params.parts or unset or coupled or differ):
         return {}
     out: dict[str, Any] = {}
     for name, sub in leaves:
@@ -5366,6 +5374,8 @@ class _Model:
             if field in (stated or ()) or (stated is None and len(values) > 1):
                 kwargs[field] = UNSET
         system = System(**kwargs)  # every refusal of the constructor is checked above
+        if system.subsystems and not leaf_records:
+            system = _leaf_configuration(system)
         params = SystemParams(
             precision=self._precision(),
             transition=transition,
@@ -5559,6 +5569,22 @@ class _Model:
                 )
             )
         return tuple(out)
+
+
+def _leaf_configuration(system: System) -> System:
+    """``system`` with each leaf component (one no other component's name extends) given the
+    composite's own configuration and no scoring: a document writes no leaf records when every
+    leaf agrees on every field (``epistemic`` and ``terms`` included), nothing is unset and no
+    leaf holds parts of its own, so the composite's fields are each leaf's."""
+    names = [n for n, _ in system.subsystems]
+    leaves = {n for n in names if not any(m.startswith(f"{n}{_SEP}") for m in names)}
+    config = (*((k, getattr(system, k)) for k in _LEAF_CONFIG), ("scoring", ()))
+    return dataclasses.replace(
+        system,
+        subsystems=tuple(
+            (n, sub._replace(config=config) if n in leaves else sub) for n, sub in system.subsystems
+        ),
+    )
 
 
 def _import(ref: str, address: str, fail: Callable[[str], DescriptionError]) -> Callable:

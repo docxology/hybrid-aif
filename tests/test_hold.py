@@ -1,4 +1,12 @@
-"""``composition.hold``: a mind that decides once per option, under both driver forms."""
+"""A mind that decides once per option: a node whose view declares durations under ``run``
+(the robot coupled to the corridor, and the robot in a merge against its own mirror), and the
+checks of ``composition.hold``, the wrapper of the composite and wired forms.
+
+``tests/test_clock_parity.py`` compares both runs here bit for bit against what ``hold`` under
+the wired and composite forms recorded (cases ``wired/*/cadence`` and ``composite/*``, the same
+durations, key and length); ``tests/test_clocks.py`` holds ``run``'s refusals that match the
+``hold`` checks below.
+"""
 
 import dataclasses
 import importlib.util
@@ -9,8 +17,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from hybrid_aif.composition import HoldCarry, MindCarry, agent_step, couple, hold, merge, run
-from hybrid_aif.composition.merge import subsystem
+from hybrid_aif.composition import (
+    HoldCarry,
+    MindCarry,
+    agent_step,
+    couple,
+    hold,
+    merge,
+    plan,
+    run,
+    sample,
+    with_mirror,
+)
 
 _PATH = pathlib.Path(__file__).resolve().parents[1] / "examples" / "compose_minds.py"
 _SPEC = importlib.util.spec_from_file_location("compose_minds", _PATH)
@@ -37,6 +55,19 @@ def _counted(step):
     return wrapped, calls
 
 
+def _counted_plan(**kwargs):
+    """``plan(**kwargs)`` counting its calls after the reset."""
+    inner, calls = plan(**kwargs), []
+
+    def step(system, key, obs, carry, params):
+        if obs is not None:
+            calls.append(1)
+        return inner(system, key, obs, carry, params)
+
+    step.sliced = True
+    return step, calls
+
+
 def _boundaries(actions, rounds_of):
     """The decision rounds implied by the held actions: each option lasts its level's rounds."""
     out, t = [], 0
@@ -55,46 +86,38 @@ def _check(actions, calls, rounds_of):
     assert len(bounds) < len(actions)
 
 
-def _wired(slow):
+def _coupled(slow):
+    """Robot ``a`` (``slow``) and robot ``b`` coupled to the corridor, ``a`` counted."""
     (sa, pa), (sb, pb) = slow, cm.robot(2, 2)
-    inner, calls = _counted(agent_step(sa, selection="stochastic"))
-    mind_a = hold(inner)
-    mind_b = agent_step(sb, selection="stochastic")
-    wiring = couple(
-        minds={"a": (sa, pa, mind_a), "b": (sb, pb, mind_b)},
-        processes={"world": cm.world((2, 2))},
-        links=list(cm.PORT_LINKS),
+    system, params = couple(
+        {"a": (sa, pa), "b": (sb, pb), "world": cm.world((2, 2))}, list(cm.BINDINGS)
     )
-    return wiring, calls
+    step_a, calls = _counted_plan(selection="stochastic")
+    steps = {"a": step_a, "b": plan(selection="stochastic"), "world": sample()}
+    return system, params, steps, calls
 
 
-def test_wired_form_redecides_only_at_option_boundaries():
-    wiring, calls = _wired(_slow([4.0, 2.0, 4.0]))
-    rec = run(wiring, ticks=TICKS, key=KEY)
-    _check(rec["a"].actions["move"], calls, {0: 4, 1: 2, 2: 4})
+@pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
+def test_a_coupled_robot_with_durations_redecides_only_at_option_boundaries(order):
+    system, params, steps, calls = _coupled(_slow([4.0, 2.0, 4.0]))
+    rec = run(system, params, TICKS, KEY, steps, tick_order=order)
+    _check(rec["a"].emitted["move"], calls, {0: 4, 1: 2, 2: 4})
+    assert int(rec["a"].decided.sum()) == len(calls)
 
 
-@pytest.mark.parametrize("order", ["simultaneous", "sequential"])
-def test_composite_form_redecides_only_at_option_boundaries(order):
-    """The cadence of the held mind under ``run`` over a merged System.
-
-    The slow mind here owns world factors (positions stepped by the option's kernel), the
-    configuration the record's R8 calls invalid for a composite, since the composite environment
-    is the merged System's own generative process and applies that kernel once per fast round.
-    ``merge`` has no separate world-process slot to move those factors into, so a belief-only
-    slow mind beside a world process is expressible in the wired form (the test above) and not
-    here; this test checks the call cadence only, not the dynamics.
-    """
+@pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
+def test_a_merged_robot_with_durations_redecides_only_at_option_boundaries(order):
+    """The cadence of the robot with durations in a merge of the two robots, run against the
+    merge's own mirror: the robot's view declares the durations, the world leaf carries none and
+    steps every round, so the positions move once per round under the option standing."""
     (sa, pa), (sb, pb) = _slow([4.0, 2.0, 4.0]), cm.robot(2, 2)
     comp, cp = merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(cm.LINKS))
-    va, vb = subsystem(comp, cp, "a"), subsystem(comp, cp, "b")
-    inner, calls = _counted(agent_step(va[0], selection="stochastic"))
-    minds = {
-        "a": hold(inner),
-        "b": agent_step(vb[0], selection="stochastic"),
-    }
-    tr = run(comp, cp, minds, TICKS, KEY, tick_order=order)
-    _check(tr.actions["a.move"], calls, {0: 4, 1: 2, 2: 4})
+    system, params = with_mirror(comp, cp)
+    step_a, calls = _counted_plan(selection="stochastic")
+    steps = {"model.a": step_a, "model.b": plan(selection="stochastic"), "world": sample()}
+    tr = run(system, params, TICKS, KEY, steps, tick_order=order)
+    _check(tr["model.a"].emitted["move"], calls, {0: 4, 1: 2, 2: 4})
+    assert bool(tr["world"].decided.all()) and bool(tr["model.b"].decided.all())
 
 
 def test_ticks_per_unit_converts_the_unit_to_rounds():
@@ -116,10 +139,10 @@ def test_ticks_per_unit_converts_the_unit_to_rounds():
 
 
 def test_a_carries_seed_decides_on_the_first_round():
-    wiring, calls = _wired(_slow([4.0, 2.0, 4.0]))
-    rec = run(wiring, ticks=1, key=KEY, carries={"a": MindCarry()})
+    system, params, steps, calls = _coupled(_slow([4.0, 2.0, 4.0]))
+    rec = run(system, params, 1, KEY, steps, carries={"a": MindCarry()})
     assert len(calls) == 1
-    assert rec["a"].actions["move"].shape == (1,)
+    assert rec["a"].emitted["move"].shape == (1,)
 
 
 def test_a_duration_that_is_not_a_whole_number_of_rounds_is_refused():

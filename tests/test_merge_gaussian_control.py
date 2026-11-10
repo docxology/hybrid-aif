@@ -7,6 +7,7 @@ the tensors alone; pinning a level slices the innovations' control axis (and a p
 """
 
 import dataclasses
+import pathlib
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +21,7 @@ from hybrid_aif import (
     Gaussian,
     LinearGaussianObservation,
 )
-from hybrid_aif.composition import joint_planner, run
+from hybrid_aif.composition import joint_planner, run, sample, with_mirror
 from hybrid_aif.composition.merge import Link, merge, subsystem
 from hybrid_aif.controls import Box
 from hybrid_aif.distributions import MixtureGaussian
@@ -298,21 +299,50 @@ def float_composite():
 
 
 def _mind(width):
-    def step(key, obs, carry, params):
-        return {"c.push": jnp.full((width,), 0.5, jnp.float32)}, carry, params
+    """A step choosing ``width`` halves on the continuous action node ``model.c.push``."""
+
+    def step(system, key, obs, carry, params):
+        if obs is None:
+            return {}, carry, params
+        return {"model.c.push": jnp.full((width,), 0.5, jnp.float32)}, carry, params
 
     return step
 
 
+def _x(trajectory):
+    return np.asarray([c["world.c.x"] for c in trajectory["world"].carries])
+
+
 @pytest.mark.parametrize("order", ["simultaneous", "sequential"])
-def test_a_continuous_action_runs_under_the_composite_driver(order):
-    cs, cp = float_composite()
-    traj = run(cs, cp, {"c": _mind(2)}, 3, KEY, tick_order=order)
-    assert traj.actions["c.push"].shape == (3, 2)
-    np.testing.assert_allclose(traj.realised["c.push"], 0.5)
+def test_a_continuous_action_runs_against_the_mirror(order):
+    """The merge coupled to its mirror, the action node continuous: recorded per round at its
+    width and realised as chosen. Under ``"simultaneous"`` the run is the composite form's
+    (``tests/data/migration_driver.npz``, ``float``) under its key layout, states included; under
+    ``"sequential"`` the composite form stepped the component's factors at its turn with the
+    realisation key, which one world leaf stepping with its own key does not reproduce, so the
+    actions are compared and the fixture holds no states or observations for that order."""
+    from tests.test_run_parity import _run_old_keys
+
+    system, params = with_mirror(*float_composite())
+    steps = {"model.c": _mind(2), "world": sample()}
+    traj = _run_old_keys(1, system, params, 3, KEY, steps, tick_order=order, record_carries=True)
+    assert traj["model.c"].intended["push"].shape == (3, 2)
+    np.testing.assert_allclose(traj["model.c"].emitted["push"], 0.5)
+    fixture = np.load(pathlib.Path(__file__).parent / "data" / "migration_driver.npz")
+    np.testing.assert_array_equal(
+        traj["model.c"].emitted["push"], fixture[f"float/{order}/realised/c.push"]
+    )
+    np.testing.assert_array_equal(
+        traj["model.c"].intended["push"], fixture[f"float/{order}/actions/c.push"]
+    )
+    if order == "simultaneous":
+        np.testing.assert_array_equal(_x(traj), fixture[f"float/{order}/states/c.x"])
+        np.testing.assert_array_equal(
+            traj["model.c"].received["fix"], fixture[f"float/{order}/observations/c.fix"]
+        )
 
 
 def test_a_wrong_width_continuous_action_is_refused():
-    cs, cp = float_composite()
+    system, params = with_mirror(*float_composite())
     with pytest.raises(ValueError, match="a continuous action node takes a float vector"):
-        run(cs, cp, {"c": _mind(3)}, 1, KEY)
+        run(system, params, 1, KEY, {"model.c": _mind(3), "world": sample()})

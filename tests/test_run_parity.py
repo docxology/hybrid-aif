@@ -45,8 +45,8 @@ from hybrid_aif.composition import (
     sample,
     with_mirror,
 )
-from hybrid_aif.composition.driver import ancestral_step
-from hybrid_aif.distributions import ConditionalDirichlet
+from hybrid_aif.distributions import Categorical, ConditionalDirichlet
+from hybrid_aif.system import keyed
 from hybrid_aif.system.mirror import mirror
 from tests.test_action_nodes import KERNEL, pusher
 from tests.test_couple import KERNEL5
@@ -103,16 +103,43 @@ def _run_old_keys(minds: int, *args, **kwargs):
         return run(*args, **kwargs)
 
 
+def habit_draw(system, key, params):
+    """The action nodes of ``system``'s control nodes drawn from the habit, as ``ancestral_step``
+    of the composite and wired forms drew them with ``key``: the first step of a policy drawn from
+    ``params.policy_prior`` where one is declared, else one uniform level per node, each from its
+    own key of ``split(key, nodes)``."""
+    names = system._names()
+    if params.policy_prior is not None:
+        prior = params.policy_prior
+        logits = prior.log_probs if isinstance(prior, Categorical) else jnp.asarray(prior)
+        chosen = system.policies(params)[Categorical(logits=logits).sample(key), 0]
+        return keyed.actions_out(names, chosen.astype(jnp.int32))
+    if system._table.sugar is not None:  # one draw per state factor, as the sugar lays them out
+        levels = tuple(
+            n if c else 1
+            for n, c in zip(
+                system._num_controls(params, "habit"), system._ctl("habit"), strict=True
+            )
+        )
+    else:
+        levels = system._control_levels(system._params_in(params, "habit"))
+    keys = jax.random.split(key, len(levels))
+    draws = [jax.random.randint(k, (), 0, n) for k, n in zip(list(keys), levels, strict=True)]
+    drawn = jnp.stack(draws).astype(jnp.int32) if draws else jnp.zeros((0,), jnp.int32)
+    if system._table.sugar is None:
+        return keyed.actions_out(names, drawn)
+    return keyed.factor_actions_out(names, drawn)
+
+
 def ancestral():
-    """The previous driver's ancestral step as a step of ``run``: a draw from the habit, or
-    uniform, per control node of its view."""
-    held = {}
+    """A step of ``run`` that draws its node's action nodes from the habit with the key use of
+    ``ancestral_step`` (:func:`habit_draw`), so a fixture recorded with it replays bit for bit;
+    ``sample()`` draws a free node with another key use."""
 
     def step(system, key, obs, carry, params):
         if obs is None:
             return {}, carry, params
-        held.setdefault("step", ancestral_step(system))
-        return held["step"](key, obs, carry, params)
+        return habit_draw(system, key, params), carry, params
 
     return step
 
@@ -312,6 +339,12 @@ def learner():
 
 @pytest.mark.parametrize("order", ORDERS)
 def test_a_learning_view_is_written_back_to_the_home_as_the_composite_run_did(order):
+    """The rover learns the shared field, one count a round, and the home after the run is the
+    composite form's under every order. The composite form applied a write-back live, so the
+    scheduler (stepping after the rover) saw this round's count; under ``"simultaneous"`` ``run``
+    applies every write-back at the round's boundary, so the scheduler sees the round before's,
+    and the live reading is reproduced under ``"sequential"``. What the scheduler saw is not in
+    the fixture; the home and the rover's world are, and they are compared."""
     composite, cp, _, _ = _shared()
     system, params = with_mirror(composite, cp)
     steps = {"model.rover": learner(), "model.mission": plan(), "world": sample()}

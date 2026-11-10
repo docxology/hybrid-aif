@@ -15,6 +15,7 @@ Design: docs/design/control-states.md C12.
 """
 
 import dataclasses
+import pathlib
 
 import jax
 import jax.numpy as jnp
@@ -23,8 +24,7 @@ import pytest
 from scipy.stats import chi2
 
 from hybrid_aif import Categorical, ConditionalCategorical
-from hybrid_aif.composition import joint_planner
-from hybrid_aif.composition.driver import MindCarry, _check_action, agent_step, ancestral_step, run
+from hybrid_aif.composition import joint_planner, plan, run, sample, with_mirror
 from hybrid_aif.composition.merge import Clamp, Link, merge, subsystem
 from hybrid_aif.description import build, describe
 from hybrid_aif.envs import GenerativeEnv
@@ -179,22 +179,47 @@ def test_every_action_face_keys_by_action_node_and_refuses_the_control_node():
         system.act(KEY, params, beliefs, legal={"a_location": jnp.ones(5, bool)})
 
 
-def test_the_driver_routes_and_records_action_nodes():
+def _fixture():
+    return np.load(pathlib.Path(__file__).parent / "data" / "migration_driver.npz")
+
+
+def _states(trajectory, factor, node="world"):
+    return np.asarray([c[factor] for c in trajectory[node].carries])
+
+
+def test_run_routes_and_records_action_nodes():
+    """The zoo coupled to its mirror, the agent drawing from its habit: its action node is
+    recorded by its own name, intended and realised alike, and the run is the composite form's
+    (``tests/data/migration_driver.npz``, ``routes``) under its key layout."""
+    from tests.test_run_parity import _run_old_keys, ancestral, idle
+
     composite, cp = merged()
-    view, vp = subsystem(composite, cp, "agent")
-    traj = run(composite, cp, {"agent": ancestral_step(view)}, ticks=3, key=KEY)
-    assert list(traj.actions) == list(composite.names.actions) == ["agent.a_location"]
-    assert list(traj.realised) == ["agent.a_location"]
-    assert jnp.array_equal(traj.realised["agent.a_location"], traj.actions["agent.a_location"])
-    action, _, _ = ancestral_step(view)(KEY, {}, MindCarry(), vp)
-    assert list(action) == ["agent.a_location"]
-    with pytest.raises(ValueError, match="a control node; key the action by its action node"):
-        _check_action(
-            {"agent.u_location": jnp.asarray(0, jnp.int32)},
-            ("agent.a_location",),
-            "agent",
-            {"agent.u_location": "agent.a_location"},
+    system, params = with_mirror(composite, cp)
+    steps = {"model.agent": ancestral(), "model.world": idle, "world": sample()}
+    traj = _run_old_keys(1, system, params, 3, KEY, steps, record_carries=True)
+    agent = traj["model.agent"]
+    assert list(agent.intended) == list(agent.emitted) == ["a_location"]
+    assert jnp.array_equal(agent.emitted["a_location"], agent.intended["a_location"])
+    fixture = _fixture()
+    np.testing.assert_array_equal(
+        agent.intended["a_location"], fixture["routes/actions/agent.a_location"]
+    )
+    np.testing.assert_array_equal(
+        agent.emitted["a_location"], fixture["routes/realised/agent.a_location"]
+    )
+    for f in ("agent.location", "agent.context", "world.location", "world.context"):
+        np.testing.assert_array_equal(
+            _states(traj, f"world.{f}"), fixture[f"routes/states/{f}"], err_msg=f
         )
+    for m, values in agent.received.items():
+        np.testing.assert_array_equal(values, fixture[f"routes/observations/agent.{m}"], err_msg=m)
+
+    def keyed_by_control_node(view, key, obs, carry, p):
+        return {"model.agent.u_location": jnp.asarray(0, jnp.int32)}, carry, p
+
+    steps = {**steps, "model.agent": keyed_by_control_node}
+    with pytest.raises(ValueError, match="a control node is keyed by its action node"):
+        run(system, params, 1, KEY, steps)
 
 
 # --------------------------------------------------------------- the efference copy and actuator
@@ -264,13 +289,26 @@ def test_the_agents_control_belief_is_unchanged_by_the_draw():
     delta = plain.update_empirical_prior(pp, plain.initial_priors(pp), {"push": 1})
     for name in ("x", "u_push"):
         assert jnp.array_equal(pushed[name].probs, delta[name].probs)
-    #  the driver records both: the intended action and the realised one
+    #  run records both: the intended action and the realised one, and the mirror moves on the
+    #  realised one; the composite form's run of the same model under its key layout
+    #  (``tests/data/migration_driver.npz``, ``shift``)
+    from tests.test_run_parity import _run_old_keys, ancestral
+
     composite, cp = merge({"m": system}, {"m": params})
-    view, vp = subsystem(composite, cp, "m")
-    traj = run(composite, cp, {"m": ancestral_step(view)}, ticks=6, key=KEY)
-    assert jnp.array_equal(traj.realised["m.push"], (traj.actions["m.push"] + 1) % 3)
-    x = traj.states["m.x"]
-    assert jnp.array_equal(x[1:], (x[:-1] + traj.realised["m.push"]) % 3)
+    coupled, coupled_params = with_mirror(composite, cp)
+    steps = {"model.m": ancestral(), "world": sample()}
+    traj = _run_old_keys(1, coupled, coupled_params, 6, KEY, steps, record_carries=True)
+    intended, realised = traj["model.m"].intended["push"], traj["model.m"].emitted["push"]
+    assert jnp.array_equal(realised, (intended + 1) % 3)
+    x = _states(traj, "world.m.x")
+    assert jnp.array_equal(x[1:], (x[:-1] + realised) % 3)
+    fixture = _fixture()
+    np.testing.assert_array_equal(intended, fixture["shift/actions/m.push"])
+    np.testing.assert_array_equal(
+        traj["model.m"].received["see"], fixture["shift/observations/m.see"]
+    )
+    np.testing.assert_array_equal(realised, fixture["shift/realised/m.push"])
+    np.testing.assert_array_equal(x, fixture["shift/states/m.x"])
 
 
 def test_a_modality_on_the_action_node_updates_its_belief_by_the_likelihood():
@@ -353,10 +391,30 @@ def test_a_merge_binds_native_control_nodes():
     with pytest.raises(ValueError, match="key it by 'a.push'"):
         composite.update_empirical_prior(cp, beliefs, {"a.push": 2, "b.push": 2})
     with pytest.raises(ValueError, match="key it by 'a.u_push'"):
-        agent_step(composite, legal={"b.u_push": jnp.ones(3, bool)})(KEY, {}, MindCarry(), cp)
-    view, vp = subsystem(composite, cp, "a")
-    traj = run(composite, cp, {"a": ancestral_step(view)}, ticks=3, key=KEY)
-    assert list(traj.actions) == ["a.push"]
+        plan(legal={"b.u_push": jnp.ones(3, bool)})(composite, KEY, None, None, cp)
+    #  coupled to its mirror, the bound node is the driver's: the run is the composite form's
+    #  (``tests/data/migration_driver.npz``, ``native``) under its key layout
+    from tests.test_run_parity import _run_old_keys, ancestral, idle
+
+    system, params = with_mirror(composite, cp)
+    steps = {"model.a": ancestral(), "model.b": idle, "world": sample()}
+    traj = _run_old_keys(2, system, params, 3, KEY, steps, record_carries=True)
+    assert list(traj["model.a"].intended) == ["push"] and traj["model.b"].intended == {}
+    fixture = _fixture()
+    np.testing.assert_array_equal(
+        traj["model.a"].intended["push"], fixture["native/actions/a.push"]
+    )
+    np.testing.assert_array_equal(
+        traj["model.a"].emitted["push"], fixture["native/realised/a.push"]
+    )
+    for n in "ab":
+        np.testing.assert_array_equal(
+            traj[f"model.{n}"].received["see"], fixture[f"native/observations/{n}.see"]
+        )
+    for name in ("a.x", "b.x"):
+        np.testing.assert_array_equal(
+            _states(traj, f"world.{name}"), fixture[f"native/states/{name}"]
+        )
     #  a terminated native node, and a kernel that moves with its node
     one, op = merge({"a": a, "b": b}, {"a": ap, "b": bp}, [Clamp("b.u_push", 1)])
     assert dict(one.subsystems)["b"].terminated == ("b.u_push",)
@@ -375,7 +433,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     document, arrays = describe(relay, rp)
     rebuilt = build(document, arrays=arrays)[0]
     agent, world = dict(rebuilt.subsystems)["agent"], dict(rebuilt.subsystems)["world"]
-    assert agent == dict(relay.subsystems)["agent"]._replace(config=())
+    assert agent == dict(relay.subsystems)["agent"]
     assert world.factors == (2, 3) and world.controls == () and world.relayed == ()
     (agent_s, ap), (world_s, wp) = agent_and_world()
     ended, ep = merge(
@@ -387,7 +445,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     assert "world.u_location" not in document["variables"]
     rebuilt = build(document, arrays=arrays)[0]
     assert dict(rebuilt.subsystems)["world"].terminated == ()
-    assert dict(rebuilt.subsystems)["agent"] == dict(ended.subsystems)["agent"]._replace(config=())
+    assert dict(rebuilt.subsystems)["agent"] == dict(ended.subsystems)["agent"]
 
 
 # --------------------------------------------------------------------- the actuator, further
