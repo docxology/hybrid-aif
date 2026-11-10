@@ -416,10 +416,17 @@
   }
 
   // ---- timeline ----
+  function reserve(host) {
+    // keep a rebuilt chart at least as tall as it was, so the pane never shrinks under the scroll
+    // position while the replay plays (the browser would clamp the scroll to the top)
+    var h = Math.max(host.offsetHeight, parseFloat(host.style.minHeight) || 0);
+    if (h) host.style.minHeight = h + "px";
+    host.innerHTML = "";
+  }
   function drawTimeline() {
     var host = $("timeline"), T = run().ticks, n = T.length, C = cache(), O = B.runs[other()].ticks;
     var W = Math.max(300, host.clientWidth - 16), L = W < 480 ? 46 : 64, R = 40, sx = function (i) { return L + i / n * (W - L - R); };
-    host.innerHTML = "";
+    reserve(host);
     var yS = 14, hS = 26, yE = 82, hE = 76, yC = 194, hC = 100, H = yC + hC + 28;
     var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img", "aria-label": "Timeline of the option in force, the energy level and coverage" }, host);
     svg.style.height = "auto";
@@ -503,7 +510,7 @@
   }
   function drawDecision() {
     var host = $("decision"), note = $("decnote"), cap = $("deccap"), lg = $("declegend");
-    host.innerHTML = ""; lg.innerHTML = "";
+    reserve(host); lg.innerHTML = "";
     if (!twoLevel()) {
       note.textContent = "In this setting the option is pinned to " + optLabel(B.meta.tiers.pinned_option) + ", so the scheduler does not run and there is no decision to show.";
       cap.textContent = ""; host.hidden = true; return;
@@ -635,7 +642,7 @@
       if (ch && top.indexOf(ch) < 0) top.push(ch);
       items = top;
     }
-    host.innerHTML = "";
+    reserve(host);
     if (!items.length) { host.textContent = mission && !two ? "No scheduler in this setting." : "No decision yet."; return; }
     var rg = mode === "terms" ? stackRange(items, terms) : objRange(items, terms), lo = Math.min(rg[0], 0), hi = Math.max(rg[1], 0), padx = (hi - lo) * 0.03 || 1; lo -= padx; hi += padx;
     var W = Math.max(300, host.clientWidth - 16), L = mission ? (W < 520 ? 124 : 190) : 74, R = 14, rowH = mode === "total" ? 36 : 58, top0 = 8, H = top0 + items.length * rowH + 34;
@@ -785,7 +792,12 @@
     var rt; window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(function () { BG = null; render(); }, 100); });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { drawMdl(); fullRedraw(); });
     // nav.js shows one pane at a time; a hidden pane has no size, so redraw when one is shown
-    document.addEventListener("hybrid-aif:pane", function () { BG = null; render(); });
+    document.addEventListener("hybrid-aif:pane", function () {
+      // a chart drawn while its pane was hidden has a fallback width and a wrong height: drop it
+      // and its reservation, so the first draw in view measures an empty box
+      ["timeline", "decision", "objective-chart"].forEach(function (id) { var h = $(id); if (h) { h.style.minHeight = ""; h.innerHTML = ""; } });
+      BG = null; render();
+    });
     window.__app = { set: function (o) {
       if (o.setting && B.runs[o.setting]) { S.setting = o.setting; $("setting").value = o.setting; $("tick").max = run().ticks.length - 1; BG = null; drawGraph(); }
       if (o.tier) { S.tier = o.tier; $("objtier").value = o.tier; }
