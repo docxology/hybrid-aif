@@ -104,7 +104,7 @@ each reader. Drag the tick, switch the setting, and watch the map fill in.
 > each such *mixture component* is drawn as one 2σ ellipse; they are long and thin by design,
 > because the camera and the fix constrain position unequally.
 
-## Two timescales {#timescales}
+## Two timescales {#timescales .sub}
 
 Run on its own, the rover tier maps its neighbourhood and then stalls. The reason is that *novelty*,
 the information a plan expects to gain about the table, is local: once the cells the rover can reach
@@ -126,7 +126,7 @@ its energy risk outweighs its novelty. The rover reaches it by crossing.
 
 <!-- block: decision-figure -->
 
-## The camera {#camera}
+## The camera {#camera .sub}
 
 The rover's forward camera is a 48 by 48 greyscale picture looking along the field's +y axis. The
 panels below show it at four times scale (192 pixels, no smoothing). The rover's model holds the
@@ -140,7 +140,7 @@ and the position.
 > bar each, with the true one marked. Overall brightness is the illumination at the rover’s
 > position; the ground texture marks the terrain class; the top quarter is sky.
 
-## Objectives as intervals {#objective}
+## Objectives as intervals {#objective .sub}
 
 Every plan is scored by every objective term, and every score is an interval. The bar spans the
 lower and upper bound and the mark is the midpoint, which is what the planner ranks on. A term that
@@ -151,7 +151,7 @@ planner with the scheduler's exact enumeration of option sequences.
 
 <!-- block: objective-viewer -->
 
-## Description length {#mdl}
+## Description length {#mdl .sub}
 
 What each part of the model costs to write down, in nats, grouped by tier. The description length is
 the model's own complexity measure, computed from the same declaration that runs the agent. A

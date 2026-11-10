@@ -13,11 +13,15 @@ Files:
 
 ## Layout
 
-A fixed sidebar (a top bar with a menu button below 900 px wide) holds the logo, the table of
-contents and the small print (version, licence, links); beside it the page shows one pane at a
-time. The Intro pane is everything in `page-prose.md` before the first `##`; each `## Heading
-{#id}` section is a pane with that id, and its `###` subheadings are listed under it in the
-contents. The URL hash selects the pane: `#id` opens a pane, the id of a subheading opens its pane
+A fixed sidebar (a top bar with a menu button below 900 px wide) holds a logo (the
+`sidebar-logo` block), the table of contents and the small print (version, licence, links); beside
+it the page shows one pane at a time. The Intro pane is everything in `page-prose.md` before the
+first `##`, headed by the logo (the `title-image` block); each `## Heading {#id}` section is a
+pane with that id, and its `###` subheadings are listed under it in the contents. A section
+written `## Heading {#id .sub}` is a child pane, listed under the nearest section before it
+without `.sub`; while a child is open its parent's entry is marked open. The demo (the section that
+places the `hero-viewer` block) and its children share a bar that sticks to the top of the column:
+the demo's heading and the playback controls (the `demo-bar` block). The URL hash selects the pane: `#id` opens a pane, the id of a subheading opens its pane
 and scrolls to it, and an empty or unknown hash opens `#intro`; a link in the prose to `#id`
 therefore switches panes. The last pane, Documentation (`#documentation`), is added by the build
 from the `documentation` block in `page-blocks.html` until the markdown has a section with that id.
@@ -32,12 +36,15 @@ then run, from the repository root (or from `docs/site` as `python build_page.py
 ```bash
 .venv/bin/python docs/site/build_page.py          # regenerate index.html
 .venv/bin/python docs/site/build_page.py --check  # exit 1 if index.html is out of date
+.venv/bin/python docs/site/build_page.py --prose COPY.md --out OUT.html  # build a draft copy
 ```
 
 The conventions (section ids, lead paragraphs, captions, placeholders) are listed in a comment at
 the top of `page-prose.md`; the build's docstring has the full list. Sections are the panes and
 their headings the contents entries, so adding, renaming or reordering a `##` section changes the
-sidebar too. A `###` subheading gets an id from its words, or the one written as `### Title {#id}`.
+sidebar too; `{#id .sub}` (id and class in either order) nests a section under the one before
+it, and any other class is a build error. A `###` subheading gets an id from its words, or the one
+written as `### Title {#id}`.
 The header's `links` block and the `version` block are shown in the sidebar's small print, and the
 TLDR is plain prose. What is not in the markdown lives in `page-blocks.html` as named
 blocks, kept verbatim, which the markdown refers to with `<!-- block: NAME -->` placeholders: the

@@ -4,16 +4,20 @@
   // id or the id of an element inside a pane (a subheading), optionally followed by the viewer's
   // "&key=value" settings; a hash of settings only opens the viewer's pane, and an empty or
   // unknown hash opens the Intro pane. Showing a pane fires "hybrid-aif:pane" on the document so
-  // the viewer can redraw at the pane's size.
+  // the viewer can redraw at the pane's size. A child pane (data-parent) marks its parent's
+  // contents entry as open. The demo bar (data-panes lists the panes it belongs to) is shown over
+  // those panes and sticks to the top; scrolling to a subheading leaves room for it.
   var root = document.documentElement;
   var main = document.getElementById("main");
   var sidebar = document.getElementById("sidebar");
   var menu = document.getElementById("menu");
+  var bar = document.getElementById("demobar");
+  var barPanes = bar ? (bar.getAttribute("data-panes") || "").split(/\s+/) : [];
   if (!main || !sidebar) return;
   var panes = Array.prototype.slice.call(main.querySelectorAll(".pane"));
   var links = Array.prototype.slice.call(sidebar.querySelectorAll(".toc a"));
   var narrow = window.matchMedia("(max-width: 900px)");
-  var current = null, target = null, lastScroll = null;
+  var current = null, target = null, readerScrolled = false;
 
   function resolve() {
     var tokens = location.hash.replace(/^#/, "").split("&"), id = null, settings = false;
@@ -32,10 +36,22 @@
     return { pane: pane, el: el };
   }
 
+  // the height of what sticks to the top of the viewport: the narrow top bar and the demo bar
+  function stuck() {
+    var top = narrow.matches ? sidebar.offsetHeight : 0;
+    var h = bar && !bar.hidden ? bar.offsetHeight : 0;
+    root.style.setProperty("--topbar-h", top + "px");
+    root.style.setProperty("--stuck-h", top + h + "px");
+    return top + h;
+  }
+
   function scrollToTarget() {
-    if (target && target !== current) target.scrollIntoView({ block: "start", behavior: "instant" });
-    else window.scrollTo({ top: 0, left: 0, behavior: "instant" });
-    lastScroll = window.scrollY;
+    var off = stuck();
+    if (target && target !== current) {
+      var y = target.getBoundingClientRect().top + window.scrollY - off - 12;
+      window.scrollTo({ top: Math.max(0, y), left: 0, behavior: "instant" });
+    } else window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    readerScrolled = false;
   }
 
   function show() {
@@ -44,6 +60,7 @@
     if (r.pane !== current) {
       panes.forEach(function (p) { p.classList.toggle("is-current", p === r.pane); });
       current = r.pane;
+      if (bar) bar.hidden = barPanes.indexOf(current.id) < 0;
       document.dispatchEvent(new CustomEvent("hybrid-aif:pane", { detail: { id: current.id } }));
     }
     links.forEach(function (a) {
@@ -51,6 +68,7 @@
       if (a.hasAttribute("data-pane")) {
         if (id === current.id) a.setAttribute("aria-current", "page");
         else a.removeAttribute("aria-current");
+        a.classList.toggle("is-parent", id === current.getAttribute("data-parent"));
       } else {
         a.classList.toggle("is-current", target !== current && id === target.id);
       }
@@ -78,15 +96,19 @@
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && sidebar.classList.contains("open")) { setMenu(false); menu.focus(); }
   });
-  narrow.addEventListener("change", function () { setMenu(false); });
+  narrow.addEventListener("change", function () { setMenu(false); stuck(); });
+  window.addEventListener("resize", stuck);
   panes.forEach(function (p) { p.setAttribute("tabindex", "-1"); });
   window.addEventListener("hashchange", show);
   // the browser scrolls to the hash's element itself on load; settle on the pane's own position
-  window.addEventListener("load", function () { if (window.scrollY !== lastScroll) scrollToTarget(); });
+  window.addEventListener("load", function () { if (!readerScrolled) scrollToTarget(); });
+  ["wheel", "touchstart", "keydown", "mousedown"].forEach(function (type) {
+    window.addEventListener(type, function () { readerScrolled = true; }, { passive: true });
+  });
   // the viewer's first draw can change the height above a subheading: keep it in view, unless
-  // the reader has scrolled since
+  // the reader has scrolled (or pressed a key or button) since
   document.addEventListener("hybrid-aif:ready", function () {
-    if (target && target !== current && window.scrollY === lastScroll) scrollToTarget();
+    if (target && target !== current && !readerScrolled) scrollToTarget();
   });
   show();
 })();

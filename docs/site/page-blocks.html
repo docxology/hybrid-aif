@@ -4,8 +4,11 @@ a placeholder comment, and docs/site/build_page.py pastes it in. Each block runs
 "block: NAME" comment to the closing "/block" comment. {{caption}} marks where the caption from
 the markdown goes; head takes {{title}} and {{description}} from the front matter. The blocks
 head (top of the page) and tail (noscript fallback and the script tags) are always used, and so
-are title-image (the sidebar logo), version and links (the sidebar small print) and documentation
-(the Documentation pane, while the markdown has no section with the id documentation).
+are sidebar-logo (the logo at the top of the sidebar; title-image is the Intro's heading), version
+and links (the sidebar small print), documentation (the Documentation pane, while the markdown has
+no section with the id documentation) and demo-bar (the playback controls that stick to the top of
+the column over the demo's panes; {{title}} is the demo section's heading, {{href}} its link and
+{{panes}} the ids of the demo and its child sections).
 -->
 
 <!-- block: head -->
@@ -16,7 +19,7 @@ are title-image (the sidebar logo), version and links (the sidebar small print) 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{title}}</title>
 <meta name="description" content="{{description}}">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%231f5fbf' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%231f5fbf'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="static/favicon.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -24,6 +27,10 @@ are title-image (the sidebar logo), version and links (the sidebar small print) 
 
 <!-- block: title-image -->
 <img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif">
+<!-- /block -->
+
+<!-- block: sidebar-logo -->
+<img class="sidebar-logo" src="static/hybrid-aif.svg" alt="hybrid-aif">
 <!-- /block -->
 
 <!-- block: version -->
@@ -43,12 +50,20 @@ are title-image (the sidebar logo), version and links (the sidebar small print) 
   </nav>
 <!-- /block -->
 
-<!-- block: hero-viewer -->
-  <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
-  <div class="controls" role="group" aria-label="Playback">
+<!-- block: demo-bar -->
+<div class="demobar" id="demobar" data-panes="{{panes}}" hidden>
+  <a class="demobar-title" href="{{href}}">{{title}}</a>
+  <div class="demobar-controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
     <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+  </div>
+</div>
+<!-- /block -->
+
+<!-- block: hero-viewer -->
+  <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
+  <div class="controls">
     <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
       <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
       <label><input type="radio" name="layer" value="light"> illumination</label>

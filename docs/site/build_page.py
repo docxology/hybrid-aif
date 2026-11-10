@@ -5,21 +5,25 @@ panels and controls, the code listings, the noscript fallback and the script tag
 page-blocks.html as named blocks. The markdown names a block with a placeholder line
 ``<!-- block: NAME -->`` and the build pastes the block's HTML there verbatim.
 
-The page is a fixed sidebar beside one pane at a time. The sidebar holds the logo (the
-``title-image`` block), a table of contents generated from the sections and their subheadings,
-and small print (the ``version`` and ``links`` blocks). Everything before the first ``##`` is the
-Intro pane (id ``intro``); each section is a pane; a last pane, Documentation (id
-``documentation``), is added from the ``documentation`` block unless the markdown has a section
-with that id. The script nav.js shows the pane the URL hash names.
+The page is a fixed sidebar beside one pane at a time. The sidebar holds a logo (the
+``sidebar-logo`` block), a table of contents generated from the sections, their child sections
+and their subheadings, and small print (the ``version`` and ``links`` blocks). Everything before
+the first ``##`` is the Intro pane (id ``intro``); each section is a pane; a last pane,
+Documentation (id ``documentation``), is added from the ``documentation`` block unless the
+markdown has a section with that id. The section that places the ``hero-viewer`` block is the
+demo: the ``demo-bar`` block (the playback controls), titled with that section's heading, sticks
+to the top of the column while the demo or one of its child sections is open. The script nav.js
+shows the pane the URL hash names.
 
 The ``markdown`` package is not a dependency of the project, so this module carries a minimal
 converter for exactly the subset page-prose.md uses:
 
 - front matter between ``---`` lines: ``title`` and ``description`` fill the head block;
-- ``# text``: the page title in the Intro pane (visually hidden; the sidebar shows the logo);
-  ``## text {#id}``: a section, which is a pane with that id; ``### text`` or
-  ``### text {#id}``: a subheading inside a section, listed under its pane in the contents, with
-  the given id or one derived from its words;
+- ``# text``: the heading of the Intro pane;
+  ``## text {#id}``: a section, which is a pane with that id; ``## text {#id .sub}`` (id and
+  class in either order): a child section, a pane of its own listed under the nearest preceding
+  section without ``.sub``; ``### text`` or ``### text {#id}``: a subheading inside a section,
+  listed under its pane in the contents, with the given id or one derived from its words;
 - paragraphs (consecutive lines, joined with single spaces); a line ``{.name}`` directly above a
   paragraph gives it that class; by default paragraphs inside a section are ``lead``
   paragraphs and paragraphs in the header and footer have no class; the ``links`` block, named in
@@ -40,6 +44,7 @@ docs/site::
     python docs/site/build_page.py            # write index.html
     python docs/site/build_page.py --check    # exit 1 if index.html differs from the build
     python docs/site/build_page.py --out PATH # write the build elsewhere
+    python docs/site/build_page.py --prose PATH --out PATH  # build another copy of the markdown
 """
 
 from __future__ import annotations
@@ -58,11 +63,13 @@ PAGE = HERE / "index.html"
 PLACEHOLDER = re.compile(r"<!-- block: ([A-Za-z0-9_-]+) -->")
 BLOCK_OPEN = re.compile(r"^<!-- block: ([A-Za-z0-9_-]+) -->$")
 BLOCK_CLOSE = "<!-- /block -->"
-SECTION = re.compile(r"^## (.+?) \{#([A-Za-z0-9_-]+)\}$")
+HEADING_ATTRS = re.compile(r"^(.+?) \{([^{}]*)\}$")
+ATTR_TOKEN = re.compile(r"^([#.])([A-Za-z0-9_-]+)$")
+SECTION_CLASSES = {"sub"}  # .sub: a child section of the nearest top-level section
 ATTR = re.compile(r"^\{\.([A-Za-z0-9_-]+)\}$")
-SUBHEADING_ID = re.compile(r"^(.+?) \{#([A-Za-z0-9_-]+)\}$")
 CAPTION_SLOT = "{{caption}}"
 SIDEBAR_LINKS = "links"  # a block the header names, placed in the sidebar instead
+DEMO_BLOCK = "hero-viewer"  # the section placing this block is the demo, with the demo bar
 DOCS_ID = "documentation"  # the synthetic last pane, unless the markdown has a section with this id
 # set before the layout is painted, so that panes are hidden only when the script can show them
 JS_FLAG = '<script>document.documentElement.classList.add("js");</script>'
@@ -198,9 +205,61 @@ def toc_label(fragment: str) -> str:
     return re.sub(r"<[^>]+>", "", fragment)
 
 
-def sidebar(blocks: dict[str, str], panes: list[tuple[str, str, list[tuple[str, str]]]]) -> str:
+def heading_attrs(text: str, allowed: set[str]) -> tuple[str, str | None, set[str]]:
+    """Split ``Title {#id .class}`` (tokens in any order) into title, id and classes."""
+    m = HEADING_ATTRS.match(text)
+    if not m:
+        return text, None, set()
+    title, ident, classes = m.group(1), None, set()
+    for token in m.group(2).split():
+        tm = ATTR_TOKEN.match(token)
+        if not tm:
+            raise PageError(f"cannot read {token!r} in a heading's braces: {text!r}")
+        if tm.group(1) == "#":
+            if ident is not None:
+                raise PageError(f"a heading has two ids: {text!r}")
+            ident = tm.group(2)
+        elif tm.group(2) not in allowed:
+            known = ", ".join(f".{c}" for c in sorted(allowed)) or "none"
+            raise PageError(f"unknown class .{tm.group(2)} in {text!r} (known: {known})")
+        else:
+            classes.add(tm.group(2))
+    return title, ident, classes
+
+
+class Pane:
+    """A table-of-contents entry: a pane, its subheadings and its child panes."""
+
+    def __init__(self, ident: str, label: str, parent: str | None = None) -> None:
+        self.ident, self.label, self.parent = ident, label, parent
+        self.title = label  # the heading's HTML
+        self.subs: list[tuple[str, str]] = []
+        self.children: list[Pane] = []
+
+
+def toc_items(panes: list[Pane], depth: int) -> list[str]:
+    pad = "  " * (2 * depth + 3)
+    out = [f"{pad[:-2]}<ul>"]
+    for pane in panes:
+        out.append(f'{pad}<li><a href="#{pane.ident}" data-pane="{pane.ident}">{pane.label}</a>')
+        if pane.subs or pane.children:
+            if pane.subs:
+                inner = "  " * (2 * depth + 5)
+                out.append(f"{inner[:-2]}<ul>")
+                out += [f'{inner}<li><a href="#{i}">{t}</a></li>' for i, t in pane.subs]
+                out.append(f"{inner[:-2]}</ul>")
+            if pane.children:
+                out += toc_items(pane.children, depth + 1)
+            out.append(f"{pad}</li>")
+        else:
+            out[-1] += "</li>"
+    out.append(f"{pad[:-2]}</ul>")
+    return out
+
+
+def sidebar(blocks: dict[str, str], panes: list[Pane]) -> str:
     """The sidebar: logo, table of contents (panes with their subheadings), small print."""
-    logo = get_block(blocks, "title-image").strip()
+    logo = get_block(blocks, "sidebar-logo").strip()
     version = get_block(blocks, "version").strip().replace('id="version"', 'class="version"')
     out = [
         '<aside class="sidebar" id="sidebar">',
@@ -211,20 +270,7 @@ def sidebar(blocks: dict[str, str], panes: list[tuple[str, str, list[tuple[str, 
         "  </div>",
         '  <div class="sidebar-panel" id="sidebar-panel">',
         '  <nav class="toc" aria-label="Contents">',
-        "    <ul>",
-    ]
-    for pane_id, label, subs in panes:
-        item = f'      <li><a href="#{pane_id}" data-pane="{pane_id}">{label}</a>'
-        if subs:
-            out.append(item)
-            out.append("        <ul>")
-            out += [f'          <li><a href="#{i}">{t}</a></li>' for i, t in subs]
-            out.append("        </ul>")
-            out.append("      </li>")
-        else:
-            out.append(item + "</li>")
-    out += [
-        "    </ul>",
+        *toc_items(panes, 0),
         "  </nav>",
         '  <div class="smallprint">',
         f"    <p>Noumenal Labs &middot; {version} &middot; MIT</p>",
@@ -234,6 +280,17 @@ def sidebar(blocks: dict[str, str], panes: list[tuple[str, str, list[tuple[str, 
         "</aside>",
     ]
     return "\n".join(out)
+
+
+def demo_bar(blocks: dict[str, str], demo: Pane | None) -> list[str]:
+    """The demo's sticky bar, shown over the demo pane and its child panes."""
+    if demo is None:
+        return []
+    title = demo.title
+    group = " ".join([demo.ident] + [c.ident for c in demo.children])
+    bar = get_block(blocks, "demo-bar").replace("{{title}}", title)
+    bar = bar.replace("{{href}}", f"#{demo.ident}").replace("{{panes}}", group)
+    return [bar]
 
 
 def build(prose: str, blocks_text: str) -> str:
@@ -247,9 +304,10 @@ def build(prose: str, blocks_text: str) -> str:
     head = head.replace("{{description}}", escape_text(meta["description"]).replace('"', "&quot;"))
 
     out = ['<section class="pane" id="intro" aria-label="Intro">']
-    # (pane id, ToC label, [(subheading id, label)]) in page order
-    panes: list[tuple[str, str, list[tuple[str, str]]]] = [("intro", "Intro", [])]
+    panes = [Pane("intro", "Intro")]  # top-level entries; child panes hang under theirs
+    current: Pane = panes[0]
     ids = {"intro"}
+    demo: Pane | None = None  # the section that places DEMO_BLOCK
     region = "header"  # header, main, footer
     in_tldr = False
     section_open = False
@@ -284,8 +342,8 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError("# heading belongs in the header")
             out.append(f'  <h1 class="intro-title">{inline(first[2:], blocks)}</h1>')
         elif first.startswith("## "):
-            sm = SECTION.match(first)
-            if not sm:
+            text, pane_id, classes = heading_attrs(first[3:], SECTION_CLASSES)
+            if pane_id is None:
                 raise PageError(
                     f"a section heading needs an id, as in '## Title {{#id}}': {first!r}"
                 )
@@ -299,23 +357,33 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError("no sections after <!-- footer -->")
             if section_open:
                 out += ["</section>", ""]
-            title, pane_id = inline(sm.group(1), blocks), sm.group(2)
+            title = inline(text, blocks)
             if pane_id in ids:
                 raise PageError(f"section id {pane_id!r} is used twice")
             ids.add(pane_id)
-            panes.append((pane_id, toc_label(title), []))
-            out += [f'<section class="pane" id="{pane_id}">', f"  <h2>{title}</h2>"]
+            if "sub" in classes:
+                top = panes[-1]
+                if top.ident == "intro":
+                    raise PageError(f"a .sub section needs a section before it: {first!r}")
+                current = Pane(pane_id, toc_label(title), parent=top.ident)
+                top.children.append(current)
+                attr = f' data-parent="{top.ident}"'
+            else:
+                current = Pane(pane_id, toc_label(title))
+                panes.append(current)
+                attr = ""
+            current.title = title
+            out += [f'<section class="pane" id="{pane_id}"{attr}>', f"  <h2>{title}</h2>"]
             section_open = True
         elif first.startswith("### "):
-            text = first[4:]
-            hm = SUBHEADING_ID.match(text)
-            title = inline(hm.group(1) if hm else text, blocks)
-            sub_id = hm.group(2) if hm else slug(title)
+            text, sub_id, _ = heading_attrs(first[4:], set())
+            title = inline(text, blocks)
+            sub_id = sub_id or slug(title)
             if sub_id in ids:
                 raise PageError(f"subheading id {sub_id!r} is used twice; give one '{{#id}}'")
             ids.add(sub_id)
             if region == "main":
-                panes[-1][2].append((sub_id, toc_label(title)))
+                current.subs.append((sub_id, toc_label(title)))
             out.append(f'  <h3 id="{sub_id}">{title}</h3>')
         elif first.startswith("- "):
             out.append(f"{indent}<ul>")
@@ -337,6 +405,10 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError(f"block {first!r} {need} a caption ('> ' lines after it)")
             if region == "header" and name == SIDEBAR_LINKS:
                 continue  # the header links live in the sidebar's small print
+            if name == DEMO_BLOCK:
+                if region != "main" or demo is not None:
+                    raise PageError(f"block {name!r} belongs in one section")
+                demo = current
             if caption:
                 text = " ".join(line[1:].strip() for line in caption)
                 html = html.replace(CAPTION_SLOT, inline(text, blocks))
@@ -353,7 +425,7 @@ def build(prose: str, blocks_text: str) -> str:
     if region != "footer":
         raise PageError("page-prose.md must end with <!-- footer --> and the footer text")
     if DOCS_ID not in ids:
-        panes.append((DOCS_ID, "Documentation", []))
+        panes.append(Pane(DOCS_ID, "Documentation"))
         out += [
             f'<section class="pane" id="{DOCS_ID}">',
             "  <h2>Documentation</h2>",
@@ -368,6 +440,7 @@ def build(prose: str, blocks_text: str) -> str:
         "",
         '<div class="column">',
         '<main id="main">',
+        *demo_bar(blocks, demo),
         *out,
         "</main>",
         f'<footer class="pagefoot">{"".join(footer)}</footer>',
@@ -385,9 +458,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check", action="store_true", help="compare with index.html, write nothing"
     )
+    parser.add_argument(
+        "--prose", type=Path, default=PROSE, help="the markdown (default: page-prose.md)"
+    )
     args = parser.parse_args(argv)
     try:
-        page = build(PROSE.read_text(encoding="utf-8"), BLOCKS.read_text(encoding="utf-8"))
+        page = build(args.prose.read_text(encoding="utf-8"), BLOCKS.read_text(encoding="utf-8"))
     except PageError as err:
         print(f"build_page: {err}", file=sys.stderr)
         return 2

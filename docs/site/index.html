@@ -5,29 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hybrid-aif: a survey rover, one table, two timescales</title>
 <meta name="description" content="hybrid-aif is a JAX library for active inference over models that mix discrete and continuous state. This page replays a precomputed run of a mapping rover with a slow survey scheduler, two tiers that read one learned terrain table.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%231f5fbf' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%231f5fbf'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="static/favicon.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <script>document.documentElement.classList.add("js");</script>
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-top">
-    <a class="brand" href="#intro"><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></a>
+    <a class="brand" href="#intro"><img class="sidebar-logo" src="static/hybrid-aif.svg" alt="hybrid-aif"></a>
     <button class="menu" id="menu" type="button" aria-expanded="false" aria-controls="sidebar-panel" hidden>Menu</button>
   </div>
   <div class="sidebar-panel" id="sidebar-panel">
   <nav class="toc" aria-label="Contents">
     <ul>
       <li><a href="#intro" data-pane="intro">Intro</a></li>
-      <li><a href="#hero" data-pane="hero">A survey rover, one table, two readers</a></li>
-      <li><a href="#timescales" data-pane="timescales">Two timescales</a>
+      <li><a href="#hero" data-pane="hero">A survey rover, one table, two readers</a>
         <ul>
-          <li><a href="#the-schedulers-decision">The scheduler's decision</a></li>
+          <li><a href="#timescales" data-pane="timescales">Two timescales</a>
+            <ul>
+              <li><a href="#the-schedulers-decision">The scheduler's decision</a></li>
+            </ul>
+          </li>
+          <li><a href="#camera" data-pane="camera">The camera</a></li>
+          <li><a href="#objective" data-pane="objective">Objectives as intervals</a></li>
+          <li><a href="#mdl" data-pane="mdl">Description length</a></li>
         </ul>
       </li>
-      <li><a href="#camera" data-pane="camera">The camera</a></li>
-      <li><a href="#objective" data-pane="objective">Objectives as intervals</a></li>
-      <li><a href="#mdl" data-pane="mdl">Description length</a></li>
       <li><a href="#start" data-pane="start">Install and quickstart</a></li>
       <li><a href="#cite" data-pane="cite">Citation</a></li>
       <li><a href="#documentation" data-pane="documentation">Documentation</a></li>
@@ -47,6 +50,14 @@
 
 <div class="column">
 <main id="main">
+<div class="demobar" id="demobar" data-panes="hero timescales camera objective mdl" hidden>
+  <a class="demobar-title" href="#hero">A survey rover, one table, two readers</a>
+  <div class="demobar-controls" role="group" aria-label="Playback">
+    <button id="play" type="button" aria-label="Play">Play</button>
+    <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
+    <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+  </div>
+</div>
 <section class="pane" id="intro" aria-label="Intro">
   <h1 class="intro-title"><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></h1>
   <p class="sub">Continuous-discrete-amortized active inference in JAX</p>
@@ -67,10 +78,7 @@
   <p class="lead">A rover is mapping a field of three kinds of ground (firm, rough and ice) by driving over it and learning which kind lies where. Its energy drains on inclines and rough ground and charges wherever sunlight falls; there is no dock. It finds its position from a satellite fix, whose noise grows where terrain blocks the sky, and it looks ahead through a forward camera. A fast rover tier steers every tick. A slow tier, the scheduler, picks an <em>option</em> every twelve ticks, a choice held for that long: survey one quarter of the field (a sector), or stop and charge.</p>
   <p class="lead">What the rover learns is one table: for each of 256 cells, how likely each kind of ground is. The model holds it as a <em>parameter variable</em>, a node of its own with a prior and an edge to every factor that reads it. The rover's terrain factor reads it to predict the ground under it; the scheduler's map factor reads the same table to value a sector. The model graph draws it once, with an edge to each reader. Drag the tick, switch the setting, and watch the map fill in.</p>
   <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
-  <div class="controls" role="group" aria-label="Playback">
-    <button id="play" type="button" aria-label="Play">Play</button>
-    <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
-    <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+  <div class="controls">
     <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
       <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
       <label><input type="radio" name="layer" value="light"> illumination</label>
@@ -92,7 +100,7 @@
   <p class="figcap">The field: the true ground (green-grey firm, tan rough, blue ice) with height contours, under the map the rover has learned so far (a cell is tinted by its most probable ground, more strongly the surer the rover is, and left clear until the rover has seen it), the sector grid with the option in force shaded, the rover with its heading, its belief about its position, and the plan it chose for the next three ticks (bold), with the planner&rsquo;s other warm starts drawn fainter. Plans are rolled forward by the world&rsquo;s rule: <span id="dynrule"></span>. The graph: the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The scheduler&rsquo;s cell reading, the cell holding most of the rover&rsquo;s position belief, is not drawn: it is a read across the tiers, taken once per decision, of a belief that stays the rover&rsquo;s own. The belief over position is a weighted sum of Gaussians, and each such <em>mixture component</em> is drawn as one 2&sigma; ellipse; they are long and thin by design, because the camera and the fix constrain position unequally.</p>
 </section>
 
-<section class="pane" id="timescales">
+<section class="pane" id="timescales" data-parent="hero">
   <h2>Two timescales</h2>
   <p class="lead">Run on its own, the rover tier maps its neighbourhood and then stalls. The reason is that <em>novelty</em>, the information a plan expects to gain about the table, is local: once the cells the rover can reach in a few ticks have been seen, nothing pulls it further. The scheduler scores a whole sector at once. Its <em>pooled reading</em> of a sector is the twelve readings a survey takes, counted together as one slow reading, so a trip to unsurveyed ground earns enough novelty to pay for its energy.</p>
   <p class="lead">Both runs below use the same rover, model and world. In one the option is pinned to sector 1; in the other the scheduler chooses it. Coverage, the fraction of cells whose most probable kind of ground has probability above 0.6, ends at 0.45 against 0.24. Sector 4 is never chosen: at every decision its energy risk outweighs its novelty. The rover reaches it by crossing.</p>
@@ -110,7 +118,7 @@
   </figure>
 </section>
 
-<section class="pane" id="camera">
+<section class="pane" id="camera" data-parent="hero">
   <h2>The camera</h2>
   <p class="lead">The rover's forward camera is a 48 by 48 greyscale picture looking along the field's +y axis. The panels below show it at four times scale (192 pixels, no smoothing). The rover's model holds the camera as a neural likelihood, a network that predicts the picture from the rover's position and the ground type; inference runs that likelihood backwards, so the picture informs both the ground type and the position.</p>
   <figure class="camerafig" id="camerafig">
@@ -119,7 +127,7 @@
   </figure>
 </section>
 
-<section class="pane" id="objective">
+<section class="pane" id="objective" data-parent="hero">
   <h2>Objectives as intervals</h2>
   <p class="lead">Every plan is scored by every objective term, and every score is an interval. The bar spans the lower and upper bound and the mark is the midpoint, which is what the planner ranks on. A term that is exact is a point; a term over a mixture, such as the risk on the rover's position, carries a bracket from closed-form entropy bounds. Terms that read the camera go through the decoder's linearisation at the belief and are marked approximate. Switch tiers to compare the rover's gradient planner with the scheduler's exact enumeration of option sequences.</p>
   <p class="lead" id="objnote"></p>
@@ -134,7 +142,7 @@
   <div id="tip" class="tip" role="status" hidden></div>
 </section>
 
-<section class="pane" id="mdl">
+<section class="pane" id="mdl" data-parent="hero">
   <h2>Description length</h2>
   <p class="lead">What each part of the model costs to write down, in nats, grouped by tier. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table, density or network is priced by its family alone and flagged approximate. The parameter variable <code>rover.field</code> is priced once, under its own entry; the two factors that read it, <code>rover.terrain</code> and <code>mission.map</code>, pay for their structure only.</p>
   <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">entries</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody></table></div>

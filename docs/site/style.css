@@ -4,7 +4,7 @@
   --o0:#6f9bd6;--o1:#e29a62;--o2:#6dbb8f;--o3:#a67fd1;--o4:#e0bb3a;
   --tf:#dfe6d8;--tr:#e4d3b9;--ti:#d3e3ef;--mf:#2a8a5a;--mr:#b8651a;--mi:#1f5fbf;--contour:rgba(70,55,30,.38);--cellline:rgba(0,0,0,.07);--plan:#c4175a;--ell:#7a2bd1;--washfix:#7a2bd1;
   --qg:#2a8a5a;--qb:#c2571a;--qs:#9a9fa5;
-  --side-bg:#f3f4f2;--toc-current:#e1e9f6;
+  --side-bg:#f3f4f2;--toc-current:#e1e9f6;--toc-parent:#eef2f9;
   --side-w:17rem;--measure:42rem;--wide:64rem;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -15,19 +15,19 @@
   --o0:#4f80c0;--o1:#c07a45;--o2:#4a9a72;--o3:#9a76cc;--o4:#d4a92a;
   --tf:#2b3a30;--tr:#4a3e2c;--ti:#2c4254;--mf:#5cc596;--mr:#f0a060;--mi:#6aa3f0;--contour:rgba(255,255,255,.28);--cellline:rgba(255,255,255,.07);--plan:#ff6fa0;--ell:#b98af5;--washfix:#b98af5;
   --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;
-  --side-bg:#1b1d20;--toc-current:#22324a;}}
+  --side-bg:#1b1d20;--toc-current:#22324a;--toc-parent:#1f2633;}}
 :root[data-theme="dark"]{--bg:#16181a;--fg:#e6e7e8;--muted:#9aa0a6;--line:#34383c;--panel:#1f2225;
   --accent:#6aa3f0;--c1:#6aa3f0;--c2:#f0a060;--c3:#5cc596;--c4:#b08af0;--c5:#d4b24a;--warn:#f08a82;
   --o0:#4f80c0;--o1:#c07a45;--o2:#4a9a72;--o3:#9a76cc;--o4:#d4a92a;
   --tf:#2b3a30;--tr:#4a3e2c;--ti:#2c4254;--mf:#5cc596;--mr:#f0a060;--mi:#6aa3f0;--contour:rgba(255,255,255,.28);--cellline:rgba(255,255,255,.07);--plan:#ff6fa0;--ell:#b98af5;--washfix:#b98af5;
   --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;
-  --side-bg:#1b1d20;--toc-current:#22324a;}
+  --side-bg:#1b1d20;--toc-current:#22324a;--toc-parent:#1f2633;}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.6 var(--sans)}
 .wrap{max-width:900px;margin:0 auto;padding:0 16px}
 h1{font-size:2.2rem;margin:0;letter-spacing:-.01em}
-.title-image{display:block;width:min(100%,33.5rem);height:auto}
+.title-image{display:block;width:min(100%,33.5rem);height:auto;margin-bottom:1.1rem}
 h2{font-size:1.4rem;margin:0 0 .4rem;padding-top:.2rem}
 .sub{font-size:1.3rem;line-height:1.35;color:var(--fg);margin:0 0 .3rem}
 .byline{color:var(--muted);font-size:.9rem;margin:.2rem 0 1.4rem}
@@ -37,17 +37,18 @@ h2{font-size:1.4rem;margin:0 0 .4rem;padding-top:.2rem}
 .sidebar{position:fixed;top:0;bottom:0;left:0;width:var(--side-w);display:flex;flex-direction:column;background:var(--side-bg);border-right:1px solid var(--line);overflow-y:auto;z-index:20}
 .sidebar-top{padding:1.6rem 1.25rem 1rem}
 .brand{display:block}
-.brand .title-image{width:100%}
+.sidebar-logo{display:block;width:100%;height:auto}
 .menu{display:none}
 .sidebar-panel{display:flex;flex-direction:column;flex:1 0 auto}
 .toc{font-size:.92rem;padding:0 .75rem}
 .toc ul{list-style:none;margin:0;padding:0}
 .toc ul ul{margin:.1rem 0 .3rem .9rem;padding-left:.5rem;border-left:1px solid var(--line);font-size:.86rem}
 .toc a{display:block;padding:.3rem .5rem;border-radius:4px;color:var(--fg);text-decoration:none;line-height:1.35}
-.toc ul ul a{color:var(--muted);padding:.2rem .5rem}
+.toc ul ul a:not([data-pane]){color:var(--muted);padding:.2rem .5rem}
 .toc a:hover{color:var(--accent);text-decoration:underline}
 .toc a[aria-current="page"]{background:var(--toc-current);color:var(--accent);font-weight:600}
 .toc a.is-current{color:var(--accent)}
+.toc a.is-parent{background:var(--toc-parent);color:var(--accent)}
 .toc a:focus-visible,.brand:focus-visible,.menu:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .smallprint{margin-top:auto;padding:1.2rem 1.25rem 1.4rem;font-size:.78rem;color:var(--muted);line-height:1.5}
 .smallprint p{margin:0 0 .4rem}
@@ -58,8 +59,17 @@ main{max-width:var(--wide)}
 .pane:focus{outline:none}
 .js .pane:not(.is-current){display:none}
 .pane>p,.pane>ul,.pane>h2,.pane>h3,.pane>.tldr,.pane>.sub,.pane>.byline{max-width:var(--measure)}
-.pane h2,.pane h3{scroll-margin-top:1rem}
-.intro-title{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.pane h2,.pane h3{scroll-margin-top:calc(var(--stuck-h,0px) + 12px)}
+.intro-title{margin:0;max-width:var(--measure)}
+/* the demo bar: title and playback controls, stuck to the top over the demo's panes */
+.demobar{position:sticky;top:var(--topbar-h,0px);z-index:15;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;margin:-.6rem 0 1.4rem;padding:.6rem 0;background:var(--bg);border-bottom:1px solid var(--line);font-size:.92rem}
+.demobar[hidden]{display:none}
+.demobar-title{flex:1 1 100%;font-weight:600;color:var(--fg);text-decoration:none}
+.demobar-title:hover{color:var(--accent)}
+.demobar-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1rem;flex:1 1 100%;min-width:0}
+.demobar .slider{flex:1 1 7rem}
+.demobar .setting{flex:0 1 auto;display:inline-flex;align-items:center;gap:.4rem;min-width:0}
+.demobar .setting select{width:auto}
 .pagefoot{max-width:var(--measure);color:var(--muted);font-size:.85rem;padding:1rem 0 3rem;border-top:1px solid var(--line)}
 @media (prefers-reduced-motion:no-preference){
   .js .pane.is-current{animation:pane-in .18s ease-out}
@@ -77,7 +87,9 @@ main{max-width:var(--wide)}
   .toc{padding:0 8px}
   .smallprint{padding:1rem 16px}
   .column{margin-left:0;padding:1.5rem 16px 0}
-  .pane h2,.pane h3{scroll-margin-top:4.5rem}
+  .demobar{gap:.3rem .8rem;padding:.5rem 0}
+  .demobar .setting{flex:1 1 100%}
+  .demobar .setting select{flex:1;max-width:none}
 }
 a{color:var(--accent)}
 .controls{display:flex;flex-wrap:wrap;gap:.6rem 1.2rem;align-items:center;margin:1rem 0;font-size:.92rem}
@@ -120,7 +132,7 @@ svg .muted{fill:var(--muted)}
 select{max-width:100%;min-width:0}
 .setting{flex:1 1 100%}
 .setting select{width:calc(100% - 4.5rem)}
-html,body{overflow-x:hidden}
+html,body{overflow-x:clip}
 
 h3{font-size:1.05rem;margin:1.2rem 0 .4rem}
 .badge{display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;line-height:1.2;padding:.2rem .55rem;border:1px solid var(--line);border-radius:999px;background:var(--panel);white-space:nowrap}
