@@ -11,6 +11,27 @@ Files:
 - `bundle.js`: the replay data, one JavaScript file defining `window.HYBRID_AIF_BUNDLE`.
 - `static/`: rendered views for readers without JavaScript.
 
+## Editing the text
+
+The page's prose lives in `page-prose.md`; `index.html` is generated from it. Edit the markdown,
+then run, from the repository root (or from `docs/site` as `python build_page.py`):
+
+```bash
+.venv/bin/python docs/site/build_page.py          # regenerate index.html
+.venv/bin/python docs/site/build_page.py --check  # exit 1 if index.html is out of date
+```
+
+The conventions (section ids, lead paragraphs, captions, placeholders) are listed in a comment at
+the top of `page-prose.md`. What is not in the markdown lives in `page-blocks.html` as named
+blocks, kept verbatim, which the markdown refers to with `<!-- block: NAME -->` placeholders: the
+page head (title and description come from the markdown's front matter), the header links, the
+viewer panels and their controls and figures, the code listings, the description-length table, the
+noscript fallback with its image alt texts, and the script tag. The version number in the byline
+is the `version` block; the citation's version is inside the `citation` block. Text the viewer
+writes at run time (status line, decision and objective notes and captions, the table footnote)
+is in `app.js`. The build needs only the standard library and is deterministic; with the sources
+as committed it reproduces `index.html` byte for byte.
+
 To regenerate the data:
 
 ```bash

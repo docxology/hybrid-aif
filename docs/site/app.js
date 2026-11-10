@@ -305,7 +305,7 @@
     var g = m.g, a = comp.cov[0][0], b = comp.cov[0][1], d = comp.cov[1][1];
     var tr = a + d, det = a * d - b * b, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
     var l1 = tr / 2 + disc, l2 = Math.max(tr / 2 - disc, 1e-10), th = 0.5 * Math.atan2(2 * b, a - d);
-    g.beginPath(); g.ellipse(m.X(comp.mu[0]), m.Y(comp.mu[1]), Math.max(1.2, 2 * Math.sqrt(l1) * m.sc), Math.max(1.2, 2 * Math.sqrt(l2) * m.sc), -th, 0, 2 * Math.PI);
+    g.beginPath(); g.ellipse(m.X(comp.mu[0]), m.Y(comp.mu[1]), Math.max(4, 2 * Math.sqrt(l1) * m.sc), Math.max(4, 2 * Math.sqrt(l2) * m.sc), -th, 0, 2 * Math.PI);
     g.globalAlpha = alpha * 0.35; g.fillStyle = color; g.fill();
     g.globalAlpha = Math.min(1, alpha * 1.2 + 0.2); g.strokeStyle = color; g.lineWidth = 1.5; g.stroke();
     g.globalAlpha = 1;
@@ -345,14 +345,17 @@
     g.save(); g.setLineDash([2, 5]); g.lineCap = "round"; g.globalAlpha = 0.7; g.strokeStyle = css("--fg"); g.lineWidth = 1.4; g.beginPath();
     for (var i = 0; i <= S.t; i++) { var p = r[i].true_x; i ? g.lineTo(m.X(p[0]), m.Y(p[1])) : g.moveTo(m.X(p[0]), m.Y(p[1])); }
     g.stroke(); g.restore();
-    t.belief.components.forEach(function (cm) { ellipse(m, cm, css("--ell"), cm.w); });
+    var f = B.meta.field;
+    g.save(); g.beginPath(); g.rect(m.X(f[0][0]), m.Y(f[1][1]), (f[0][1] - f[0][0]) * m.sc, (f[1][1] - f[1][0]) * m.sc); g.clip();
     drawPlans(m, t);
+    g.restore();
     if (t.fix) {
       var fx = m.X(t.fix[0]), fy = m.Y(t.fix[1]);
       g.strokeStyle = css("--c2"); g.lineWidth = 2; g.beginPath();
       g.moveTo(fx - 4, fy - 4); g.lineTo(fx + 4, fy + 4); g.moveTo(fx - 4, fy + 4); g.lineTo(fx + 4, fy - 4); g.stroke();
     }
     drawRover(m, t);
+    t.belief.components.forEach(function (cm) { ellipse(m, cm, css("--ell"), cm.w); });
     drawHud(t);
     drawCamera(t);
   }
@@ -366,14 +369,14 @@
     $("hud").innerHTML =
       "<div><span class='hl'>tick</span><b>" + t.t + "</b></div>" +
       "<div><span class='hl'>option in force</span><b>" + esc(opt) + "</b></div>" +
-      "<div><span class='hl'>energy</span><b>" + esc(nm("energy", band)) + "</b> " + e.level.toFixed(2) + " " + bar + (t.stalled ? " <span class='approx'>stalled</span>" : "") + "</div>" +
+      "<div><span class='hl'>energy</span>" + bar + " <b>" + esc(nm("energy", band)) + "</b> " + e.level.toFixed(2) + (t.stalled ? " <span class='approx'>stalled</span>" : "") + "</div>" +
       "<div><span class='hl'>terrain under the rover</span>true <b>" + esc(nm("terrain", t.true_terrain)) + "</b>, believed " + esc(nm("terrain", best)) + " " + terr[best].toFixed(2) + "</div>" +
       "<div><span class='hl'>coverage</span><b>" + t.coverage.toFixed(2) + "</b> of cells mapped, <b>" + t.seen.toFixed(2) + "</b> seen</div>";
     var sw = function (c) { return "<i style='background:" + c + "'></i>"; };
     $("fieldlegend").innerHTML =
       "<span>learned map: " + [0, 1, 2].map(function (c) { return sw(terrColor(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>true ground: " + [0, 1, 2].map(function (c) { return sw(terrBg(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
-      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma;</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
+      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
       (S.layer === "light" ? "<span>brighter: more sunlight</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
   }
 
@@ -724,7 +727,7 @@
         if (c.nats != null) { sub += c.nats; if (c.exact) ex += c.nats; }
       });
       var s = document.createElement("tr"); s.className = "grp light";
-      s.innerHTML = "<td colspan='3'>" + esc(title) + " subtotal</td><td class='num'>" + nats(sub) + "</td><td></td><td>" + nats(ex) + " of it exact</td>";
+      s.innerHTML = "<td colspan='3'>" + (/tier/i.test(title) ? "Tier subtotal" : "Subtotal") + "</td><td class='num'>" + nats(sub) + "</td><td></td><td>" + nats(ex) + " of it exact</td>";
       tb.appendChild(s);
     }
     var isParam = function (c) { return c.kind === "parameter"; };
