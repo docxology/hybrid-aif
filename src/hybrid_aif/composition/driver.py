@@ -336,22 +336,11 @@ def hold(
     must own no world process: its factors are beliefs and the world is a separate component,
     or the composite environment would apply the option's whole-step kernel once per round of
     the fast tier. The wired form (:func:`~hybrid_aif.composition.couple.couple`) has no such
-    restriction. This is not checked. Design: step-durations.md T9; nesting-and-coupling.md N4.
+    restriction. This is not checked. A closed System's :func:`~hybrid_aif.composition.runner.run`
+    holds a node that declares durations without this wrapper, ``clocks=`` being the same unit
+    conversion. Design: step-durations.md T9; nesting-and-coupling.md N4.
     """
-    scalar = isinstance(ticks_per_unit, numbers.Real) or (
-        isinstance(ticks_per_unit, np.ndarray | Array) and ticks_per_unit.ndim == 0
-    )
-    if isinstance(ticks_per_unit, bool | np.bool_) or not scalar:
-        raise ValueError(
-            f"hold: ticks_per_unit={ticks_per_unit!r} is not a number; pass a positive real "
-            "number or a scalar array, the rounds one unit of duration lasts"
-        )
-    ticks_per_unit = float(ticks_per_unit)
-    if not ticks_per_unit > 0 or not math.isfinite(ticks_per_unit):
-        raise ValueError(
-            f"hold: ticks_per_unit={ticks_per_unit!r} is not positive and finite; pass the "
-            "number of rounds one unit of duration lasts"
-        )
+    ticks_per_unit = _rounds_per_unit(ticks_per_unit, "hold: ticks_per_unit")
     attached = getattr(step, "system", None)
     if system is not None and attached is not None and system is not attached:
         raise TypeError(
@@ -382,19 +371,12 @@ def hold(
         inner = carry.inner if isinstance(carry, HoldCarry) else carry
         action, inner, learned = step(key, obs, inner, params)
         unit = float(system.elapsed(action, params))
-        value = unit * ticks_per_unit
-        rounds = round(value)
-        if value < 1 - 1e-5:
-            raise ValueError(
-                f"hold: the duration of control node {node!r} at the chosen level is {unit:g}, "
-                f"which times ticks_per_unit={ticks_per_unit} is shorter than one round"
-            )
-        if abs(value - rounds) > 1e-5 * max(1.0, abs(value)):
-            raise ValueError(
-                f"hold: the duration of control node {node!r} at the chosen level is "
-                f"{unit:g}, which times ticks_per_unit={ticks_per_unit} is "
-                "not a whole number of rounds"
-            )
+        rounds = _option_rounds(
+            unit,
+            ticks_per_unit,
+            f"hold: the duration of control node {node!r}",
+            f"ticks_per_unit={ticks_per_unit}",
+        )
         return action, HoldCarry(inner, rounds - 1, action), learned
 
     held.system = system
@@ -704,6 +686,44 @@ def _check_parameters_only(
             "written back to the home, so a table that is learned must be declared as a "
             "Parameter variable"
         )
+
+
+def _rounds_per_unit(value, what: str) -> float:
+    """``value`` as the rounds one unit of duration lasts: a positive finite real number or a
+    scalar array, or a refusal naming ``what``."""
+    scalar = isinstance(value, numbers.Real) or (
+        isinstance(value, np.ndarray | Array) and value.ndim == 0
+    )
+    if isinstance(value, bool | np.bool_) or not scalar:
+        raise ValueError(
+            f"{what}={value!r} is not a number; pass a positive real "
+            "number or a scalar array, the rounds one unit of duration lasts"
+        )
+    value = float(value)
+    if not value > 0 or not math.isfinite(value):
+        raise ValueError(
+            f"{what}={value!r} is not positive and finite; pass the "
+            "number of rounds one unit of duration lasts"
+        )
+    return value
+
+
+def _option_rounds(unit: float, scale: float, what: str, clock: str) -> int:
+    """The rounds an option of duration ``unit`` lasts at ``scale`` rounds per unit, which must be
+    a whole number of at least one; ``what`` names the duration and ``clock`` the scale in the
+    refusals."""
+    value = unit * scale
+    rounds = round(value)
+    if value < 1 - 1e-5:
+        raise ValueError(
+            f"{what} at the chosen level is {unit:g}, which times {clock} is shorter than one round"
+        )
+    if abs(value - rounds) > 1e-5 * max(1.0, abs(value)):
+        raise ValueError(
+            f"{what} at the chosen level is {unit:g}, which times {clock} is not a whole number "
+            "of rounds"
+        )
+    return rounds
 
 
 def _durations_node(system: System, params: SystemParams) -> str:

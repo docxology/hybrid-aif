@@ -22,12 +22,11 @@ TICKS = 5
 
 
 def _counting(inner):
-    """``inner`` that also counts rounds in ``params.durations``: a learner."""
+    """``inner`` that also counts rounds in ``params.precision``: a learner."""
 
     def step(key, obs, carry, params):
         action, carry, _ = inner(key, obs, carry, params)
-        counts = params.durations["u_move"]
-        return action, carry, dataclasses.replace(params, durations={"u_move": counts + 1.0})
+        return action, carry, dataclasses.replace(params, precision=params.precision + 1.0)
 
     return step
 
@@ -45,16 +44,16 @@ def _wiring(first_step, first_params, second_step, second_params, system_a, syst
 
 def _robots():
     (sa, pa), (sb, pb) = cm.robot(2, 2), cm.robot(2, 2)
-    return sa, dataclasses.replace(pa, durations={"u_move": jnp.ones(3)}), sb, pb
+    return sa, dataclasses.replace(pa, precision=jnp.asarray(1.0)), sb, pb
 
 
 def test_a_learner_under_the_wired_form_returns_its_learned_params_in_the_record():
     sa, pa, sb, pb = _robots()
     wiring = _wiring(_counting(agent_step(sa)), pa, agent_step(sb), pb, sa, sb)
     rec = run(wiring, ticks=TICKS, key=KEY)
-    np.testing.assert_array_equal(rec["a"].params.durations["u_move"], np.full(3, 1.0 + TICKS))
+    np.testing.assert_array_equal(rec["a"].params.precision, 1.0 + TICKS)
     assert rec["a"].params is not pa
-    assert pa.durations["u_move"][0] == 1.0  # the starting params are not mutated
+    assert pa.precision == 1.0  # the starting params are not mutated
 
 
 def test_a_learner_is_handed_what_it_returned_the_round_before():
@@ -63,7 +62,7 @@ def test_a_learner_is_handed_what_it_returned_the_round_before():
     inner = _counting(agent_step(sa))
 
     def watcher(key, obs, carry, params):
-        seen.append(float(params.durations["u_move"][0]))
+        seen.append(float(params.precision))
         return inner(key, obs, carry, params)
 
     run(_wiring(watcher, pa, agent_step(sb), pb, sa, sb), ticks=TICKS, key=KEY)

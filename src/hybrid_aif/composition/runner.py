@@ -33,12 +33,32 @@ node whose control node is identified with another stepped node's action node st
 action is realised in the round, and the slot carries the realised value. ``"simultaneous"``
 (default): the nodes none of whose control nodes is driven by an action node step on the round's
 boundary (phase one), their action nodes realised together; the others step after, in an order
-that respects the rule (phase two), each reading its driven slots as realised this round and every
-other slot at the boundary. ``"sequential"``: the nodes step in the order of the System's
-components, each reading what stands, its action nodes realised as it chooses; a node listed
-before the node whose action drives it is refused. ``"async"``: phase one in a fresh random
-order each round (reproducible from the run key) as sequential, then phase two as under
-simultaneous. A cycle of action-to-control identifications is refused.
+that respects the rule (phase two). A node of phase two reads a control node driven by another
+node's action as realised this round, and every other slot, an emission-driven control node
+included, at the boundary. ``"sequential"``: the listing orders the sources, the nodes none of
+whose control nodes an action drives, which step in listing order, each reading what stands and
+realising its action nodes as it chooses; each driven node steps as soon as the last of its
+drivers has realised, before the sweep returns to nodes made ready earlier (a chain follows its
+source, a join waits for its last driver and steps there, nodes made ready by the same realisation
+keep listing order), so a driven node's own place in the listing does not matter. ``"async"``:
+sequential with a fresh random listing of the sources each round (reproducible from the run key,
+host generator seeded by ``fold_in(key, N)``), one total order per round, every node reading what
+stands at its turn and each driven node placed by the same derived rule; there is no boundary
+read. Sequential is a systematic scan, async a random scan,
+simultaneous a synchronous update. A cycle of action-to-control identifications is refused.
+
+**Clocks.** A stepped node whose view declares durations (``params.durations``, one control node
+of the node carrying a duration per level) decides once per option. On a decision round it steps
+and ``run`` reads the duration of the level it chose (the entry of ``params.durations`` at the
+intended level of the node that carries them),
+times the node's entry of ``clocks`` (the rounds one unit of duration lasts, 1.0 by default); the
+product must be a whole number of rounds of at least one, and the node does not step again until
+that many rounds, the decision round included, have passed. On a held round there is no view, no
+step call, no write-back and no realisation: the node's action nodes and emissions keep their
+values, and a variable it drives keeps its level. The first round always decides. The count is
+``run``'s own and is not in the step's carry, so ``carries`` seeds a step and never a count. A node
+with durations refuses a non-identity actuator on its action nodes, and ``Trajectory.decided``
+records which rounds decided.
 
 **Keys.** The run key splits into ``(key, k_reset)``; stepped node ``j`` (in the order of the
 System's components, a joint node at the place of its node) calls its reset step with ``k_reset``
@@ -73,6 +93,7 @@ from hybrid_aif.composition.driver import (
     _actuate,
     _check_legal,
     _check_parameters_only,
+    _is_identity,
 )
 from hybrid_aif.composition.joint import joint_planner
 from hybrid_aif.composition.merge import (
@@ -359,7 +380,10 @@ class Trajectory(NamedTuple):
       the first after the reset call) when ``record_carries`` asked for them, else ``None``, and
       its carry after the last round; for a node that is not itself stepped, a mapping from each
       stepped node beneath it, by relative name;
-    - ``decided``: a bool per round, whether the node stepped (every round, so all ``True``).
+    - ``decided``: a bool per round, whether the node stepped (``False`` on a round a node that
+      declares durations spent inside its option; ``True`` every round of any other node). On such
+      a round ``received`` holds what the node's in-ports held, ``intended`` its held action and
+      ``emitted`` its standing values.
 
     ``trajectory["agent.rover"]`` walks the tree by dotted path; a name that is no node is
     refused, naming the nodes. A node that is planned jointly is a leaf of the tree.
@@ -443,10 +467,12 @@ def _check_order(tick_order: str) -> None:
             f"tick_order must be 'simultaneous', 'sequential', or 'async', got {tick_order!r}. "
             "A round is one tick under every order and every stepped node steps once. "
             "simultaneous = the nodes no variable drives step on the round's boundary, then the "
-            "driven nodes step on what was just realised; sequential = nodes step in the order "
-            "of the System's components, each reading what stands; async = the first group in a "
-            "RANDOM order per round (reproducible from the run key), each reading what stands, "
-            "then the driven nodes as under simultaneous"
+            "driven nodes step on what was just realised; sequential = the nodes no action drives "
+            "step in the order of the System's components and each driven node steps as soon "
+            "as the last node that drives it has realised, before the sweep returns to nodes made "
+            "ready earlier, each reading what stands; async = sequential with a "
+            "RANDOM order of the nodes no action drives each round (reproducible from the run "
+            "key), driven nodes placed by the same rule, each reading what stands"
         )
 
 
@@ -571,10 +597,15 @@ def _structure(system: System, params: SystemParams, steps: Mapping[str, Callabl
     return nodes
 
 
-def _check_timing(nodes: list[_Node], tick_order: str) -> list[_Node]:
+def _check_timing(
+    nodes: list[_Node],
+) -> tuple[list[_Node], Callable[[Sequence[_Node]], list[_Node]]]:
     """Mark phase two (a driven control node whose driver is another node's action node) and
-    return the nodes of phase two in an order that respects the rule; refuse a cycle, and a node
-    listed before its driver under ``"sequential"``."""
+    return ``(phase two in an order that respects the rule, derive)``; refuse a cycle.
+    ``derive(sources)`` is the order of one sweep of ``"sequential"`` or ``"async"``: the nodes no
+    action drives (the sources) in the order given, and each driven node as soon as the last of
+    its drivers has realised, before the sweep returns to nodes made ready earlier; the nodes one
+    realisation makes ready keep listing order."""
     owner = {a: n for n in nodes for a in n.chosen}
     drivers: dict[str, set[str]] = {}
     for node in nodes:
@@ -589,15 +620,6 @@ def _check_timing(nodes: list[_Node], tick_order: str) -> list[_Node]:
                 f"run: node {name!r} has a control node driven by its own action node; an "
                 "identification of a node's action node with its own control node is a cycle"
             )
-        if tick_order == "sequential":
-            late = [o for o in sorted(owners) if by_name[o].index > by_name[name].index]
-            if late:
-                raise ValueError(
-                    f"run: under tick_order='sequential' node {name!r} is listed before "
-                    f"{late[0]!r}, whose action drives its control node; reorder the components "
-                    f"so that {late[0]!r} comes first, or use 'simultaneous', which steps "
-                    "driven nodes after the nodes that drive them"
-                )
     placed: list[_Node] = []
     waiting = [n for n in nodes if n.phase_two]
     done = {n.name for n in nodes if not n.phase_two}
@@ -612,7 +634,29 @@ def _check_timing(nodes: list[_Node], tick_order: str) -> list[_Node]:
         waiting.remove(ready)
         placed.append(ready)
         done.add(ready.name)
-    return placed
+
+    def derive(sources: Sequence[_Node]) -> list[_Node]:
+        """The order of one sweep: ``sources`` as given, and after each node the nodes it makes
+        ready (the driven nodes whose last driver it was), in listing order, each followed by the
+        nodes it makes ready in turn before the next of its siblings, depth first."""
+        derived: list[_Node] = []
+        done: set[str] = set()
+        held = [n for n in nodes if n.phase_two]
+
+        def step(node: _Node) -> None:
+            derived.append(node)
+            done.add(node.name)
+            ready = [n for n in held if all(o in done for o in drivers[n.name])]
+            for n in ready:
+                held.remove(n)
+            for n in ready:
+                step(n)
+
+        for source in sources:
+            step(source)
+        return derived
+
+    return placed, derive
 
 
 # ---------------------------------------------------------------------------- the views
@@ -646,13 +690,6 @@ class _Views:
                 )
             else:
                 view, vparams = subsystem(self.system, home, node.name, inputs=inputs)
-            if vparams.durations:
-                raise NotImplementedError(
-                    f"run: the view of {node.name!r} declares durations, which hold a decision "
-                    "for its duration, and this run steps every node every round; drop "
-                    "`durations` from the view's params, or run the node with hold() in the "
-                    "composite form"
-                )
         elif entry[0] is home:
             return entry[1], entry[2]
         else:
@@ -689,6 +726,48 @@ def _null(kind_size: tuple[str, int]) -> Array:
     return jnp.zeros((size,), jnp.float32)
 
 
+class _Held(NamedTuple):
+    """A clocked node's option in force: the rounds left to hold after this one and the intended
+    action it chose."""
+
+    remaining: int
+    action: Mapping[str, Array]
+
+
+def _check_clocks(clocks: Mapping[str, float] | None, names: set[str], clocked: set[str]):
+    """The unit conversion of each clock, a positive finite number of rounds per unit of
+    duration, defaulting to 1.0 for a node that declares durations; a key that is no stepped node
+    or a node that declares no durations is refused."""
+    if clocks is not None and not isinstance(clocks, Mapping):
+        raise TypeError(
+            f"run: clocks is a {type(clocks).__name__}; pass a mapping from a stepped node to the "
+            "rounds one unit of duration lasts"
+        )
+    clocks = dict(clocks or {})
+    unknown = sorted(set(clocks) - names)
+    if unknown:
+        raise ValueError(
+            f"run: clocks names {unknown}, which are no stepped node; the stepped nodes are "
+            f"{sorted(names)}"
+        )
+    idle = sorted(set(clocks) - clocked)
+    if idle:
+        raise ValueError(
+            f"run: clocks names {idle}, whose params declare no durations, so there is no option "
+            "to convert; declare durations for the node's control node, or drop the entry"
+        )
+    return {n: _driver._rounds_per_unit(clocks.get(n, 1.0), f"run: clocks[{n!r}]") for n in clocked}
+
+
+def _chosen_duration(view: System, vparams: SystemParams, chosen: Mapping[str, Array]) -> float:
+    """The duration of the option ``chosen``: the entry of ``params.durations`` at the intended
+    level of the action node of the control node that carries them, read directly so that a view
+    with driven control nodes (a custom step's is unsliced) needs no slicing."""
+    ((node, table),) = view._durations(view._params_in(vparams, "run"), "run").items()
+    action = view.action_names[view._table.control_names.index(node)]
+    return float(jnp.asarray(table)[jnp.asarray(chosen[action], jnp.int32)])
+
+
 # ---------------------------------------------------------------------------------- run
 
 
@@ -714,20 +793,13 @@ def _run(
     system._params_in(params, "run")
     nodes = _structure(system, params, steps)
     names = {n.name for n in nodes}
-    for label, given in (("clocks", clocks), ("carries", carries)):
-        unknown = sorted(set(given or {}) - names)
-        if unknown:
-            raise ValueError(
-                f"run: {label} names {unknown}, which are no stepped node; the stepped nodes "
-                f"are {sorted(names)}"
-            )
-    if clocks:
-        raise NotImplementedError(
-            "run: clocks= converts the duration of a decision into rounds, and this run decides "
-            "every round; leave clocks out, and drop `durations` from the views, or run the node "
-            "with hold() in the composite form"
+    unknown = sorted(set(carries or {}) - names)
+    if unknown:
+        raise ValueError(
+            f"run: carries names {unknown}, which are no stepped node; the stepped nodes "
+            f"are {sorted(names)}"
         )
-    second = _check_timing(nodes, tick_order)
+    second, derive = _check_timing(nodes)
     for node in nodes:
         if getattr(node.step, "sliced", False):
             floats = [s for s in node.driven if _kind(system, params, s) == FLOAT]
@@ -745,6 +817,31 @@ def _run(
     ports = system.ports(params)
     types = dict(ports.outs)
     views = _Views(system, steps)
+    clocked = {n.name for n in nodes if views.get(n, params, _uniform(n))[1].durations}
+    scales = _check_clocks(clocks, names, clocked)
+    for node in nodes:
+        if node.name in clocked:
+            view, vparams = views.get(node, params, _uniform(node))
+            declared = _driver._durations_node(view, vparams)
+            if declared in node.driven:
+                raise ValueError(
+                    f"run: node {node.name!r} declares durations on its control node {declared!r}, "
+                    "which another node's variable drives, so the node chooses no option and has "
+                    "nothing to hold; drop the durations from this node's params (a mirror "
+                    "carries none), or declare them on the node that chooses the option"
+                )
+    for node in nodes:
+        if node.name not in clocked:
+            continue
+        for a in node.chosen:
+            if a in kernels and not _is_identity(kernels[a]):
+                raise ValueError(
+                    f"run: node {node.name!r} declares durations and action node {a!r} has a "
+                    "non-identity actuator in params.actuator; a decision held for its duration "
+                    "is realised once, so the kernel's draw would stand for the whole option and "
+                    "the duration is read off the intended level; give the node an identity "
+                    "actuator, or drop its durations"
+                )
 
     values: dict[str, Array | None] = {v: None for n in nodes for v in n.outs}
     live_carry = {n.name: (carries or {}).get(n.name) for n in nodes}
@@ -762,17 +859,18 @@ def _run(
     received = {n.name: [] for n in nodes}
     emitted = {n.name: [] for n in nodes}
     intended = {n.name: [] for n in nodes}
+    decided = {n.name: [] for n in nodes}
+    held: dict[str, _Held] = {}
     carry_log = {n.name: [live_carry[n.name]] for n in nodes}
 
     def stands(node: _Node, variable: str) -> bool:
         """Whether ``node`` reads ``variable`` as it stands now rather than at the round's
-        boundary. Under ``"sequential"`` every read stands; under ``"simultaneous"`` and for the
-        nodes of phase two under ``"async"`` only a control node driven by an action node does,
-        reading the value realised this round."""
-        driven = variable in index and variable in node.driven.values()
-        if tick_order == "sequential" or (tick_order == "async" and not node.phase_two):
-            return True
-        return driven
+        boundary. Under ``"sequential"`` and ``"async"`` every read stands; under
+        ``"simultaneous"`` only a control node driven by an action node does, reading the value
+        realised this round."""
+        return tick_order != "simultaneous" or (
+            variable in index and variable in node.driven.values()
+        )
 
     def read(node: _Node, source: Mapping[str, Any], at_boundary: Mapping[str, Any]) -> dict:
         return {
@@ -822,7 +920,29 @@ def _run(
             values[e] = out[e]
         chosen = {a: out[a] for a in node.chosen}
         intended[node.name].append(chosen)
+        if node.name in clocked:
+            rounds = _driver._option_rounds(
+                _chosen_duration(view, vparams, chosen),
+                scales[node.name],
+                f"run: the duration of control node {_driver._durations_node(view, vparams)!r} "
+                f"of {node.name!r}",
+                f"its clock of {scales[node.name]} rounds per unit",
+            )
+            held[node.name] = _Held(rounds - 1, chosen)
         return chosen
+
+    def decide(node: _Node, k: Array, at_boundary: Mapping[str, Any]) -> dict[str, Array]:
+        """``turn``, except that a clocked node inside its option steps nothing: it keeps the
+        action it holds (its action nodes stand realised), and counts one round down."""
+        state = held.get(node.name)
+        if state is not None and state.remaining > 0:
+            held[node.name] = state._replace(remaining=state.remaining - 1)
+            received[node.name].append(read(node, values, at_boundary))
+            intended[node.name].append(state.action)
+            decided[node.name].append(False)
+            return {}
+        decided[node.name].append(True)
+        return turn(node, k, at_boundary)
 
     for _ in range(ticks):
         key, k_tick = jax.random.split(key)
@@ -831,21 +951,22 @@ def _run(
         if tick_order == "simultaneous":
             chosen: dict[str, Array] = {}
             for node in first:
-                chosen.update(turn(node, keys[node.index], boundary))
+                chosen.update(decide(node, keys[node.index], boundary))
             realise(keys[2 * count], chosen, [a for n in first for a in n.chosen])
         else:
-            if tick_order == "async":
-                sweep_order = [first[int(i)] for i in sweep.permutation(len(first))]
-            else:
-                sweep_order = nodes
-            for node in sweep_order:
+            sources = (
+                [first[int(i)] for i in sweep.permutation(len(first))]
+                if tick_order == "async"
+                else first
+            )
+            for node in derive(sources):
                 realise(
-                    keys[count + node.index], turn(node, keys[node.index], boundary), node.chosen
+                    keys[count + node.index], decide(node, keys[node.index], boundary), node.chosen
                 )
-        if tick_order != "sequential":
+        if tick_order == "simultaneous":
             for node in second:
                 realise(
-                    keys[count + node.index], turn(node, keys[node.index], boundary), node.chosen
+                    keys[count + node.index], decide(node, keys[node.index], boundary), node.chosen
                 )
         for node in nodes:
             emitted[node.name].append({v: values[v] for v in node.outs})
@@ -867,6 +988,7 @@ def _run(
         intended,
         carry_log if record_carries else None,
         live_carry,
+        decided,
     )
 
 
@@ -1072,6 +1194,7 @@ def _assemble_record(
     intended,
     carry_log,
     live_carry,
+    decided,
 ) -> Trajectory:
     table = dict(system.subsystems)
     order = list(table)
@@ -1105,7 +1228,7 @@ def _assemble_record(
             _relative(start[node.name], node.name),
             None if carry_log is None else tuple(carry_log[node.name]),
             live_carry[node.name],
-            jnp.ones((ticks,), dtype=bool),
+            jnp.asarray(decided[node.name], dtype=bool),
         )
     # the tree above the stepped nodes: one node per component
     parents = {
@@ -1190,16 +1313,19 @@ def run(
     ``tick_order`` is ``"simultaneous"``, ``"sequential"`` or ``"async"``. ``carries`` seeds the
     carry of the named stepped nodes (``None``, the default, lets each step make its own; a
     seeded carry of a ``sample()`` node is a partial point state); ``record_carries=True`` keeps
-    every round's carry in ``Trajectory.carries``. ``clocks`` is the unit conversion of a decision's
-    duration into rounds and is refused where no node holds a decision. A step that learns has its
-    returned parameter variables written back to the home each round (the next view is taken from
-    the new home), and ``Trajectory.params`` is the home after the last round.
+    every round's carry in ``Trajectory.carries``. ``clocks`` maps a stepped node whose view
+    declares durations to the rounds one unit of duration lasts (1.0 for a node it omits), a
+    positive finite number. A step that learns has its returned parameter variables written back
+    to the home each round (the next view is taken from the new home), and ``Trajectory.params``
+    is the home after the last round.
 
     Refused, each naming the fix: an open System; ``steps`` that is not an antichain covering
     every leaf, that names no component, or that names a non-leaf node and a ``sample()`` leaf
-    beneath it; a step that omits an emission or an action node of its node on a round; a node
-    listed before the node that drives it under ``"sequential"``; a cycle of identifications
-    of action nodes with control nodes; ``clocks`` or ``carries`` naming no stepped node.
+    beneath it; a step that omits an emission or an action node of its node on a round; a cycle
+    of identifications of action nodes with control nodes; ``clocks`` or ``carries`` naming no
+    stepped node, or ``clocks`` naming a node that declares no durations; a duration whose
+    product with its clock is under one round or not a whole number of rounds; an action node
+    of a node with durations under a non-identity actuator.
     """
     return _run(system, params, ticks, key, steps, clocks, tick_order, carries, record_carries)
 

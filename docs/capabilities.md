@@ -1092,10 +1092,23 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   The wired and composite forms, `particle`, `hold`, `agent_step` and `ancestral_step` are
   unchanged; the composite form returns a `CompositeTrajectory`. A modality may observe another
   component's action node, which the view leaves an ordinary observation. `System.sample_step`
-  takes the value of a driven control node under its control node's name. Not run: `clocks=` and a
-  node whose view declares durations (a round decides every node), and `with_mirror(per_component=
-  True)`. Upgrading: a perceiver of another node's action node sees it as absent (`None`, handled
-  through `present=`) in round 0 under `run`, where the wired form handed it level 0.
+  takes the value of a driven control node under its control node's name. **Clocks**: a stepped
+  node whose view declares `params.durations` decides once per option; `clocks={node: rounds per
+  unit}` converts the duration of the chosen level (`view.elapsed`) into rounds (1.0 by default; a
+  product under one round or not a whole number is refused, as `hold` refuses it), the node's step,
+  view, write-back and realisation are skipped on held rounds with its out-ports and the variables
+  it drives standing, the first round always decides, and `Trajectory.decided` records which rounds
+  decided; `hold` is the same clock in the composite and wired forms. **The mirror per
+  component**: `mirror(system, params, per_component=True)` and `with_mirror(...,
+  per_component=True)` mirror a merged or coupled System as the merge of one leaf per component
+  (no durations). A foreign state parent of a transition becomes a driven control node of the
+  reader fed by an identity emission of the owner; a modality whose parents all belong to one other
+  component is an emission of that component, and so is observed as the System observes it; a
+  modality with parents in two or more components keeps a one-round lag under `"simultaneous"`
+  (known limitation: per-use driven nodes are on the roadmap); a control node driven inside the
+  System follows its driver when the mirror is sampled alone. Upgrading: a perceiver of another
+  node's action node sees it as absent (`None`, handled through `present=`) in round 0 under `run`,
+  where the wired form handed it level 0.
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
 - **Shipped to robots**: the downstream coverage agent (EFE-driven coverage
   at tuned-heuristic parity with the hand-tuned coefficients removed;

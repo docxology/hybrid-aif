@@ -25,7 +25,12 @@ particles by links, and the clock that runs them.
   whose every modality is fed by an identification) for a number of rounds and records a
   :class:`Trajectory`. Each leaf, or a non-leaf node planned jointly, takes a :data:`Step`:
   :func:`plan` for a planning mind, :func:`sample` for a process, or a function of the same shape.
-  :func:`with_mirror` couples a System to its own mirror, which closes it.
+  :func:`with_mirror` couples a System to its own mirror, which closes it. A node whose view
+  declares durations decides once per option, ``clocks=`` converting a duration into rounds.
+- :mod:`~hybrid_aif.composition.component_mirror`: :func:`~hybrid_aif.system.mirror.mirror` with
+  ``per_component=True``, the merge of one mirror per component of a merged or coupled System,
+  a state factor of another component that a transition or a modality reads fed to the reader by
+  an identity emission of its owner.
 - :mod:`~hybrid_aif.composition.driver`: the wired form of :func:`run` (a :class:`Wiring`, one
   :class:`MindRecord` or :class:`ProcessRecord` per participant) and its composite form (a merged
   composite, each :data:`MindStep` acting through its own view of the composite's params, which

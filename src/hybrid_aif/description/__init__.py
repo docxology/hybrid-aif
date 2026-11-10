@@ -3642,6 +3642,7 @@ class _Model:
             named = (
                 [fac.parents for fac in self.transition.values()]
                 + [fac.parents for fac in self.targets.values()]
+                + [fac.parents for fac in self.emission.values()]
                 + [[(u, 0)] for fac in self.likelihood.values() if a in dict(fac.parents)]
             )
             sized_by_duration = (
@@ -3650,8 +3651,9 @@ class _Model:
             if not sized_by_duration and not any(u == p for ps in named for p, _ in ps):
                 raise self.fail(
                     f"the control node {u!r} is read by no transition and nothing else names "
-                    "it; list it among a transition's parents, a target's parents, or a "
-                    "modality's parents as its action node, or give it a per-level duration"
+                    "it; list it among a transition's parents, a target's parents, an emission's "
+                    "parents, or a modality's parents as its action node, or give it a per-level "
+                    "duration"
                 )
         for fac in self.transition.values():
             self._check_transition(fac)

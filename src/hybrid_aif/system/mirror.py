@@ -25,6 +25,11 @@ What is kept, dropped and refused:
   ``reduction_*``, ``recognition``,
   ``params.actuator`` (the receiving side is exact: an input is the level taken; an environment
   built by ``as_env`` applies the actuator at its own face) and ``subsystems``;
+- **per component** (``per_component=True``, :mod:`hybrid_aif.composition.component_mirror`): a
+  merged or coupled System is mirrored as the merge of one mirror per component, a leaf each,
+  named as the component is. A state factor of another component that a transition or a
+  modality reads becomes a control node of the reader driven by an identity emission of the
+  owner; a control node driven by an action node inside the System is driven in the world by it;
 - **lowered on request**: ``lower=True`` replaces every learnable declaration and parameter
   variable with its posterior mean, or with one draw under ``param_key``, the draws taken in the
   order likelihood, transition, initial prior (the emissions in the likelihood's place), one per
@@ -71,6 +76,7 @@ def mirror(
     lower: bool = False,
     param_key: Array | None = None,
     face: str = "mirror",
+    per_component: bool = False,
 ) -> tuple[System, SystemParams]:
     """The world ``system`` models, as a System that acts: ``(mirror System, its params)``.
 
@@ -80,7 +86,24 @@ def mirror(
     dropped and refused). ``lower=True`` replaces every learnable declaration and parameter
     variable with its posterior mean, or with one draw per slot under ``param_key``;
     ``param_key`` without ``lower`` is refused. ``face`` names the face a refusal speaks for.
+
+    ``per_component=True`` takes a merged or coupled System and returns a merge of one mirror per
+    component, a leaf each (see :func:`hybrid_aif.composition.component_mirror.mirror_components`):
+    a state factor of another component that a transition or a modality reads becomes a control
+    node of the reading component, driven by an identity emission of the factor's owner, so each
+    component is stepped on its own and the names are the System's.
     """
+    if per_component:
+        from hybrid_aif.composition.component_mirror import mirror_components
+
+        return mirror_components(system, params, lower=lower, param_key=param_key, face=face)
+    keyed_params, params, lowered = _prepared(system, params, lower, param_key, face)
+    return _mirror_whole(system, keyed_params, params, lowered, lower, face)
+
+
+def _prepared(system: System, params: SystemParams, lower: bool, param_key, face: str):
+    """The refusals every mirror shares, then ``(keyed params, positional params, lowered
+    params)``."""
     if param_key is not None and not lower:
         raise ValueError(
             f"{face}: param_key draws the learnable declarations' parameters, so it needs "
@@ -121,6 +144,10 @@ def mirror(
         validation._validate_table_arity(system, params, system._facs)
         if not system._table.default_wiring:
             system._validate(params, face)
+    return keyed_params, params, lowered
+
+
+def _mirror_whole(system: System, keyed_params, params, lowered, lower: bool, face: str):
     table = system._table
     n_states, n_nodes = table.num_states, len(system.B_deps)
     habit = _first_step_habit(system, keyed_params, lowered.policy_prior, face)

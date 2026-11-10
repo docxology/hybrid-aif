@@ -803,9 +803,10 @@ A round steps every
 factor once, so a joint planner has one clock: leaves that declare durations on two nodes are
 refused at `joint_planner`, as is a collapse that removes the node carrying them; a merge or a
 coupling keeps each leaf's durations in its `parts`
-(`design/step-durations.md` T1). A slow component is given its own pace by `composition.hold`
-under `run`, which returns the stored action for the duration `System.elapsed` reports, not by
-a second clock inside the composite (`design/nesting-and-coupling.md` N4).
+(`design/step-durations.md` T1). A slow component is given its own pace by declaring its durations
+under `run` of a closed System (the clocks section below), or by `composition.hold` in the
+composite and wired forms, which returns the stored action for the duration `System.elapsed`
+reports, not by a second clock inside the composite (`design/nesting-and-coupling.md` N4).
 
 **Legality across a merge.** A joint planner's System has one choice point for an action node
 identified with a control node, the driver's, so a mask on the identified node is the driver's
@@ -842,8 +843,9 @@ world's emission of that name, each action node with the world's control node it
 and the world's copy of a control node the model drives internally by the same action node
 (`names=("model", "world")` names the two components; `lower=True` gives the world each learnable
 declaration at its posterior mean, or at one draw under `param_key`; `per_component=True` is
-refused). `run(system, params, ticks, key, steps, clocks=None, tick_order="simultaneous",
-carries=None, record_carries=False)` steps a closed System and returns a `Trajectory`.
+the mirror per component, below). `run(system, params, ticks, key, steps, clocks=None,
+tick_order="simultaneous", carries=None, record_carries=False)` steps a closed System and
+returns a `Trajectory`.
 
 **Steps.** `steps` maps each **stepped node** to its step: a leaf (a component that is not itself
 composed), or a non-leaf node, which is then planned as one mind (the step is handed
@@ -892,21 +894,58 @@ An action node is realised from its node's `params.actuator` kernel, a draw at t
 when the node decides, and stands until realised again; an emission is realised by the step that
 owns it. A modality, or a driven control node, reads the variable it observes as it stands at its
 turn, never a value that does not yet exist: a read of an emission or an action node is the value
-realised by the owner's last step, so a reader listed before its source sees the round before's
-and one listed after sees this round's.
+realised by the owner's last step, so a reader that steps before its source in the round's order
+sees the round before's and one that steps after it sees this round's (under `"sequential"` and
+`"async"` the order is the derived one, below).
 
 **Timing.** A round is one tick under every order and every stepped node steps once. A stepped
 node whose control node is identified with another stepped node's action node steps after that
 action is realised in the round, carrying the realised value. `"simultaneous"` (default) steps the
 nodes none of whose control nodes is driven by an action node on the round's boundary (phase one,
 their action nodes realised together), then the others in an order that respects the rule (phase
-two), each reading its driven nodes as realised this round and every other slot at the
-boundary. `"sequential"` steps in the order of the System's components, each reading what stands,
-and refuses a node listed before the node whose action drives it. `"async"` runs phase one in a
-fresh random order each round (reproducible from the run key) and phase two as under
-simultaneous. A cycle of action-to-control identifications is refused. The actuator is applied
-only by the node that decides; a node with `params.durations` and `clocks=` are not run (a round
-decides every node).
+two). A phase-two node reads a control node driven by another node's **action** as realised this
+round, and every other slot, a control node driven by an **emission** included, at the boundary,
+so what a simultaneous reader sees does not depend on the order the components are listed in.
+`"sequential"` steps the listing's sources, the nodes none of whose control nodes an action
+drives, in listing order, each reading what stands; each driven node steps as soon as the last of
+its drivers has realised, before the sweep returns to nodes made ready earlier (a chain follows its
+source, a join waits for its last driver and steps there, nodes made ready by the same
+realisation keep listing order), so a driven node's own place in the listing does not matter.
+`"async"` is sequential with a fresh random listing of the sources each
+round (reproducible from the run key): one total order per round, every node reading what stands
+at its turn, each driven node placed by the same derived rule, and no boundary read. Sequential is
+a systematic scan, async a random scan, simultaneous a synchronous update. A cycle of
+action-to-control identifications is refused. The actuator is applied
+only by the node that decides.
+
+**Clocks.** A stepped node whose view declares `params.durations` (one control node of the node
+carrying a duration per level, in the unit its preferences are per) decides once per option.
+Declaring durations is what holds a node; `clocks` is only the unit conversion. On a decision
+round the node steps, and `run` reads the duration of the level it chose
+(`view.elapsed(action, view_params)`) times the node's entry of `clocks` (the rounds one unit of
+duration lasts, a positive finite number, 1.0 for a node it omits). The product must be a whole
+number of rounds of at least one, or `run` refuses it, saying which control node and what the
+product was; the node then does not step for that many rounds, the decision round included. On a
+held round there is no view, no step call, no write-back and no realisation: the node's action
+nodes and emissions keep the values they were realised with, the variables it drives keep their
+level, and the node's own carry is untouched, so `carries[t].trace` of a held `plan(trace=True)`
+node reads the decision's plan. The first round always decides, and `carries=` seeds a step,
+never a count. `clocks` names stepped nodes that declare durations. An action node of a held node
+may not carry a non-identity actuator kernel (the node decides once, so one draw would stand for
+the whole option); an identity kernel is accepted. Durations on a control node that another
+node drives are refused (the node chooses no option); a mirror carries none. A joint planner
+over leaves whose durations differ is refused at `joint_planner`, while leaves in different nodes
+keep one clock each.
+`Trajectory.decided` is a bool per round and node: `False` on a round the node spent inside its
+option, with `received` the values its slots held, `intended` the held action and `emitted` the
+standing values.
+
+```python
+# the survey's two-tier agent: the scheduler decides once per option, three rounds long
+steps = {"agent.mission": plan(trace=True), "agent.rover": rover_step, "world": world_step}
+traj = run(system, params, 400, key, steps, clocks={"agent.mission": 3 / SURVEY_TICKS})
+traj["agent.mission"].decided      # True on rounds 0, 3, 6, ...
+```
 
 **The first call is the reset.** Before round 0 every step is called once with `obs=None`, in node
 order, with its seeded carry (`carries=`) or `None`, and the keys `k_reset` for the first node and
@@ -931,7 +970,8 @@ its parts'): `received` and `present` (what each modality slot and driven node h
 nodes as chosen), `start` (the out-ports holding a value entering round 0), `carries` (the carry
 after each round, `ticks + 1` entries, when `record_carries=True`), `carry` (after the last
 round) and
-`decided` (a bool per round). `trajectory["agent.rover"]` walks the tree by dotted path, and a
+`decided` (a bool per round: whether the node stepped, which a node with durations does not on a
+held round). `trajectory["agent.rover"]` walks the tree by dotted path, and a
 jointly planned node is a leaf of the tree.
 
 ```python
@@ -942,6 +982,70 @@ traj = run(system, params, 100, key, {"model": plan(), "world": sample()})
 traj["world"].emitted["gauge"]      # what the world emitted, one entry per round
 traj["model"].carry.beliefs         # the mind's carried prior
 ```
+
+**The mirror per component.** `mirror(system, params, per_component=True)` takes a merged or
+coupled System and returns the *merge* of one mirror per component, a leaf each, named as the
+component is (`a.hand` stays `a.hand`), so that a parameter variable several components read stays
+one variable and each component is stepped on its own by `run`. A component's own state factors,
+transitions, priors, control nodes and modalities are mirrored as the whole System's are (every
+modality an emission of the component, its likelihood the kernel), with these differences, and the
+mirror carries no durations (a world is stepped every round).
+
+- A state factor of **another component** that one of the component's transitions reads (the
+  arena's `lock_b` reads `b.hand`) becomes a **driven control node** of the reading component,
+  `u_<owner>_<factor>`: in a tabular table the parent's axis moves behind the others, and the node
+  is fed by an **identity emission** of the factor's owner, `<factor>_read`,
+  `Emission((factor,), "mode", "identity")` (the mode of a point is the point, so the value is
+  exact and draws nothing). An emission-driven control node is read at the round's boundary under
+  `"simultaneous"` and as it stands under `"sequential"`, which is how the components of the System
+  read each other's states: the previous round's state under simultaneous, and under sequential
+  the state as the owner left it when the owner steps before the reader in the round's order. In
+  the arena that order is `model.a, world.a, model.b, world.b, model.arena, world.arena`: the
+  sources in listing order, each world leaf right after the model leaf that drives it.
+- A **modality whose parents are all states of one other component** becomes an emission of that
+  component, named `<reader>_<modality>`: an emission is the state showing itself, and the state is
+  the owner's, so it is drawn from the owner's state as the owner's step leaves it, as the System
+  observes it. `with_mirror` identifies the model's modality with it.
+- A modality with parents in **two or more components** (the `status` of one robot reads both
+  robots' cells) stays an emission of its own component, with each foreign parent fed through the
+  driven node above. **Known limitation**: a foreign factor gets one driven node, and a transition
+  needs the factor at the boundary while a modality needs it after the owner has stepped, so such a
+  modality reads the boundary value under `"simultaneous"` (and under `"sequential"` and
+  `"async"` when the owner steps after the reader in the round's order): one round older than the
+  System observes it. Per-use driven
+  nodes are on the roadmap.
+- A control node that one component's action node drives inside the System is driven in the mirror
+  by the same action node, so a leaf sampled alone follows its driver.
+
+`with_mirror(system, params, per_component=True)` couples the System with this merge in place of
+the mirror of the whole, each component of the world a leaf that `run` steps with `sample()`.
+Under `"sequential"` each mind steps and then the world leaf it drives, so the next mind reads the
+world as that move left it this round, which is how a merged System steps its components: the
+arena's minds are bitwise to the composite form under `"simultaneous"` and `"sequential"`. Under
+`"async"` the arena is not comparable to the composite form: that form permuted the minds only
+and stepped the arena's factors at a fixed turn, while `run` permutes every source, the arena's
+leaf included, and places each world leaf after its driver.
+
+```python
+def idle(system, key, obs, carry, params):
+    return {}, carry, params          # a leaf that chooses and emits nothing
+
+system, params = with_mirror(arena, arena_params, per_component=True)
+steps = {"model.a": plan(), "model.b": plan(), "model.arena": idle,
+         "world.a": sample(), "world.b": sample(), "world.arena": sample()}
+traj = run(system, params, 100, key, steps)
+```
+
+Refused, with the reason and what to do: a foreign state parent of a neural, nonlinear or
+deterministic transition (its parents go through a map that is code); a foreign discrete parent of
+a linear-Gaussian transition (a continuous factor reads its discrete parents within the step, which
+the one driven node cannot serve); a foreign continuous state parent (a continuous control node
+needs a bounded box, and cross-component continuous parents are not built); a foreign parent of a
+transition that reads a parameter variable (the axis would move in a table every reader shares); a
+foreign `D_deps` parent; a habit on a component; a node shared by components (the collapse of
+`joint_planner`; mirror the merge); a modality that reads another component's action node;
+components that are themselves composed (the whole mirror takes those); and a System with no
+components (mirror it whole).
 
 ## The composite form of `run`, the wired form and `particle`
 

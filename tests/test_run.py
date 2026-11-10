@@ -134,7 +134,7 @@ def test_a_joint_node_with_a_sampled_leaf_beneath_it_is_refused_naming_the_other
         run(system, params, 1, KEY, steps)
 
 
-def test_clocks_and_carries_must_name_stepped_nodes_and_a_decision_clock_is_not_held():
+def test_clocks_and_carries_must_name_stepped_nodes_and_clocks_a_node_with_durations():
     system, params = pair()
     steps = {"model": plan(), "world": sample()}
     with pytest.raises(
@@ -143,7 +143,7 @@ def test_clocks_and_carries_must_name_stepped_nodes_and_a_decision_clock_is_not_
         run(system, params, 1, KEY, steps, clocks={"agent": 1.0})
     with pytest.raises(ValueError, match=r"carries names \['nobody'\]"):
         run(system, params, 1, KEY, steps, carries={"nobody": None})
-    with pytest.raises(NotImplementedError, match="decides every round"):
+    with pytest.raises(ValueError, match=r"clocks names \['model'\], whose params declare no dur"):
         run(system, params, 1, KEY, steps, clocks={"model": 2.0})
 
 
@@ -153,14 +153,6 @@ def test_the_tick_order_and_the_tick_count_are_checked():
         run(system, params, 1, KEY, {"model": plan(), "world": sample()}, tick_order="whenever")
     with pytest.raises(ValueError, match="ticks=-1"):
         run(system, params, -1, KEY, {"model": plan(), "world": sample()})
-
-
-def test_a_view_declaring_durations_is_refused():
-    system, params = pusher()
-    params = dataclasses.replace(params, durations={"u_push": jnp.full(3, 2.0)})
-    system, params = with_mirror(system, params)
-    with pytest.raises(NotImplementedError, match="declares durations"):
-        run(system, params, 1, KEY, {"model": plan(), "world": sample()})
 
 
 def test_a_step_that_omits_an_emission_is_refused_on_the_first_round_naming_it():
@@ -214,15 +206,33 @@ def test_a_step_returning_params_that_are_not_params_is_refused():
         run(system, params, 1, KEY, {"model": bad, "world": sample()})
 
 
-def test_sequential_refuses_a_node_listed_before_its_driver_and_simultaneous_does_not():
+def test_sequential_steps_a_driven_node_after_its_driver_whatever_its_place_in_the_listing():
+    """The listing orders the sources; a driven node steps right after its driver, so a world
+    listed before the model that drives it steps after it, reading the action as realised this
+    round, and the model reads the world as the round before left it."""
     (m, mp), (w, wp) = pair_parts()
     system, params = couple(
         {"world": (w, wp), "model": (m, mp)},
         [Identify("model.push", "world.u_push"), Identify("world.see", "model.see")],
     )
-    steps = {"model": plan(), "world": sample()}
-    with pytest.raises(ValueError, match="listed before 'model'.*reorder the components"):
-        run(system, params, 2, KEY, steps, tick_order="sequential")
+    calls: list = []
+
+    def tagged(name, step):
+        def run_step(system, key, obs, carry, p):
+            if obs is not None:
+                calls.append(name)
+            return step(system, key, obs, carry, p)
+
+        return run_step
+
+    steps = {"model": tagged("model", level(1)), "world": tagged("world", sample())}
+    traj = run(system, params, 3, KEY, steps, tick_order="sequential")
+    assert calls == ["model", "world"] * 3
+    np.testing.assert_array_equal(traj["world"].received["u_push"][:3], [1, 1, 1])
+    # the model, a source, reads the world's emission as the previous round left it
+    np.testing.assert_array_equal(
+        traj["model"].received["see"][1:3], traj["world"].emitted["see"][:2]
+    )
     traj = run(system, params, 2, KEY, steps)
     assert traj["world"].emitted["see"].shape == (2,)
 
@@ -412,12 +422,12 @@ def test_the_async_order_is_reproducible_from_the_run_key_and_every_leaf_steps_o
 
 def test_a_chain_of_driven_nodes_steps_in_driver_order_whatever_the_listing():
     """A drives B's first control node and B's second drives C's: whatever the order the
-    components were coupled in, ``"simultaneous"`` steps A, then B, then C."""
+    components were coupled in, every order steps A, then B, then C."""
     system, params = couple(
         {"C": two_node_leaf(), "B": two_node_leaf(), "A": two_node_leaf()},
         [Identify("A.a1", "B.u1"), Identify("B.a2", "C.u1")],
     )
-    for order in ("simultaneous", "async"):
+    for order in ("simultaneous", "sequential", "async"):
         calls: list = []
 
         def tagged(name, calls=calls):
@@ -431,8 +441,35 @@ def test_a_chain_of_driven_nodes_steps_in_driver_order_whatever_the_listing():
         steps = {n: tagged(n) for n in "ABC"}
         run(system, params, 2, KEY, steps, tick_order=order)
         assert calls == ["A", "B", "C"] * 2, order
-    with pytest.raises(ValueError, match="listed before 'B'"):
-        run(system, params, 1, KEY, {n: level(0) for n in "ABC"}, tick_order="sequential")
+
+
+def test_sequential_derives_the_order_of_a_join_and_of_nodes_ready_together():
+    """Sources step in listing order; a node with two drivers waits for the last of them; nodes
+    that become ready together step in listing order."""
+    calls: list = []
+
+    def tagged(name):
+        def step(system, key, obs, carry, p):
+            if obs is not None:
+                calls.append(name)
+            return level(0)(system, key, obs, carry, p)
+
+        return step
+
+    leaf = two_node_leaf
+    join, params = couple(
+        {"D": leaf(), "B": leaf(), "A": leaf()},
+        [Identify("A.a1", "D.u1"), Identify("B.a1", "D.u2")],
+    )
+    run(join, params, 1, KEY, {n: tagged(n) for n in "DBA"}, tick_order="sequential")
+    assert calls == ["B", "A", "D"]
+    calls.clear()
+    fan, params = couple(
+        {"E2": leaf(), "E1": leaf(), "A": leaf()},
+        [Identify("A.a1", "E1.u1"), Identify("A.a2", "E2.u1")],
+    )
+    run(fan, params, 1, KEY, {n: tagged(n) for n in ("E2", "E1", "A")}, tick_order="sequential")
+    assert calls == ["A", "E2", "E1"]
 
 
 def test_a_sampler_draws_the_action_node_of_a_control_node_nothing_drives():
@@ -845,7 +882,7 @@ def test_with_mirror_names_a_pair_of_components_and_refuses_what_it_cannot_do():
         with_mirror(system, params, names=("a", "a"))
     with pytest.raises(ValueError, match="two distinct component names"):
         with_mirror(system, params, names=("a.b", "c"))
-    with pytest.raises(NotImplementedError, match="per_component=True"):
+    with pytest.raises(ValueError, match="no component to mirror"):
         with_mirror(system, params, per_component=True)
 
 
@@ -883,10 +920,11 @@ def test_with_mirror_binds_an_own_read_modality_to_nothing_and_a_composite_to_it
 # ----------------------------------------------------------- the review's fixes
 
 
-def test_async_phase_two_reads_non_driven_in_ports_at_the_boundary_as_simultaneous_does():
-    """A drives W and B, W is listed before B, and B reads ``W.see``: B reads the boundary's
-    emission of W under ``"simultaneous"`` and ``"async"``, this round's under ``"sequential"``
-    (where B is listed after W)."""
+def test_a_driven_node_reads_live_under_sequential_and_async_and_at_the_boundary_otherwise():
+    """A drives W and B, W is listed before B, and B reads ``W.see``: W and B are driven by A, so
+    they step right after it in listing order, and B reads this round's emission of W under
+    ``"sequential"`` and ``"async"`` (every read stands), the boundary's under
+    ``"simultaneous"``."""
     system, params = couple(
         {"A": pusher(), "W": mirror(*pusher(noise=0.0), lower=True), "B": pusher()},
         [
@@ -904,11 +942,36 @@ def test_async_phase_two_reads_non_driven_in_ports_at_the_boundary_as_simultaneo
         seen[order] = [int(o["B.see"]) for _, o, *_ in log if o is not None]
         emitted = traj["W"].emitted["see"].tolist()
         start = int(traj["W"].start["see"])
-        if order == "sequential":
-            assert seen[order] == emitted
-        else:
+        if order == "simultaneous":
             assert seen[order] == [start, *emitted[:4]]
-    assert seen["simultaneous"] == seen["async"] != seen["sequential"]
+        else:
+            assert seen[order] == emitted
+    assert seen["async"] == seen["sequential"] != seen["simultaneous"]
+
+
+def test_async_reads_live_in_a_fresh_random_order_of_the_sources_each_round():
+    """W (a process) and B (a pusher that reads ``W.see``) are both sources: under ``"async"`` B
+    reads this round's value when W came before it in that round's drawn listing and the
+    previous round's otherwise, checked against the permutation the run key draws."""
+    system, params = couple(
+        {"W": mirror(*pusher(noise=0.0), lower=True), "B": pusher()},
+        [Identify("W.see", "B.see")],
+    )
+    log: list = []
+    ticks = 12
+    steps = {"W": sample(), "B": recorder(log, "B", level(0))}
+    traj = run(system, params, ticks, KEY, steps, tick_order="async")
+    seen = [int(o["B.see"]) for _, o, *_ in log if o is not None]
+    emitted = traj["W"].emitted["see"].tolist()
+    start = int(traj["W"].start["see"])
+    sweep = runner._sweep_generator(jax.random.split(KEY)[0], 2)
+    live = []
+    for t in range(ticks):
+        order = [int(i) for i in sweep.permutation(2)]  # 0 is W, 1 is B
+        live.append(order.index(0) < order.index(1))
+        want = emitted[t] if live[-1] else (start if t == 0 else emitted[t - 1])
+        assert seen[t] == want, (t, order)
+    assert any(live) and not all(live)  # both listings occur
 
 
 def test_a_leaf_whose_own_action_node_drives_its_own_control_node_is_refused():
@@ -1075,3 +1138,105 @@ def test_an_emission_is_checked_as_an_action_node_is():
         run_with(jnp.asarray(1.5))
     soft = run_with(jnp.asarray([0.2, 0.3, 0.5]))
     assert soft["world"].emitted["see"].shape == (1, 3)
+
+
+def _emission_reader_system():
+    """``P`` cycles a three-level state ``x`` and emits it (``x_read``); ``D`` chooses an action
+    node ``a_hand``; ``R`` has a control node ``u_go`` driven by ``D``'s action (so ``R`` is a
+    phase-two node) and a control node ``u_x`` driven by ``P``'s emission."""
+    from hybrid_aif import Categorical
+    from hybrid_aif.reads import Emission
+
+    roll = jnp.log(jnp.roll(jnp.eye(3), 1, axis=0) + 1e-12)
+    cycler = System(
+        B_deps=((0,),),
+        controlled=(False,),
+        factor_names=("x",),
+        modality_names=(),
+        emissions=(("x_read", Emission(("x",), "mode", "identity")),),
+        policy_len=1,
+        epistemic=False,
+    )
+    cycler_params = SystemParams(
+        transition={"x": ConditionalCategorical(log_table=roll, parent_ndims=1)},
+        initial_state_prior={"x": Categorical.from_probs(jnp.eye(3)[0])},
+    )
+    mover = System(
+        B_deps=((0,),),
+        controlled=(True,),
+        factor_names=("hand",),
+        modality_names=(),
+        policy_len=1,
+        epistemic=False,
+    )
+    move = jnp.zeros((3, 3, 3)).at[jnp.arange(3), :, jnp.arange(3)].set(1.0)
+    mover_params = SystemParams(
+        transition={
+            "hand": ConditionalCategorical(log_table=jnp.log(move + 1e-12), parent_ndims=2)
+        },
+        initial_state_prior={"hand": Categorical.from_probs(jnp.eye(3)[0])},
+    )
+    copy = jnp.zeros((3, 3, 3, 3)).at[jnp.arange(3), :, :, jnp.arange(3)].set(1.0)
+    reader = System(
+        B_deps=((0, 1, 2), (), ()),
+        controls=(1, 2),
+        action_names=("a_go", "a_x"),
+        factor_names=("h", "u_go", "u_x"),
+        modality_names=(),
+        policy_len=1,
+        epistemic=False,
+    )
+    reader_params = SystemParams(
+        transition={"h": ConditionalCategorical(log_table=jnp.log(copy + 1e-12), parent_ndims=3)},
+        initial_state_prior={"h": Categorical.from_probs(jnp.eye(3)[0])},
+    )
+    return couple(
+        {"P": (cycler, cycler_params), "D": (mover, mover_params), "R": (reader, reader_params)},
+        [Identify("D.a_hand", "R.u_go"), Identify("P.x_read", "R.u_x")],
+    )
+
+
+@pytest.mark.parametrize("order, reads", [("simultaneous", "boundary"), ("sequential", "now")])
+def test_a_phase_two_node_reads_an_emission_driven_control_node_at_the_boundary(order, reads):
+    """``R`` is a phase-two node (its ``u_go`` is driven by ``D``'s action) and reads ``P``'s
+    emission through ``u_x``: the value at the round's boundary under ``"simultaneous"``, the value
+    as it stands (this round's, ``P`` being listed first) under ``"sequential"``, whereas ``u_go``
+    carries ``D``'s action as realised this round."""
+
+    def chooser(system, key, obs, carry, params):
+        if obs is None:
+            return {}, 0, params
+        return {"D.a_hand": jnp.asarray(carry % 3, jnp.int32)}, carry + 1, params
+
+    system, params = _emission_reader_system()
+    steps = {"P": sample(), "D": chooser, "R": sample()}
+    traj = run(system, params, 6, KEY, steps, tick_order=order, record_carries=True)
+    x = [int(c["P.x"]) for c in traj["P"].carries]
+    seen = np.asarray(traj["R"].received["u_x"][:6]).tolist()
+    assert seen == (x[:6] if reads == "boundary" else x[1:7])
+    np.testing.assert_array_equal(traj["R"].received["u_go"][:6], traj["D"].emitted["a_hand"])
+
+
+@pytest.mark.parametrize("order", ["sequential", "async"])
+def test_the_derived_order_is_depth_first_a_chain_follows_its_source_before_a_sibling(order):
+    """``S`` drives ``A`` and ``B``, ``A`` drives ``C``, and ``B`` reads ``C``'s emission. Each
+    driven node steps as soon as its last driver has realised, before the sweep returns to nodes
+    made ready earlier: ``S, A, C, B``, so ``B`` reads this round's emission of ``C`` (a sweep by
+    waves, ``S, A, B, C``, would give it the round before's)."""
+    from tests.test_clocks import _counting, _leaf
+
+    system, params = couple(
+        {n: _leaf() for n in "SABC"},
+        [
+            Identify("S.a1", "A.u1"),
+            Identify("S.a2", "B.u1"),
+            Identify("A.a2", "C.u1"),
+            Identify("C.e", "B.u2"),
+        ],
+    )
+    calls: list = []
+    steps = {n: _counting(n, calls) for n in "SABC"}
+    traj = run(system, params, 4, KEY, steps, tick_order=order)
+    assert calls == ["S", "A", "C", "B"] * 4
+    # round t (from 1): C emits t % 3 and B reads that value, this round's
+    assert np.asarray(traj["B"].received["u2"][:4]).tolist() == [1, 2, 0, 1]

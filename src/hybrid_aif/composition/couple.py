@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from hybrid_aif.composition.component_mirror import mirror_components, world_emissions
 from hybrid_aif.composition.merge import Clamp, Identify, Link, _assemble, driven_nodes
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical
@@ -306,13 +307,12 @@ def with_mirror(
 
     ``lower=True`` (the default) gives the world each learnable declaration at its posterior
     mean, or at one draw under ``param_key``; ``lower=False`` keeps the declarations as the
-    model has them. ``per_component=True`` is refused: the mirror is of the System as a whole.
+    model has them. ``per_component=True`` couples the System with the merge of one mirror per
+    component (:func:`~hybrid_aif.composition.component_mirror.mirror_components`) in place of the
+    mirror of the System whole: a state factor of one component that another reads is then fed to
+    the reader as an identity emission of its owner, and each component of the world is a leaf
+    that :func:`~hybrid_aif.composition.runner.run` steps on its own.
     """
-    if per_component:
-        raise NotImplementedError(
-            "with_mirror(per_component=True): the mirror per component is not built; mirror the "
-            "System as a whole (per_component=False)"
-        )
     if (
         not isinstance(names, tuple | list)
         or len(names) != 2
@@ -324,12 +324,25 @@ def with_mirror(
             "as ('model', 'world'), each a non-empty string without a dot"
         )
     model, world = names
-    mirrored, mirrored_params = mirror(
-        system, params, lower=lower, param_key=param_key, face="with_mirror"
-    )
+    if per_component:
+        mirrored, mirrored_params = mirror_components(
+            system,
+            params,
+            lower=lower,
+            param_key=param_key,
+            face="with_mirror",
+            drive_internal=False,
+        )
+    else:
+        mirrored, mirrored_params = mirror(
+            system, params, lower=lower, param_key=param_key, face="with_mirror"
+        )
     fed = {slot for slot, _ in system.observes}
+    emitted = world_emissions(system) if per_component else {}
     bindings = [
-        Identify(f"{world}.{m}", f"{model}.{m}") for m in system.modality_names if m not in fed
+        Identify(f"{world}.{emitted.get(m, m)}", f"{model}.{m}")
+        for m in system.modality_names
+        if m not in fed
     ]
     names_of = system._names()
     bindings += [
