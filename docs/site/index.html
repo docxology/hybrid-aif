@@ -9,16 +9,48 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="wrap">
-  <h1><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></h1>
-  <p class="sub">Continuous-discrete-amortized active inference in JAX</p>
-  <p class="byline">Noumenal Labs &middot; <span id="version">v0.19.0</span> &middot; MIT</p>
+<script>document.documentElement.classList.add("js");</script>
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-top">
+    <a class="brand" href="#intro"><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></a>
+    <button class="menu" id="menu" type="button" aria-expanded="false" aria-controls="sidebar-panel" hidden>Menu</button>
+  </div>
+  <div class="sidebar-panel" id="sidebar-panel">
+  <nav class="toc" aria-label="Contents">
+    <ul>
+      <li><a href="#intro" data-pane="intro">Intro</a></li>
+      <li><a href="#hero" data-pane="hero">A survey rover, one table, two readers</a></li>
+      <li><a href="#timescales" data-pane="timescales">Two timescales</a>
+        <ul>
+          <li><a href="#the-schedulers-decision">The scheduler's decision</a></li>
+        </ul>
+      </li>
+      <li><a href="#camera" data-pane="camera">The camera</a></li>
+      <li><a href="#objective" data-pane="objective">Objectives as intervals</a></li>
+      <li><a href="#mdl" data-pane="mdl">Description length</a></li>
+      <li><a href="#start" data-pane="start">Install and quickstart</a></li>
+      <li><a href="#cite" data-pane="cite">Citation</a></li>
+      <li><a href="#documentation" data-pane="documentation">Documentation</a></li>
+    </ul>
+  </nav>
+  <div class="smallprint">
+    <p>Noumenal Labs &middot; <span class="version">v0.19.0</span> &middot; MIT</p>
   <nav class="links" aria-label="Links">
     <a href="https://github.com/noumenal-labs/hybrid-aif">Repository</a>
     <a href="https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/demo.ipynb">Demo notebook</a>
     <a href="https://github.com/noumenal-labs/hybrid-aif/blob/main/docs/capabilities.md">Capabilities</a>
     <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">Design records</a>
   </nav>
+  </div>
+  </div>
+</aside>
+
+<div class="column">
+<main id="main">
+<section class="pane" id="intro" aria-label="Intro">
+  <h1 class="intro-title"><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></h1>
+  <p class="sub">Continuous-discrete-amortized active inference in JAX</p>
+  <p class="byline">Noumenal Labs &middot; <span id="version">v0.19.0</span> &middot; MIT</p>
   <div class="tldr">
     <p><strong>TLDR.</strong> <code>hybrid-aif</code> is a JAX library for active inference over models that mix discrete and continuous state, and that allow for combining various inference methods and approximations (e.g. closed-form messages alongside amortized recognition densities; conjugate parameter updates alongside gradient-based learning; planning over discrete and continuous variables). Other core features of the package:</p>
     <ul>
@@ -28,10 +60,9 @@
       <li><strong>Model description.</strong> Expected free energy can not only be "ablated" per term and per variable, but its components are (optionally) returned in every log. Each model can be scored (data-independently or on a dataset) for its free energy and minimum description length. Models can be rendered as JSON documents for easy modification and scoring using software agents. Bound pairs are returned in logs where available, and each number carries a derivation status (approximations are flagged as such, and categorized by quality and guarantee).</li>
     </ul>
   </div>
-</header>
+</section>
 
-<main class="wrap">
-<section id="hero">
+<section class="pane" id="hero">
   <h2>A survey rover, one table, two readers</h2>
   <p class="lead">A rover is mapping a field of three kinds of ground (firm, rough and ice) by driving over it and learning which kind lies where. Its energy drains on inclines and rough ground and charges wherever sunlight falls; there is no dock. It finds its position from a satellite fix, whose noise grows where terrain blocks the sky, and it looks ahead through a forward camera. A fast rover tier steers every tick. A slow tier, the scheduler, picks an <em>option</em> every twelve ticks, a choice held for that long: survey one quarter of the field (a sector), or stop and charge.</p>
   <p class="lead">What the rover learns is one table: for each of 256 cells, how likely each kind of ground is. The model holds it as a <em>parameter variable</em>, a node of its own with a prior and an edge to every factor that reads it. The rover's terrain factor reads it to predict the ground under it; the scheduler's map factor reads the same table to value a sector. The model graph draws it once, with an edge to each reader. Drag the tick, switch the setting, and watch the map fill in.</p>
@@ -61,7 +92,7 @@
   <p class="figcap">The field: the true ground (green-grey firm, tan rough, blue ice) with height contours, under the map the rover has learned so far (a cell is tinted by its most probable ground, more strongly the surer the rover is, and left clear until the rover has seen it), the sector grid with the option in force shaded, the rover with its heading, its belief about its position, and the plan it chose for the next three ticks (bold), with the planner&rsquo;s other warm starts drawn fainter. Plans are rolled forward by the world&rsquo;s rule: <span id="dynrule"></span>. The graph: the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The scheduler&rsquo;s cell reading, the cell holding most of the rover&rsquo;s position belief, is not drawn: it is a read across the tiers, taken once per decision, of a belief that stays the rover&rsquo;s own. The belief over position is a weighted sum of Gaussians, and each such <em>mixture component</em> is drawn as one 2&sigma; ellipse; they are long and thin by design, because the camera and the fix constrain position unequally.</p>
 </section>
 
-<section id="timescales">
+<section class="pane" id="timescales">
   <h2>Two timescales</h2>
   <p class="lead">Run on its own, the rover tier maps its neighbourhood and then stalls. The reason is that <em>novelty</em>, the information a plan expects to gain about the table, is local: once the cells the rover can reach in a few ticks have been seen, nothing pulls it further. The scheduler scores a whole sector at once. Its <em>pooled reading</em> of a sector is the twelve readings a survey takes, counted together as one slow reading, so a trip to unsurveyed ground earns enough novelty to pay for its energy.</p>
   <p class="lead">Both runs below use the same rover, model and world. In one the option is pinned to sector 1; in the other the scheduler chooses it. Coverage, the fraction of cells whose most probable kind of ground has probability above 0.6, ends at 0.45 against 0.24. Sector 4 is never chosen: at every decision its energy risk outweighs its novelty. The rover reaches it by crossing.</p>
@@ -70,7 +101,7 @@
     <div class="legend" id="tlegend"></div>
     <figcaption>Top to bottom: the option in force (a tick above the band marks each decision, every twelve ticks), the energy level against its four bands, and coverage over the run, solid for the selected setting and dashed for the other. The line follows the tick; drag on the chart to move it.</figcaption>
   </figure>
-  <h3>The scheduler's decision</h3>
+  <h3 id="the-schedulers-decision">The scheduler's decision</h3>
   <p class="lead" id="decnote"></p>
   <figure>
     <div id="decision" class="chartbox"></div>
@@ -79,7 +110,7 @@
   </figure>
 </section>
 
-<section id="camera">
+<section class="pane" id="camera">
   <h2>The camera</h2>
   <p class="lead">The rover's forward camera is a 48 by 48 greyscale picture looking along the field's +y axis. The panels below show it at four times scale (192 pixels, no smoothing). The rover's model holds the camera as a neural likelihood, a network that predicts the picture from the rover's position and the ground type; inference runs that likelihood backwards, so the picture informs both the ground type and the position.</p>
   <figure class="camerafig" id="camerafig">
@@ -88,7 +119,7 @@
   </figure>
 </section>
 
-<section id="objective">
+<section class="pane" id="objective">
   <h2>Objectives as intervals</h2>
   <p class="lead">Every plan is scored by every objective term, and every score is an interval. The bar spans the lower and upper bound and the mark is the midpoint, which is what the planner ranks on. A term that is exact is a point; a term over a mixture, such as the risk on the rover's position, carries a bracket from closed-form entropy bounds. Terms that read the camera go through the decoder's linearisation at the belief and are marked approximate. Switch tiers to compare the rover's gradient planner with the scheduler's exact enumeration of option sequences.</p>
   <p class="lead" id="objnote"></p>
@@ -103,14 +134,14 @@
   <div id="tip" class="tip" role="status" hidden></div>
 </section>
 
-<section id="mdl">
+<section class="pane" id="mdl">
   <h2>Description length</h2>
   <p class="lead">What each part of the model costs to write down, in nats, grouped by tier. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table, density or network is priced by its family alone and flagged approximate. The parameter variable <code>rover.field</code> is priced once, under its own entry; the two factors that read it, <code>rover.terrain</code> and <code>mission.map</code>, pay for their structure only.</p>
   <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">entries</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody></table></div>
   <p class="mdlfoot" id="mdlfoot"></p>
 </section>
 
-<section id="start">
+<section class="pane" id="start">
   <h2>Install and quickstart</h2>
 <pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
 .venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
@@ -179,7 +210,7 @@ for k, name in enumerate(ss.OPTION_NAMES):
   <p class="lead">The whole showcase, both tiers over both settings on this page, is <code>python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR</code>, then the same command with <code>--assemble</code>, then <code>python examples/survey_trim.py OUT_DIR/bundle.json docs/site</code>; <code>docs/site/README.md</code> says how the page's data is rebuilt from it.</p>
 </section>
 
-<section id="cite">
+<section class="pane" id="cite">
   <h2>Citation</h2>
 <pre><code>@software{hybrid_aif_2026,
   title   = {hybrid-aif: hybrid continuous-discrete active inference in {JAX}},
@@ -190,13 +221,21 @@ for k, name in enumerate(ss.OPTION_NAMES):
   license = {MIT}
 }</code></pre>
 </section>
+
+<section class="pane" id="documentation">
+  <h2>Documentation</h2>
+  <p class="lead">The documentation will be linked from here.</p>
+</section>
+
 </main>
-<footer class="wrap"><p>Noumenal Labs, 2026. Most of this code was written by Claude through Claude Code under the direction of the maintainers; the design records in <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">docs/design/</a> show how each decision was reached. Licensed MIT.</p></footer>
+<footer class="pagefoot"><p>Noumenal Labs, 2026. Most of this code was written by Claude through Claude Code under the direction of the maintainers; the design records in <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">docs/design/</a> show how each decision was reached. Licensed MIT.</p></footer>
+</div>
 <noscript><div class="wrap static"><p>This page replays precomputed data and needs JavaScript. Without it, here are the rendered views of one setting.</p>
 <img src="static/hero.png" alt="The survey rover&#39;s field with its learned map, and the two-tier model graph with the shared terrain table">
 <img src="static/timeline.png" alt="The timeline of option bands, energy and coverage over the run, with the one-level run dashed">
 <img src="static/objective.png" alt="Expected free energy of the scheduler&#39;s option sequences as intervals">
 </div></noscript>
+<script src="nav.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

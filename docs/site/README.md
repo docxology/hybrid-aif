@@ -7,9 +7,22 @@ table. GitHub Pages serves `docs/`; `docs/index.html` redirects here.
 Files:
 
 - `index.html`, `style.css`, `app.js`: the page and its plain-JS viewer (no build step, no
-  dependencies).
+  dependencies); `nav.js` switches the page's panes.
 - `bundle.js`: the replay data, one JavaScript file defining `window.HYBRID_AIF_BUNDLE`.
 - `static/`: rendered views for readers without JavaScript.
+
+## Layout
+
+A fixed sidebar (a top bar with a menu button below 900 px wide) holds the logo, the table of
+contents and the small print (version, licence, links); beside it the page shows one pane at a
+time. The Intro pane is everything in `page-prose.md` before the first `##`; each `## Heading
+{#id}` section is a pane with that id, and its `###` subheadings are listed under it in the
+contents. The URL hash selects the pane: `#id` opens a pane, the id of a subheading opens its pane
+and scrolls to it, and an empty or unknown hash opens `#intro`; a link in the prose to `#id`
+therefore switches panes. The last pane, Documentation (`#documentation`), is added by the build
+from the `documentation` block in `page-blocks.html` until the markdown has a section with that id.
+`nav.js` shows the pane and fires `hybrid-aif:pane`, on which `app.js` redraws the viewer at the
+pane's size.
 
 ## Editing the text
 
@@ -22,7 +35,11 @@ then run, from the repository root (or from `docs/site` as `python build_page.py
 ```
 
 The conventions (section ids, lead paragraphs, captions, placeholders) are listed in a comment at
-the top of `page-prose.md`. What is not in the markdown lives in `page-blocks.html` as named
+the top of `page-prose.md`; the build's docstring has the full list. Sections are the panes and
+their headings the contents entries, so adding, renaming or reordering a `##` section changes the
+sidebar too. A `###` subheading gets an id from its words, or the one written as `### Title {#id}`.
+The header's `links` block and the `version` block are shown in the sidebar's small print, and the
+TLDR is plain prose. What is not in the markdown lives in `page-blocks.html` as named
 blocks, kept verbatim, which the markdown refers to with `<!-- block: NAME -->` placeholders: the
 page head (title and description come from the markdown's front matter), the header links, the
 viewer panels and their controls and figures, the code listings, the description-length table, the
@@ -84,7 +101,8 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   structure only (`entries` 0). The page groups them by tier from the name's prefix.
 
 Testing: open `index.html` from a local server (or from disk); the URL hash
-`#t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` sets the initial view, and
+`#hero&t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` opens the viewer's pane
+and sets the initial view (without a pane id, settings open the viewer's pane), and
 `window.__app.set({...})` drives it from a script.
 
 Images: after `survey_trim.py`, each tick's `img`, `recon` and `map` is one base64 string of the

@@ -765,7 +765,7 @@
     $("dynrule").textContent = B.meta.dynamics.rule;
     var hp = hashParams();
     if (hp.theme) document.documentElement.setAttribute("data-theme", hp.theme);
-    var vs = $("version"); if (vs && B.meta.library_version) vs.textContent = "v" + B.meta.library_version;
+    if (B.meta.library_version) document.querySelectorAll("#version, .version").forEach(function (vs) { vs.textContent = "v" + B.meta.library_version; });
     var sel = $("setting");
     B.settings.forEach(function (s) { var o = document.createElement("option"); o.value = s.id; o.textContent = s.label + (s.tiers === 2 ? " (two levels)" : " (one level)"); sel.appendChild(o); });
     S.setting = B.runs[hp.setting] ? hp.setting : B.settings[0].id; sel.value = S.setting;
@@ -784,6 +784,8 @@
     drawMdl(); fullRedraw();
     var rt; window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(function () { BG = null; render(); }, 100); });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { drawMdl(); fullRedraw(); });
+    // nav.js shows one pane at a time; a hidden pane has no size, so redraw when one is shown
+    document.addEventListener("hybrid-aif:pane", function () { BG = null; render(); });
     window.__app = { set: function (o) {
       if (o.setting && B.runs[o.setting]) { S.setting = o.setting; $("setting").value = o.setting; $("tick").max = run().ticks.length - 1; BG = null; drawGraph(); }
       if (o.tier) { S.tier = o.tier; $("objtier").value = o.tier; }
@@ -793,6 +795,7 @@
       if (o.t != null) S.t = o.t; render();
     }, state: function () { return { t: S.t, setting: S.setting, playing: S.playing }; } };
     window.__ready = true;
+    document.dispatchEvent(new Event("hybrid-aif:ready"));
   }
   function start() {
     load().then(init).catch(function (e) {
