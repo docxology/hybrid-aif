@@ -1113,7 +1113,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   System follows its driver when the mirror is sampled alone. Upgrading: a perceiver of another
   node's action node sees it as absent (`None`, handled through `present=`) in round 0 under `run`,
   where the wired form handed it level 0. **Migration guide** (the 0.18 form -> the form under
-  `run`; the examples, the notebooks and the tests are migrated; the survey runner follows):
+  `run`; the examples, the survey runner among them, the notebooks and the tests are migrated):
   - `couple(minds={...}, processes={"w": system.as_env(params)}, links=[Link(a, b), ...])` ->
     `couple({...: (system, params), "w": mirror(system, params, lower=True)}, [Identify(a, b),
     ...])`, the process input named by an action node becoming that action node's control node

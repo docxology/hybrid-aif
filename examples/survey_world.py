@@ -1,4 +1,4 @@
-"""The true world of the survey rover showcase, a process separate from the rover's mind.
+"""The true world of the survey rover showcase, a System of its own coupled to the rover's mind.
 
 A single rover drives over a walled field of smooth hills (the position is clipped to the field
 and the velocity into a wall is lost). It holds the rover's position and velocity, the terrain
@@ -6,8 +6,12 @@ class under it (firm, rough or ice, a function of position), its energy (a rover
 band cannot drive, though it still charges in the light), and the readings the rover receives: a
 satellite position fix whose noise grows where the terrain closes the sky, a forward camera image
 and a noisy gauge of the energy band (the option of a slow tier never reaches the world). The
-field's height map, sky openness, sunlight, slope and fix noise are tabulated at import. The
-world is a hand-written ``GenerativeEnv`` wired to a mind with ``couple``; the physical
+field's height map, sky openness, sunlight, slope and fix noise are tabulated at import.
+
+The world is declared by ``world_system()``: three state factors (terrain, position and velocity,
+energy), the velocity command ``v`` as a control node that the rover's action node drives once the
+two are coupled, and three emissions (``fix``, ``img``, ``gauge``) whose kernels type the
+out-ports. Its dynamics are hand-written in ``world_step``, a step of ``run``; the physical
 constants, the true dynamics, the energy rates and the image renderer live here, and the rover's
 model reads them as its own.
 
@@ -19,11 +23,17 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.ndimage import map_coordinates
 
-from hybrid_aif import ConditionalCategorical, LinearGaussianObservation
-from hybrid_aif.controls import FLOAT
-from hybrid_aif.envs.base import Env
-from hybrid_aif.envs.generative import GenerativeEnv, GenerativeEnvParams
-from hybrid_aif.system import keyed
+from hybrid_aif import (
+    Categorical,
+    ConditionalCategorical,
+    ConditionalGaussian,
+    Gaussian,
+    Grid,
+    LinearGaussianObservation,
+)
+from hybrid_aif.controls import Box
+from hybrid_aif.factors import LinearGaussianTransition
+from hybrid_aif.system import System, SystemParams
 
 FIELD = ((-1.0, 5.0), (-2.0, 4.0))
 START = (-0.2, -0.6)
@@ -59,9 +69,8 @@ IMG_PIXELS = IMG_SIDE * IMG_SIDE
 PIXEL_SD = 0.04
 SKY_ROWS = IMG_SIDE // 4
 
-FACTORS = ("terrain", "x", "energy")
-MODALITIES = ("fix", "img", "gauge")
-ACTIONS = ("a_v",)
+CELLS = 16  # cells per axis of the grid the world's declared terrain and energy tables read
+MIXTURE_K = 3  # the position's mixture budget: its transition switches with the terrain
 
 
 def _bump(x, y, cx, cy, s, a):
@@ -271,73 +280,61 @@ def to_uint8(image):
     return np.asarray(np.round(np.clip(np.asarray(image), 0.0, 1.0) * 255), np.uint8)
 
 
-class _Shell(Env):
-    """The positional shell GenerativeEnv requires; the keyed faces are overridden."""
-
-    @property
-    def num_factors(self):
-        return len(FACTORS)
-
-    @property
-    def num_modalities(self):
-        return len(MODALITIES)
-
-    def reset(self, key, params):  # pragma: no cover
-        raise NotImplementedError
-
-    def step(self, key, state, action, params):  # pragma: no cover
-        raise NotImplementedError
+def gauge_table():
+    """The gauge's confusion ``(reading, band)``: the true band with probability ``GAUGE_ACC``,
+    the rest spread over the other bands."""
+    eye = np.eye(4)
+    return GAUGE_ACC * eye + (1 - GAUGE_ACC) / 3 * (1 - eye)
 
 
-class SurveyWorld(GenerativeEnv):
-    """Keyed faces over the hand-written process; ``params`` only types the out-ports."""
+def initial_state(given=None):
+    """The world's state at the start: the rover at ``START``, at rest, on the terrain there,
+    with a full battery; ``given`` (a partial state keyed by factor) overrides entries."""
+    full = {
+        "terrain": terrain_of(jnp.asarray(START, jnp.float32)),
+        "x": jnp.asarray([*START, 0.0, 0.0], jnp.float32),
+        "energy": jnp.asarray(ENERGY_MAX, jnp.float32),
+    }
+    full.update({k: jnp.asarray(v, full[k].dtype) for k, v in (given or {}).items()})
+    return full
 
-    def _observe(self, key, state):
-        k_gauge, k_fix, k_img = jax.random.split(key, 3)
-        pos = state["x"][:2]
-        band = band_of(state["energy"])
-        eye = jnp.eye(4)
-        gauge_p = GAUGE_ACC * eye[band] + (1 - GAUGE_ACC) / 3 * (1 - eye[band])
-        image = render(state["x"], state["terrain"])
-        return {
-            "gauge": jax.random.categorical(k_gauge, jnp.log(gauge_p)).astype(jnp.int32),
-            "fix": pos + sd_fix(pos) * jax.random.normal(k_fix, (2,)),
-            "img": image + PIXEL_SD * jax.random.normal(k_img, (IMG_PIXELS,)),
-        }
 
-    def reset(self, key, params, state=None):
-        full = {
-            "terrain": terrain_of(jnp.asarray(START, jnp.float32)),
-            "x": jnp.asarray([*START, 0.0, 0.0], jnp.float32),
-            "energy": jnp.asarray(ENERGY_MAX, jnp.float32),
-        }
-        full.update({k: jnp.asarray(v, full[k].dtype) for k, v in (state or {}).items()})
-        return self._observe(key, full), full
+def observe(key, state):
+    """The readings at a state: the gauge (the band, right with ``GAUGE_ACC``), the position fix
+    (noise ``sd_fix`` at the position) and the camera image (the render plus pixel noise)."""
+    k_gauge, k_fix, k_img = jax.random.split(key, 3)
+    pos = state["x"][:2]
+    band = band_of(state["energy"])
+    gauge_p = jnp.asarray(gauge_table(), jnp.float32)[:, band]  # the readings given the band
+    image = render(state["x"], state["terrain"])
+    return {
+        "gauge": jax.random.categorical(k_gauge, jnp.log(gauge_p)).astype(jnp.int32),
+        "fix": pos + sd_fix(pos) * jax.random.normal(k_fix, (2,)),
+        "img": image + PIXEL_SD * jax.random.normal(k_img, (IMG_PIXELS,)),
+    }
 
-    def step(self, key, state, action, params, factors=None):
-        k_move, k_obs = jax.random.split(key)
-        a = jnp.clip(action["a_v"], -1.0, 1.0)
-        terrain = terrain_of(state["x"][:2])
-        table = [dynamics(m) for m in range(3)]
-        F = jnp.asarray([c[0] for c in table], jnp.float32)[terrain]
-        G = jnp.asarray([c[1] for c in table], jnp.float32)[terrain]
-        sd = jnp.asarray(TERRAIN_SD, jnp.float32)[terrain]
-        stalled = band_of(state["energy"]) == 0  # an empty rover cannot drive
-        G = jnp.where(stalled, 0.0, G)
-        x = F @ state["x"] + G @ a + sd * jax.random.normal(k_move, (4,))
-        lo = jnp.asarray([FIELD[0][0], FIELD[1][0]], jnp.float32)
-        hi = jnp.asarray([FIELD[0][1], FIELD[1][1]], jnp.float32)
-        hit = (x[:2] < lo) | (x[:2] > hi)  # the field has walls: clip, and stop that velocity
-        x = jnp.concatenate([jnp.clip(x[:2], lo, hi), jnp.where(hit, 0.0, x[2:])])
-        speed = jnp.linalg.norm(state["x"][2:])
-        drain, charge = energy_rates(state["x"][:2], terrain, speed)
-        energy = jnp.clip(state["energy"] - drain + charge, 0.0, ENERGY_MAX)
-        new = {"terrain": terrain_of(x[:2]), "x": x, "energy": energy}
-        return self._observe(k_obs, new), new
 
-    def step_actuated(self, key, state, action, params, factors=None):
-        obs, new = self.step(key, state, action, params)
-        return obs, new, dict(action)
+def move(key, state, command):
+    """One tick of the true dynamics from ``state`` under the velocity ``command``: the linear
+    step of the terrain under the rover (``dynamics``), no drive on an empty band, the walls, and
+    the energy's drain and charge at the old position and speed."""
+    a = jnp.clip(command, -1.0, 1.0)
+    terrain = terrain_of(state["x"][:2])
+    table = [dynamics(m) for m in range(3)]
+    F = jnp.asarray([c[0] for c in table], jnp.float32)[terrain]
+    G = jnp.asarray([c[1] for c in table], jnp.float32)[terrain]
+    sd = jnp.asarray(TERRAIN_SD, jnp.float32)[terrain]
+    stalled = band_of(state["energy"]) == 0  # an empty rover cannot drive
+    G = jnp.where(stalled, 0.0, G)
+    x = F @ state["x"] + G @ a + sd * jax.random.normal(key, (4,))
+    lo = jnp.asarray([FIELD[0][0], FIELD[1][0]], jnp.float32)
+    hi = jnp.asarray([FIELD[0][1], FIELD[1][1]], jnp.float32)
+    hit = (x[:2] < lo) | (x[:2] > hi)  # the field has walls: clip, and stop that velocity
+    x = jnp.concatenate([jnp.clip(x[:2], lo, hi), jnp.where(hit, 0.0, x[2:])])
+    speed = jnp.linalg.norm(state["x"][2:])
+    drain, charge = energy_rates(state["x"][:2], terrain, speed)
+    energy = jnp.clip(state["energy"] - drain + charge, 0.0, ENERGY_MAX)
+    return {"terrain": terrain_of(x[:2]), "x": x, "energy": energy}
 
 
 def _cc(table, parent_ndims):
@@ -347,28 +344,99 @@ def _cc(table, parent_ndims):
     )
 
 
-def world():
-    """``(GenerativeEnv, env_params)`` for ``couple``."""
-    like = {"gauge": _cc(np.eye(4), 1)}
-    like["fix"] = LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2))
-    like["img"] = LinearGaussianObservation(
-        H=jnp.zeros((IMG_PIXELS, 4)), c=jnp.zeros(IMG_PIXELS), noise=jnp.eye(IMG_PIXELS)
+def world_system():
+    """``(System, SystemParams)``: the world's declaration, for ``couple``.
+
+    Factors ``terrain`` (three classes, read from the cell of the position), ``x`` (position and
+    velocity, a linear step switched by the terrain under the command ``v``) and ``energy`` (four
+    bands, from the band, the terrain and the cell); the control node ``v`` (a velocity command in
+    ``[-1, 1]^2``, driven by the rover's action node once coupled); and three emissions, the
+    out-ports: ``fix`` (from ``x``), ``img`` (from ``x`` and ``terrain``) and ``gauge`` (from
+    ``energy``).
+
+    ``world_step`` realises the dynamics and the readings by hand, so no face samples these tables:
+    they declare the shapes and types the coupling checks. Where a table is cheap to state truly it
+    is (the terrain at each cell's centre, the linear part of the motion per terrain, the gauge's
+    confusion, the start); the energy table holds each band (the true change is a function of the
+    speed, which no factor carries), and the fix and image kernels are linear-Gaussian with an
+    identity noise and, for the image, a zero map, typing their float ports."""
+    (x0, x1), (y0, y1) = FIELD
+    grid = Grid(shape=(CELLS, CELLS), low=(x0, y0), high=(x1, y1), axes=(0, 1))
+    centres = np.stack(
+        np.meshgrid(
+            x0 + (np.arange(CELLS) + 0.5) * (x1 - x0) / CELLS,
+            y0 + (np.arange(CELLS) + 0.5) * (y1 - y0) / CELLS,
+            indexing="ij",
+        ),
+        axis=-1,
+    ).reshape(-1, 2)
+    n_cells = centres.shape[0]
+    terrain_at = np.asarray(jax.vmap(terrain_of)(jnp.asarray(centres, jnp.float32)))
+    terrain_table = np.zeros((3, n_cells))
+    terrain_table[terrain_at, np.arange(n_cells)] = 1.0
+    held_band = np.broadcast_to(np.eye(4)[:, :, None, None], (4, 4, 3, n_cells))
+    F, G, loc, chol = (np.stack([dynamics(m)[i] for m in range(3)]) for i in range(4))
+    system = System(
+        factor_names=("terrain", "x", "energy", "v"),
+        B_deps=((1,), (0, 3), (2, 0, 1), ()),
+        controls=(3,),
+        action_names=("a_v",),
+        cells={"x": grid},
+        emissions={"fix": ("x",), "img": ("x", "terrain"), "gauge": ("energy",)},
+        policy_len=1,
+        mixture_k=MIXTURE_K,
+        mixture_schedule="mode_aligned",
     )
-    names = keyed.FaceNames(
-        FACTORS,
-        MODALITIES,
-        None,
-        None,
-        controls=ACTIONS,
-        kinds=(FLOAT,),
-        sizes=(2,),
-        actions=ACTIONS,
+    start = initial_state()
+    params = SystemParams(
+        transition={
+            "terrain": _cc(terrain_table, 1),
+            "x": LinearGaussianTransition(
+                F=jnp.asarray(F, jnp.float32),
+                G=jnp.asarray(G, jnp.float32),
+                innovations=ConditionalGaussian(
+                    loc=jnp.asarray(loc, jnp.float32),
+                    chol=jnp.asarray(chol, jnp.float32),
+                    parent_ndims=1,
+                ),
+            ),
+            "energy": _cc(held_band, 3),
+        },
+        initial_state_prior={
+            "terrain": Categorical(logits=jnp.log(jnp.clip(jnp.eye(3)[start["terrain"]], 1e-12))),
+            "x": Gaussian(loc=start["x"], chol=1e-3 * jnp.eye(4)),
+            "energy": Categorical(
+                logits=jnp.log(jnp.clip(jnp.eye(4)[band_of(start["energy"])], 1e-12))
+            ),
+        },
+        control={"v": Box(-jnp.ones(2), jnp.ones(2))},
+        emission={
+            "fix": LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2)),
+            "img": LinearGaussianObservation(
+                H=jnp.zeros((IMG_PIXELS, 4)), c=jnp.zeros(IMG_PIXELS), noise=jnp.eye(IMG_PIXELS)
+            ),
+            "gauge": _cc(gauge_table(), 1),
+        },
     )
-    env = SurveyWorld(_Shell(), names, factor_actions=False)
-    params = GenerativeEnvParams(
-        likelihood=like, transition={}, initial_state_prior={}, actuator={}
-    )
-    return env, params
+    return system, params
+
+
+def world_step(system, key, obs, carry, params):
+    """The world's step for ``run``: the carry is the true state (keyed by factor), ``obs`` holds
+    the velocity command under the name of ``v`` in ``system``, and the readings are returned
+    under the names of the emissions. The first call (``obs is None``) starts the world, from
+    ``initial_state`` with the carry as its overrides; every other call moves it one tick
+    (``move``) and reads it (``observe``). It never learns, so ``params`` come back as given."""
+    names = system.names
+    name = {full.rpartition(".")[2]: full for full in (*names.emissions, *names.controls)}
+    if obs is None:
+        state = initial_state(carry)
+        readings = observe(key, state)
+    else:
+        k_move, k_obs = jax.random.split(key)
+        state = move(k_move, carry, obs[name["v"]])
+        readings = observe(k_obs, state)
+    return {name[k]: value for k, value in readings.items()}, state, params
 
 
 def world_summary():

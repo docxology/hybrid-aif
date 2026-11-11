@@ -580,7 +580,10 @@ modules) runs on `particle`, `hold` and the wired form until chunk C migrates it
 `Wiring`, `Mind`, `Process`, `couple`'s wired keywords and `Subsystem.identified`. Tests whose
 subject is the contract of one of these symbols are left in place and mapped to the `run` test
 that covers the same rule (one added where none existed: an unknown component or port refused
-listing the candidates, B6 review, item 4).
+listing the candidates, B6 review, item 4). *Note, 2026-11-10:* the survey moved onto `couple`
+and `run` over a closed System in C1 (the world a System with a hand-written step, the agent's
+merge a component, bitwise to these runs under the old key layout), so no example calls these
+symbols any more; their test callers remain until the deletions.
 
 **The alias refusal.** *Ruled under Alex's delegation, 2026-11-10, consistent with the one
 decision variable:* a driven control node and its driver's action node are one variable named by

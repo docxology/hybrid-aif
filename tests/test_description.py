@@ -1064,6 +1064,68 @@ def test_the_dot_is_reserved_to_composite_prefixes(tmaze_doc, models):
         build(document)
 
 
+def _pusher():
+    """A System with one continuous control node ``v`` (a box of width 2) and its action node
+    ``push``, a position moved by it and a fix of the position."""
+    system = H.System(
+        A_deps=((0,),),
+        B_deps=((1,), ()),
+        controls=(1,),
+        action_names=("push",),
+        factor_names=("x", "v"),
+        modality_names=("fix",),
+        policy_len=1,
+    )
+    params = H.SystemParams(
+        likelihood={
+            "fix": H.LinearGaussianObservation(H=jnp.eye(2), c=jnp.zeros(2), noise=0.3 * jnp.eye(2))
+        },
+        transition={
+            "x": H.LinearGaussianTransition(
+                F=jnp.eye(2),
+                G=jnp.eye(2),
+                innovations=H.ConditionalGaussian(
+                    loc=jnp.zeros((1, 2)), chol=0.1 * jnp.eye(2)[None], parent_ndims=1
+                ),
+            )
+        },
+        initial_state_prior={"x": H.Gaussian(loc=jnp.zeros(2), chol=0.5 * jnp.eye(2))},
+        control={"v": H.Box(-jnp.ones(2), jnp.ones(2))},
+    )
+    return system, params
+
+
+def test_a_coupling_whose_continuous_control_node_is_driven_round_trips():
+    """The world's continuous control node ``world.v`` is driven by the model's action node
+    ``model.push``: the document writes it as a slot of that variable (``relations.driven``), and
+    the reader gives it the box of the driver's control node, so a driven slot carries bounds
+    though it is not a control node of its own; the System and params come back bitwise, the
+    component records compared as the document shows them on both sides (``Subsystem.identified``
+    is filled by the reader for a driven node, and by ``couple`` only for a discrete one). A slot
+    whose own box differs from its driver's has no place in the document, so ``describe`` refuses
+    it."""
+    system, params = with_mirror(*_pusher())
+    assert dict(system.observes)["world.v"] == "model.push"
+    document, _ = describe(system, params)
+    assert "world.v" not in document["variables"]
+    assert document["relations"]["driven"] == {"world.v": "model.push"}
+    rebuilt_system, rebuilt_params = _round_trip(system, params)
+    _assert_same(_shown(system), _shown(rebuilt_system))
+    _assert_same(params, rebuilt_params)
+    assert describe(rebuilt_system, rebuilt_params).document == document
+    #  a driven slot whose own box differs from its driver's would come back with the driver's:
+    #  refused, naming both nodes and both boxes
+    wide = dataclasses.replace(
+        params, control={**params.control, "world.v": H.Box(-2 * jnp.ones(2), 2 * jnp.ones(2))}
+    )
+    with pytest.raises(
+        DescriptionError,
+        match=r"'world.v' is driven by 'model.push', the action node of 'model.v', and its box "
+        r"\(low -2.0, high 2.0\) differs from 'model.v''s \(low -1.0, high 1.0\)",
+    ):
+        describe(system, wide)
+
+
 # =================================================================== the policy prior
 
 

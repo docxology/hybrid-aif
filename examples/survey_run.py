@@ -3,23 +3,26 @@ while keeping its energy up.
 
 The rover (``survey_model``) infers its state, plans a velocity command by gradient descent from
 several warm starts, acts, and learns the terrain field by counting each terrain it sees into the
-cells it was in. The true world (``survey_world``) is a separate process joined to the rover with
-``couple``: the velocity command is an action, the fix, image and gauge are sensations. With
-``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are merged into one particle,
-with the field shared outright, and the particle is one participant of the coupling. The scheduler
-is the rover's slow tier: its cell reading is a belief read of the rover's position through the cell
-indicator (a ``Link`` realised by ``mode``, the cell holding most of the position belief), its
-option is the rover's control node through a ``Link`` from the option's action node, and the field
-is one table shared outright through ``Identify``. One ``run`` call on a coupling of the particle
-and the world steps the rover every round and the scheduler's step, wrapped in ``hold``, once per
-option: every ``SLOW_TICKS`` rounds the scheduler infers, plans and chooses an option that the rover
-holds. The particle writes what the rover learns back into the composite's table each round, so the
-scheduler's novelty reads the counts gathered so far; the scheduler never learns. The ablation pins
-the option to one sector. The scheduler is listed first, so its choice reaches the rover in the
-round it is made. Its cell reading is the rover's posterior of the round before, and absent in round
-0. A level-1 setting is the epistemic terms (the field's novelty, the position fix's information
-gain, both or neither) and whether the image preference is declared. The runs of a grid are written
-to one bundle for the launch page, and a REPORT.md summarises them.
+cells it was in. The true world (``survey_world``) is a System of its own, coupled to the rover with
+``couple``: the rover's velocity action node drives the world's control node ``v``, and the world's
+emissions (the fix, the image and the gauge) feed the rover's modalities. With ``--level 2`` the
+rover and a survey scheduler (``survey_scheduler``) are first merged into one agent: the scheduler's
+option action node drives the rover's option control node (an ``Identify``), the field is one
+parameter variable (an ``Identify``), and the scheduler's cell modality observes an emission of the
+rover, its position belief through the cell indicator realised by ``mode`` (the ``Link`` sugar).
+The agent is coupled to the world as one component, and one ``run`` call over the closed System
+steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics kept in the
+carry's trace), the rover by a custom step (it learns the field, decodes the image for the page and
+emits the cell), and the world by its hand-written step. The scheduler's params declare a duration
+for every option, so it decides once per option, every ``SLOW_TICKS`` rounds, and the rover holds
+the option between decisions. What the rover learns is written back to the shared field each
+round, so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
+ablation pins the option to one sector. The order is sequential: the scheduler steps first, the
+rover as soon as the option it reads is realised, the world last on the command just realised; the
+scheduler's cell reading is the rover's emission of the round before, absent in round 0. A level-1
+setting is the epistemic terms (the field's novelty, the position fix's information gain, both or
+neither) and whether the image preference is declared. The runs of a grid are written to one
+bundle for the launch page, and a REPORT.md summarises them.
 
     python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--level 2]
     python examples/survey_run.py --out DIR --assemble     # merge the part files into bundle
@@ -28,10 +31,12 @@ to one bundle for the launch page, and a REPORT.md summarises them.
 
 import argparse
 import dataclasses
+import functools
 import json
 import sys
 import time
 from pathlib import Path
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -45,17 +50,7 @@ import survey_scheduler as ss
 import survey_world as wd
 
 from hybrid_aif import Parameter, __version__
-from hybrid_aif.composition import (
-    Identify,
-    Link,
-    couple,
-    hold,
-    joint_planner,
-    merge,
-    particle,
-    run,
-    subsystem,
-)
+from hybrid_aif.composition import Identify, Link, couple, joint_planner, merge, plan, run
 from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
@@ -109,16 +104,27 @@ def interval_pair(interval, i):
     return [float(interval.lower[i]), float(interval.upper[i])]
 
 
-def term_record(tree, i):
+def page_name(leaf, outer):
+    """A term tree's leaf name as the page knows it, the agent's own: ``outer``, the prefix the
+    coupling gives the agent's names (``"agent."`` or ``"rover."``), dropped after any
+    ``<slot>:`` head (``transition:agent.rover.terrain`` is ``transition:rover.terrain``)."""
+    head, colon, name = leaf.rpartition(":")
+    return f"{head}{colon}{name.removeprefix(outer)}"
+
+
+def term_record(tree, i, outer):
     return {
-        term: {leaf: interval_pair(term_sign(term) * iv, i) for leaf, iv in leaves.items()}
+        term: {
+            page_name(leaf, outer): interval_pair(term_sign(term) * iv, i)
+            for leaf, iv in leaves.items()
+        }
         for term, leaves in tree.items()
     }
 
 
-def approximate_record(tree):
+def approximate_record(tree, outer):
     return {
-        term: {leaf: bool(iv.approximate) for leaf, iv in leaves.items()}
+        term: {page_name(leaf, outer): bool(iv.approximate) for leaf, iv in leaves.items()}
         for term, leaves in tree.items()
     }
 
@@ -173,27 +179,46 @@ def field_record(params, strength, home="field"):
     )
 
 
-def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
-    """The rover's step: infer, plan, act, push the prior and learn the field. ``params`` arrive
-    as the argument, and the params that learned the field are returned (the field is counted
-    from the second round on); ``pre`` is the prefix of the view's names
-    (``"rover."`` on a composite's view). Each round's record is appended to ``log``."""
-    compiled = system.compiled()
+class RoverCarry(NamedTuple):
+    """The rover step's carry: the prior for the next round, the round's posterior and action
+    (what the next round's learning reads), and the round's record for the page."""
+
+    beliefs: Any = None
+    previous: Any = None
+    action: Any = None
+    record: Any = None
+
+
+def rover_step(setting, steps, starts, pre, decoder):
+    """The rover's step for ``run``: infer, learn the field, plan, act, push the prior and emit.
+    ``params`` arrive as the argument, and the params that learned the field are returned (the
+    field is counted from the second round on, with the previous round's posterior and action
+    from the carry); ``pre`` is the prefix of the view's names (``"agent.rover."`` for the
+    two-tier agent coupled to the world, ``"rover."`` for the rover coupled alone). The view's
+    emissions (the cell the scheduler reads, two-tier only) are realised from the posterior.
+    The step is handed its view sliced at the option it reads (``sliced``), as a planner is,
+    since the rover plans over a horizon at one option. Each round's record for the page is the
+    carry's ``record``; ``decoder`` renders the reconstruction it holds."""
     planner = make_gradient_planner(steps=steps, starts=starts)
     home = pre + "field"
-    state = dict(prev=None)
+    outer = pre.split(".", 1)[0] + "."  # the coupling's prefix of the agent's names
+    faces = {}
 
-    def step(key, obs, carry, params):
+    def step(system, key, obs, carry, params):
+        if obs is None:
+            return {}, RoverCarry(), params
         t_start = time.time()
+        if faces.get("system") is not system:
+            faces.update(system=system, compiled=system.compiled())
+        compiled = faces["compiled"]
         beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
-        if state["prev"] is not None:
-            prev_beliefs, prev_action = state["prev"]
+        if carry.previous is not None:
             params = compiled.learn(
                 params,
                 obs,
                 beliefs,
-                prev_beliefs=prev_beliefs,
-                action=prev_action,
+                prev_beliefs=carry.previous,
+                action=carry.action,
                 lr=setting["field_lr"],
             )
         q_pi, tree, policies = compiled.infer_policies(
@@ -203,7 +228,6 @@ def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
         best = int(jnp.argmax(q_pi.probs))
         action = {pre + "a_v": v_plans[best, 0]}
         pushed = compiled.update_empirical_prior(params, beliefs, action)
-        state["prev"] = (beliefs, action)
         mean = np.asarray(beliefs[pre + "x"].mean())
         terrain = int(jnp.argmax(beliefs[pre + "terrain"].probs))
         recon, _ = decoder.diag_moments((jnp.asarray(mean), jax.nn.one_hot(terrain, 3)))
@@ -213,55 +237,57 @@ def rover_step(system, log, setting, steps, starts, pre="", decoder=None):
                 id=i,
                 start=[float(mean[0]), float(mean[1])],
                 v_plan=[[float(c) for c in step] for step in v_plans[i]],
-                terms=term_record(tree, i),
+                terms=term_record(tree, i, outer),
                 G=interval_pair(g, i),
                 q_pi=float(q_pi.probs[i]),
             )
             for i in range(v_plans.shape[0])
         ]
         table, counts, coverage, seen = field_record(params, setting["field_strength"], home)
-        log.append(
-            dict(
-                seconds=time.time() - t_start,
-                belief=position_belief(beliefs, pre),
-                policies=records,
-                chosen=best,
-                approximate=approximate_record(tree),
-                camera=dict(log_evidence=float(detail.log_evidence[pre + "img"])),
-                free_energy=float(detail.free_energy),
-                recon=image_rows(recon),
-                map=table,
-                counts=counts,
-                coverage=coverage,
-                seen=seen,
-            )
+        record = dict(
+            seconds=time.time() - t_start,
+            belief=position_belief(beliefs, pre),
+            policies=records,
+            chosen=best,
+            approximate=approximate_record(tree, outer),
+            camera=dict(log_evidence=float(detail.log_evidence[pre + "img"])),
+            free_energy=float(detail.free_energy),
+            recon=image_rows(recon),
+            map=table,
+            counts=counts,
+            coverage=coverage,
+            seen=seen,
         )
         #  the view's emissions (the cell the scheduler reads) are realised from the posterior
-        emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs) or None
-        return action, carry._replace(beliefs=pushed, emitted=emitted), params
+        emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs)
+        carry = RoverCarry(beliefs=pushed, previous=beliefs, action=action, record=record)
+        return {**action, **emitted}, carry, params
 
+    step.sliced = True
     return step
 
 
-def tick_rows(rec, log, mind, pre, ticks, extra=None):
-    """The per-tick records of a run: the world's true state, the rover's readings and actions
-    (from the wiring's record of participant ``mind``), and the rover's own log entry."""
-    world, rover = rec["world"], rec[mind]
-    st = world.states
+def tick_rows(rec, rover, ticks, extra=None):
+    """The per-tick records of a run, read from its ``Trajectory``: the world's true state at the
+    start of the tick (its carry), the readings the rover was handed and the command it chose
+    (the record of the stepped node ``rover``), and the rover's own record of the tick (its carry
+    after the tick)."""
+    world, mind = rec["world"], rec[rover]
     rows = []
     for t in range(ticks):
-        energy = float(st["energy"][t])
+        state = world.carries[t]
+        energy = float(state["energy"])
         row = dict(
             t=t,
-            v=[float(c) for c in rover.actions[pre + "a_v"][t]],
-            true_x=[float(c) for c in st["x"][t]],
-            true_terrain=int(st["terrain"][t]),
+            v=[float(c) for c in mind.intended["a_v"][t]],
+            true_x=[float(c) for c in state["x"]],
+            true_terrain=int(state["terrain"]),
             true_energy=dict(band=int(wd.band_of(jnp.asarray(energy))), level=energy),
             stalled=bool(wd.band_of(jnp.asarray(energy)) == 0),
-            fix=[float(c) for c in rover.observations[pre + "fix"][t]],
-            gauge=int(rover.observations[pre + "gauge"][t]),
-            img=image_rows(rover.observations[pre + "img"][t]),
-            **log[t],
+            fix=[float(c) for c in mind.received["fix"][t]],
+            gauge=int(mind.received["gauge"][t]),
+            img=image_rows(mind.received["img"][t]),
+            **mind.carries[t + 1].record,
         )
         if extra is not None:
             row.update(extra(t))
@@ -269,10 +295,24 @@ def tick_rows(rec, log, mind, pre, ticks, extra=None):
     return rows
 
 
+def world_bindings(agent):
+    """The identifications that couple the world to the rover inside the component ``agent``
+    (``"agent.rover"`` or ``"rover"``): the rover's command drives the world's ``v``, and the
+    world's three emissions feed the rover's modalities."""
+    return [
+        Identify(f"{agent}.a_v", "world.v"),
+        Identify("world.fix", f"{agent}.fix"),
+        Identify("world.img", f"{agent}.img"),
+        Identify("world.gauge", f"{agent}.gauge"),
+    ]
+
+
 def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
+    """One run of a setting: the rover coupled to the world (level 1), or the two-tier agent
+    (``run_tiered``)."""
     if "tiers" in setting:
         return run_tiered(setting, ticks, decoder, steps, starts)
-    system, params, _, _ = sm.rover(
+    rs, rp, _, _ = sm.rover(
         decoder,
         epistemic=tuple(setting["epistemic"]),
         field_strength=setting["field_strength"],
@@ -281,23 +321,24 @@ def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STA
         energy_target=tuple(setting["energy_logits"]),
         image_preference=setting["image_preference"],
     )
-    log = []
-    mind = rover_step(system, log, setting, steps, starts, decoder=params.likelihood["img"])
-    env, env_params = wd.world()
-    wiring = couple(
-        minds={"rover": (system, params, mind)},
-        processes={"world": (env, env_params)},
-        links=[
-            Link("rover.a_v", "world.a_v"),
-            Link("world.fix", "rover.fix"),
-            Link("world.img", "rover.img"),
-            Link("world.gauge", "rover.gauge"),
-        ],
+    system, params = couple(
+        {"rover": (rs, rp), "world": wd.world_system()}, world_bindings("rover")
     )
     start = setting.get("start_energy")
-    states = None if start is None else {"world": {"energy": start}}
-    rec = run(wiring, ticks=ticks, key=jax.random.PRNGKey(setting["seed"]), states=states)
-    rows = tick_rows(rec, log, "rover", "", ticks)
+    rec = run(
+        system,
+        params,
+        ticks,
+        jax.random.PRNGKey(setting["seed"]),
+        steps={
+            "rover": rover_step(setting, steps, starts, "rover.", rp.likelihood["img"]),
+            "world": wd.world_step,
+        },
+        tick_order="sequential",
+        carries=None if start is None else {"world": {"energy": start}},
+        record_carries=True,
+    )
+    rows = tick_rows(rec, "rover", ticks)
     return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
 
 
@@ -332,13 +373,13 @@ def settings_grid_l2():
     ]
 
 
-def build_composite(decoder, setting):
-    """The merged composite and the views the minds are written on: ``(composite, composite params,
-    mission view, mission params, rover view, grid)``. With ``tiers == 2`` the composite is one
-    particle with the field shared outright, so the scheduler's boundary is shared: the cell
-    modality reads the rover's position through the cell indicator (``mode``), the option is
-    a ``Link`` from its action node and the field an ``Identify``. The pinned run
-    (``tiers == 1``) is the same composite, its scheduler replaced by a mind that always chooses
+def agent_system(decoder, setting):
+    """The two-tier agent, the merge of the scheduler ``mission`` and the rover:
+    ``((System, SystemParams), grid)``. The option's action node drives the rover's option control
+    node, the field is one parameter variable, and the scheduler's cell modality observes the
+    rover's position belief through the cell indicator, realised by ``mode`` (the ``Link`` sugar:
+    an emission ``rover.cell_obs`` of the rover, observed by ``mission.cell_obs``). The pinned run
+    (``tiers == 1``) is the same agent, its scheduler stepped by a step that always chooses
     ``PINNED_OPTION``."""
     rs, rp, grid, centres = sm.rover(
         decoder,
@@ -356,127 +397,141 @@ def build_composite(decoder, setting):
         energy_target=tuple(setting.get("scheduler_logits") or setting["energy_logits"]),
         field_strength=setting["field_strength"],
         policy_len=rs.policy_len,
-        durations=True,  # hold reads the option's length off the scheduler's durations
+        durations=True,  # the scheduler decides once per option, its duration read off these
         readings=setting.get("readings", False),
     )
-    merged, merged_params = merge(
+    agent = merge(
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
         [
-            Link("mission.option", "rover.u_opt"),
+            Identify("mission.option", "rover.u_opt"),
             Identify("rover.field", "mission.field"),
             Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
         ],
     )
-    cs, cp = joint_planner(merged, merged_params)
-    mview, mparams = subsystem(cs, cp, "mission")
-    mview = dataclasses.replace(mview, policy_len=2)
-    rview, _ = subsystem(cs, cp, "rover", inputs={"mission.option": PINNED_OPTION})
-    return cs, cp, mview, mparams, rview, grid
+    return agent, grid
 
 
-def scheduler_step(mview, slow_log):
-    """The scheduler's step: infer from the cell reading (absent in round 0) and the gauge, plan
-    over option sequences, choose the option. Wrapped in ``hold`` it runs once per option; it
-    never learns. Each decision's record is appended to ``slow_log``."""
-    compiled = mview.compiled()
+def survey_system(decoder, setting):
+    """The closed System of a two-tier run: the agent (``agent_system``) coupled to the world, the
+    gauge feeding both tiers. Returns ``(System, SystemParams)``."""
+    agent, _ = agent_system(decoder, setting)
+    return couple(
+        {"agent": agent, "world": wd.world_system()},
+        [*world_bindings("agent.rover"), Identify("world.gauge", "agent.mission.gauge")],
+    )
 
-    def step(key, obs, carry, params):
-        del key
+
+def timed(step, seconds):
+    """``step`` with the wall time of each of its calls after the first (the reset) appended to
+    ``seconds``; ``functools.wraps`` carries the marks ``run`` reads off a ``plan()`` step. The
+    page's ``seconds`` of a decision is this time, the ``plan()`` call alone (inference, planning
+    and the push of the prior); building the decision's record from the trace is not in it."""
+
+    @functools.wraps(step)
+    def wrapper(system, key, obs, carry, params):
         t_start = time.time()
-        reading = obs["mission.cell_obs"]
-        absent = reading is None
-        slow_obs = {
-            "mission.cell_obs": jnp.zeros((), jnp.int32) if absent else reading,
-            "mission.gauge": obs["mission.gauge"],
-        }
-        beliefs, _ = compiled.infer_states(
-            params, slow_obs, priors=carry.beliefs, present={"mission.cell_obs": not absent}
-        )
-        action, q_pi, tree = compiled.act(
-            jax.random.PRNGKey(0), params, beliefs, metrics=True, selection="deterministic"
-        )
-        option = int(action["mission.option"])
-        pushed = compiled.update_empirical_prior(params, beliefs, action)
-        sequences = np.asarray(mview.policies(params))
-        g = total(tree)
-        records = [
-            dict(
-                options=[int(a) for a in sequences[i].ravel()],
-                terms=term_record(tree, i),
-                G=interval_pair(g, i),
-                q_pi=float(q_pi.probs[i]),
-            )
-            for i in range(sequences.shape[0])
-        ]
-        midpoint = [float(np.mean(r["G"])) for r in records]
-        first = [r["options"][0] for r in records]
-        efe = [
-            min(m for m, f in zip(midpoint, first, strict=True) if f == o)
-            for o in range(sm.N_OPTIONS)
-        ]
-        q_option = [
-            float(sum(r["q_pi"] for r in records if r["options"][0] == o))
-            for o in range(sm.N_OPTIONS)
-        ]
-        chosen = max(
-            (i for i, f in enumerate(first) if f == option), key=lambda i: records[i]["q_pi"]
-        )
-        slow_log.append(
-            dict(
-                decision=True,
-                option=option,
-                cell=None if absent else int(reading),
-                efe_by_option=efe,
-                q_by_option=q_option,
-                policies=records,
-                chosen=chosen,
-                belief=dict(
-                    energy=[float(p) for p in np.asarray(beliefs["mission.energy"].probs)],
-                    visit=[float(p) for p in np.asarray(beliefs["mission.visit"].probs)],
-                ),
-                seconds=time.time() - t_start,
-            )
-        )
-        return {"mission.option": action["mission.option"]}, carry._replace(beliefs=pushed), params
+        out = step(system, key, obs, carry, params)
+        if obs is not None:
+            seconds.append(time.time() - t_start)
+        return out
 
-    step.system = mview  # hold reads the option's duration through it
+    return wrapper
+
+
+def pinned_step(name):
+    """The pinned run's scheduler: a step that chooses ``PINNED_OPTION`` for the action node
+    ``name`` every round it is called, and nothing at the reset."""
+    level = jnp.asarray(PINNED_OPTION, jnp.int32)
+
+    def step(system, key, obs, carry, params):
+        return ({} if obs is None else {name: level}), carry, params
+
     return step
 
 
-def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
-    """A run of the particle coupled to the world: with ``tiers == 2`` one ``run`` call steps the
-    rover every round and the scheduler, wrapped in ``hold``, once per option; with
-    ``tiers == 1`` the option is pinned to ``PINNED_OPTION``."""
-    cs, cp, mview, _, rview, grid = build_composite(decoder, setting)
-    two = setting["tiers"] == 2
-    log, slow_log = [], []
-    fast = rover_step(
-        rview, log, setting, steps, starts, "rover.", decoder=cp.likelihood["rover.img"]
-    )
-    links = [
-        Link("agent.rover.a_v", "world.a_v"),
-        Link("world.fix", "agent.rover.fix"),
-        Link("world.img", "agent.rover.img"),
-        Link("world.gauge", "agent.rover.gauge"),
+def decision_record(carry, option, reading, seconds, pre="agent.mission."):
+    """The record of one decision of the scheduler for the page, read from the carry its
+    ``plan(trace=True)`` step left: the option sequences it scored (``trace.policies``) with
+    their term trees, ``G`` and ``q_pi``, the best ``G`` and the probability of each first option,
+    and the posterior over the energy band and the visited cell (``carry.previous``). ``reading``
+    is the cell modality's value that round, ``None`` where it was absent."""
+    q_pi, tree, sequences = carry.trace.q_pi, carry.trace.tree, np.asarray(carry.trace.policies)
+    g = total(tree)
+    records = [
+        dict(
+            options=[int(a) for a in sequences[i].ravel()],
+            terms=term_record(tree, i, pre.split(".", 1)[0] + "."),
+            G=interval_pair(g, i),
+            q_pi=float(q_pi.probs[i]),
+        )
+        for i in range(sequences.shape[0])
     ]
+    midpoint = [float(np.mean(r["G"])) for r in records]
+    first = [r["options"][0] for r in records]
+    efe = [
+        min(m for m, f in zip(midpoint, first, strict=True) if f == o) for o in range(sm.N_OPTIONS)
+    ]
+    q_option = [
+        float(sum(r["q_pi"] for r in records if r["options"][0] == o)) for o in range(sm.N_OPTIONS)
+    ]
+    chosen = max((i for i, f in enumerate(first) if f == option), key=lambda i: records[i]["q_pi"])
+    beliefs = carry.previous
+    return dict(
+        decision=True,
+        option=option,
+        cell=reading,
+        efe_by_option=efe,
+        q_by_option=q_option,
+        policies=records,
+        chosen=chosen,
+        belief=dict(
+            energy=[float(p) for p in np.asarray(beliefs[pre + "energy"].probs)],
+            visit=[float(p) for p in np.asarray(beliefs[pre + "visit"].probs)],
+        ),
+        seconds=seconds,
+    )
+
+
+def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
+    """A run of the two-tier agent coupled to the world: one ``run`` call over the closed System
+    steps the scheduler (``plan()``, once per option, its trace recorded), the rover (every round)
+    and the world (every round); with ``tiers == 1`` the scheduler always chooses
+    ``PINNED_OPTION``."""
+    system, params = survey_system(decoder, setting)
+    two = setting["tiers"] == 2
     every = setting["slow_ticks"]
-    pinned = jnp.asarray(PINNED_OPTION, jnp.int32)
-    slow = (
-        hold(scheduler_step(mview, slow_log), every / ss.SURVEY_TICKS)
+    seconds = []
+    mission = (
+        timed(
+            plan(trace=True, selection="deterministic", replace={"policy_len": 2}),
+            seconds,
+        )
         if two
-        else lambda key, obs, carry, params: ({"mission.option": pinned}, carry, params)
+        else pinned_step("agent.mission.option")
     )
-    minds = {"mission": slow, "rover": fast}  # the scheduler first: its choice reaches the rover
-    links.append(Link("world.gauge", "agent.mission.gauge"))
-    wiring = couple(
-        minds={"agent": (cs, cp, particle(cs, cp, minds))},
-        processes={"world": wd.world()},
-        links=links,
+    rover = rover_step(setting, steps, starts, "agent.rover.", params.likelihood["agent.rover.img"])
+    rec = run(
+        system,
+        params,
+        ticks,
+        jax.random.PRNGKey(setting["seed"]),
+        steps={"agent.mission": mission, "agent.rover": rover, "world": wd.world_step},
+        clocks={"agent.mission": every / ss.SURVEY_TICKS},
+        tick_order="sequential",
+        record_carries=True,
     )
-    rec = run(wiring, ticks=ticks, key=jax.random.PRNGKey(setting["seed"]))
-    options = rec["agent"].actions["mission.option"]
-    decisions = {every * i: r for i, r in enumerate(slow_log)} if two else {}
+    scheduler = rec["agent.mission"]
+    options = scheduler.intended["option"]
+    decided = [t for t in range(ticks) if bool(scheduler.decided[t])]
+    decisions = {}
+    if two:
+        for t, secs in zip(decided, seconds, strict=True):
+            reading = int(scheduler.received["cell_obs"][t])
+            present = bool(scheduler.present["cell_obs"][t])
+            option = int(options[t])
+            carry = scheduler.carries[t + 1]
+            decisions[t] = decision_record(carry, option, reading if present else None, secs)
 
     def extra(t):
         out = dict(option=int(options[t]))
@@ -484,7 +539,7 @@ def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STAR
             out["slow"] = decisions.get(t, dict(decision=False))
         return out
 
-    rows = tick_rows(rec, log, "agent", "rover.", ticks, extra)
+    rows = tick_rows(rec, "agent.rover", ticks, extra)
     return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
 
 
@@ -619,7 +674,7 @@ def report_text(settings, runs, marks=MARKS, mdl=None):
         lines.append("")
     if any("tiers" in s for s in settings):
         lines += [
-            "Two-tier runs are one particle coupled to the world; the scheduler's cell reading "
+            "Two-tier runs are the merged agent coupled to the world; the scheduler's cell reading "
             "is the rover's posterior of the round before and is absent in round 0.",
             "",
         ]
@@ -805,7 +860,11 @@ def mdl_record(system, params):
 
 
 def assemble(out_dir, camera_report, decoder):
-    """Merge the part files into the bundle and write the report."""
+    """Merge the part files into the bundle and write the report. The bundle's model records
+    (``graph``, ``mdl``, ``description``) are of the model the page shows: at level 2 the agent's
+    joint planner (the scheduler and the rover planned as one model), not the coupled System that
+    ``run`` steps, which adds the world, whose hand-written step makes its tables placeholders that
+    only type its ports; at level 1 the rover's System."""
     runs, settings = {}, {}
     for path in sorted(out_dir.glob("part_*.json")):
         part = json.loads(path.read_text())
@@ -825,8 +884,10 @@ def assemble(out_dir, camera_report, decoder):
     n_grid = settings[0].get("grid", sm.GRID_SHAPE)
     grid, _ = sm.field_grid(n_grid)
     if tiered:
-        cs, cp, _, _, _, _ = build_composite(decoder, settings[0])
-        model = (cs, cp)
+        #  the page's graph, description length and document are of the agent's joint planner
+        #  (each tier's option read as one decision), not of the coupled System that run steps:
+        #  the page shows the agent's model, and the world's tables only type its ports
+        model = joint_planner(*agent_system(decoder, settings[0])[0])
     else:
         model = sm.rover(decoder, image_preference=True, grid_shape=n_grid)[:2]
     n = ticks.pop()

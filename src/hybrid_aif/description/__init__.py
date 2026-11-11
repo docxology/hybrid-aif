@@ -1365,9 +1365,27 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
             w.variables[s]["dims"] = list(declared_dims[s])
     for s, grid in system.cells:
         w.variables[s]["cells"] = _grid_record(grid)
+    control_of = {a: n for n, a in zip(nodes, actions, strict=True) if a is not None}
     for k, u in enumerate(nodes):
         if u in driven:
-            continue  # a driven node is a slot: its variable is the driver's (see relations)
+            #  a driven node is a slot: its variable is the driver's (see relations), and a
+            #  continuous slot is read back with the box of the driver's control node
+            source = control_of.get(driven[u])
+            if space.kinds[k] == FLOAT and source is not None:
+                mine, theirs = params.control[u], params.control[source]
+                if not (
+                    np.array_equal(np.asarray(mine.low), np.asarray(theirs.low))
+                    and np.array_equal(np.asarray(mine.high), np.asarray(theirs.high))
+                ):
+                    raise DescriptionError(
+                        f"{where}control node {u!r} is driven by {driven[u]!r}, the action node "
+                        f"of {source!r}, and its box (low {_bound(mine.low)}, high "
+                        f"{_bound(mine.high)}) differs from {source!r}'s (low "
+                        f"{_bound(theirs.low)}, high {_bound(theirs.high)}); a driven node is "
+                        "written as a slot of its driver and read back with the driver's box, so "
+                        "give the two nodes one box"
+                    )
+            continue
         if space.kinds[k] == FLOAT:
             box = params.control[u]
             w.variables[u] = {
@@ -3354,7 +3372,11 @@ class _Model:
             else:
                 self.levels[name] = None
                 self.width[name] = record["dim"]
-                if ("low" in record or "high" in record) and name not in self.controls:
+                if (
+                    ("low" in record or "high" in record)
+                    and name not in self.controls
+                    and name not in self.driven
+                ):
                     raise self.fail(
                         f"variables[{name!r}]: bounds (low, high) give a continuous control "
                         f"node's box, and {name!r} is not a control node; drop them"
