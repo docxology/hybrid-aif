@@ -249,8 +249,9 @@ def shifted(plan):
 
 
 def toward(position, heading, target, horizon):
-    """A plan of (acceleration, turn) commands that turns the vehicle from ``heading`` toward
-    ``target`` (at most ``TURN_MAX`` a tick) and then drives at it at full acceleration."""
+    """A plan of (drive, turn) commands that turns the vehicle from ``heading`` toward
+    ``target`` (at most ``TURN_MAX`` a tick, in place while it faces more than 45 degrees away)
+    and then drives at it at full speed."""
     plan = np.zeros((horizon, 2), np.float32)
     gap = np.arctan2(target[1] - position[1], target[0] - position[0]) - heading
     gap = (gap + np.pi) % (2 * np.pi) - np.pi
@@ -261,15 +262,20 @@ def toward(position, heading, target, horizon):
     return plan
 
 
-def warm_starts(previous, belief, counts, centres, horizon, starts):
+def warm_starts(previous, belief, counts, centres, horizon, starts, target=None):
     """The planner's warm starts, ``(starts, horizon, 2)``: the plan acted on in the round before,
     shifted one tick on (zeros in the first round); a plan toward the nearest cell the field has
     not yet seen (fewer than ``SEEN_COUNTS`` counts, by the rover's own field), so a rover whose
     neighbourhood is mapped still has a start that reaches new ground; full speed ahead; and
-    standing still. The descent then moves each by the objective's gradient, and the best final
-    plan is acted on."""
+    standing still. ``target`` (the position target's centre and sd per axis, the sector under a
+    survey option) keeps the unseen cells to those within two sd of it, when there are any. The
+    descent then moves each by the objective's gradient, and the best final plan is acted on."""
     position, heading = np.asarray(belief["mean"]), belief["heading"]
     unseen = np.flatnonzero(np.asarray(counts) < SEEN_COUNTS)
+    if target is not None:
+        loc, sd = target
+        near = unseen[np.all(np.abs(centres[unseen] - loc) <= 2 * sd, axis=1)]
+        unseen = near if len(near) else unseen
     if len(unseen):
         near = unseen[np.argmin(np.linalg.norm(centres[unseen] - position, axis=1))]
         explore = toward(position, heading, centres[near], horizon)
@@ -283,6 +289,17 @@ def warm_starts(previous, belief, counts, centres, horizon, starts):
         np.zeros((horizon, 2), np.float32),
     ]
     return jnp.asarray(np.stack(candidates[:starts]), jnp.float32)
+
+
+def position_target(params, pre):
+    """The rover's position target in its view, ``(centre, sd)`` over ``(x, y)``, or ``None``:
+    the two-tier rover's view is sliced at the option in force, so its target on ``x`` is that
+    option's Gaussian (the sector's under a survey, a very wide one under charge)."""
+    target = params.state_targets.get(pre + "x")
+    if target is None or np.ndim(target.loc) != 1:
+        return None
+    sd = np.sqrt(np.diag(np.asarray(target.cov)))[:2]
+    return np.asarray(target.loc)[:2], sd
 
 
 def rover_step(setting, steps, starts, pre, decoder):
@@ -308,6 +325,8 @@ def rover_step(setting, steps, starts, pre, decoder):
             faces.update(system=system, compiled=system.compiled())
         compiled = faces["compiled"]
         beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
+        jax.block_until_ready(beliefs)
+        t_infer = time.time()
         if carry.previous is not None:
             params = compiled.learn(
                 params,
@@ -326,11 +345,14 @@ def rover_step(setting, steps, starts, pre, decoder):
             centres,
             system.policy_len,
             starts,
+            position_target(params, pre),
         )
         planner = WarmPlanner(init=init, steps=steps, starts=starts)
         q_pi, tree, policies = compiled.infer_policies(
             params, beliefs, planner=planner, metrics=True, return_policies=True
         )
+        jax.block_until_ready(policies)
+        t_plan = time.time()
         v_plans = policies  # (starts, policy_len, 2): every warm start, q_pi on the picked one
         best = int(jnp.argmax(q_pi.probs))
         action = {pre + "a_v": v_plans[best, 0]}
@@ -365,6 +387,8 @@ def rover_step(setting, steps, starts, pre, decoder):
         table, counts, coverage, seen = field_record(params, setting["field_strength"], home)
         record = dict(
             seconds=time.time() - t_start,
+            #  the belief update (every reading, the camera's dominant) and the plan's descent
+            seconds_parts=dict(infer=t_infer - t_start, plan=t_plan - t_infer),
             belief=position_belief(beliefs, pre),
             policies=records,
             chosen=best,
@@ -745,26 +769,29 @@ def downsampled_maps():
 
 
 def dynamics_record():
-    """The vehicle's motion, the rule a plan of (acceleration, turn) commands integrates under, the
-    same on every terrain."""
+    """The vehicle's motion, the rule a plan of (drive, turn) commands integrates under, the same
+    on every terrain."""
     return dict(
         kind="vehicle",
         dt=float(wd.DT),
         gain=float(wd.GAIN),
         keep=float(wd.KEEP),
         turn_max_degrees=float(np.degrees(wd.TURN_MAX)),
+        command_low=[float(v) for v in wd.COMMAND_LOW],
+        command_high=[float(v) for v in wd.COMMAND_HIGH],
         state_sd=[float(v) for v in wd.STATE_SD],
         state=["x", "y", "cos heading", "sin heading", "forward speed"],
         top_speed=wd.top_speed(),
-        survey_speed=float(wd.SURVEY_SPEED),
+        cruise_speed=float(wd.CRUISE_SPEED),
         terrain_names=list(wd.TERRAIN_NAMES),
         rule=(
-            "per tick, the command (acceleration, turn) in [-1, 1]^2: position += dt * speed * "
-            "(cos heading, sin heading) (the heading and speed before the tick), heading += dt * "
-            "turn_max * turn (in place too), speed = keep * speed + gain * acceleration (negative "
-            "reverses), with noise of sd state_sd; then the position is clipped to the field and a "
-            "rover that hits a wall stops, and an empty energy band zeroes the command (the model "
-            "knows neither). The top speed is gain / (1 - keep)"
+            "per tick, the command (drive, turn), drive in [0, 1] (the target speed as a share of "
+            "the top speed) and turn in [-1, 1]: position += dt * speed * (cos heading, sin "
+            "heading) (the heading and speed before the tick), heading += dt * turn_max * turn (in "
+            "place too), speed = keep * speed + gain * drive (the speed moves toward top_speed * "
+            "drive; the rover drives forward only), with noise of sd state_sd; then the position "
+            "is clipped to the field and a rover that hits a wall stops, and an empty energy band "
+            "zeroes the command (the model knows neither). The top speed is gain / (1 - keep)"
         ),
     )
 
@@ -777,7 +804,7 @@ def plan_path(tick, policy):
     theta, speed = tick["belief"]["heading"], tick["belief"]["speed"]
     x = np.asarray(policy["start"], float)
     out = []
-    for a in np.clip(np.asarray(policy["v_plan"], float), -1.0, 1.0):
+    for a in np.clip(np.asarray(policy["v_plan"], float), wd.COMMAND_LOW, wd.COMMAND_HIGH):
         x = x + wd.DT * speed * np.asarray([np.cos(theta), np.sin(theta)])
         theta = theta + wd.DT * wd.TURN_MAX * a[1]
         speed = wd.KEEP * speed + wd.GAIN * a[0]
@@ -911,6 +938,16 @@ def meta_record(ticks, camera_report, grid, camera="image"):
                 "belief.heading_sd)"
             ),
             field_of_view_degrees=70.0,
+            tempering=dict(
+                alpha=(camera_report.get("tempering") or {}).get("alpha"),
+                note=(
+                    "the image's evidence is tempered for the decoder's own error: the declared "
+                    "noise sd is the calibrated sd over sqrt(alpha), alpha = 2 / (2 + E[m^2]), m^2 "
+                    "the shift the decoder's error alone causes in a single image's position "
+                    "estimate in units of its covariance, measured on held-out states; a stand-in "
+                    "for a structured decoder-error term"
+                ),
+            ),
             camera_report=camera_report,
         ),
         map_layout=(
@@ -1283,7 +1320,7 @@ def main():
     )
     ap.add_argument("--seed", type=int, default=None, help="the world's key (default: 0)")
     ap.add_argument(
-        "--camera", default=CAMERA, choices=("image", "fixed", "look"), help="camera_mode"
+        "--camera", default=CAMERA, choices=("image", "fixed", "look", "none"), help="camera_mode"
     )
     ap.add_argument("--tag", default="")
     args = ap.parse_args()

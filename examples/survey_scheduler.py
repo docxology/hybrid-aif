@@ -25,13 +25,13 @@ Tables, all built here from the world's maps:
   a distribution over whole-band shifts that has the fractional part as the probability of the
   larger shift (the band moves by ``floor`` or ``ceil`` of the change), clipped at the empty and
   full bands. Under survey sector k the change is the travel from the visited cell's centre to
-  the sector's centre (a straight path sampled at ``PATH_SAMPLES`` points, at the measured survey
-  speed ``CRUISE``, the world's drain at firm ground, so a longer path costs
-  more) plus the option's remaining fast ticks of surveying (the mean net rate over the sector's
-  cells at that speed); a travel longer than the option is costed in full. A moving rover does not
-  charge. Under charge it is ``SURVEY_TICKS`` fast ticks parked on the visited cell, the world's
-  solar charge at that cell's light less the drain at rest, so charging pays only on sunny cells.
-  The distance enters only through this energy cost.
+  the sector's centre (a straight path sampled at ``PATH_SAMPLES`` points, at the rover's
+  measured cruise speed ``CRUISE``, the net of the world's charge and drain at firm ground, so a
+  longer path costs more) plus the option's remaining fast ticks of surveying (the mean net rate
+  over the sector's cells at that speed); a travel longer than the option is costed in full.
+  Under charge it is ``SURVEY_TICKS`` fast ticks at rest, the world's charge at the field-wide
+  mean illumination (the scheduler does not know where light is) less the drain at rest. The
+  distance enters only through this energy cost.
 - ``cell_obs`` is right with probability ``CELL_ACC``, the rest spread uniformly over the other
   cells. This table says how the rover's cell belief relates to the scheduler's own ``visit``
   variable: the scheduler's belief about where the rover is, a different variable at a different
@@ -59,7 +59,7 @@ from hybrid_aif import (
 )
 
 SURVEY_TICKS = 24  # fast ticks an option lasts
-CRUISE = wd.SURVEY_SPEED  # the rover's measured survey speed: travel and survey are costed at it
+CRUISE = wd.CRUISE_SPEED  # the rover's measured cruise speed: travel and survey are costed at it
 PATH_SAMPLES = 24
 CELL_ACC = 0.95  # the cell reading is right with this probability
 OPTION_NAMES = [
@@ -74,8 +74,8 @@ CHARGE = sm.N_SURVEY  # the charge level
 CELL_SIDE = (wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE
 # readings of the map per option: a survey pools one reading per distinct cell it crosses, the
 # median count measured over the vehicle's survey options (see the build record); a charge leaves
-# the rover parked on one cell, so its ticks read it once
-SURVEY_READINGS = 8
+# the rover on one cell, so its ticks read it once
+SURVEY_READINGS = 13
 READINGS = jnp.asarray([SURVEY_READINGS] * sm.N_SURVEY + [1], jnp.float32)
 
 
@@ -110,6 +110,8 @@ def option_changes(centres):
     zones = cell_zones(centres)
     targets = sm.sector_centres()
     sector_rate = [_net_rate(centres[zones == k], CRUISE) for k in range(sm.N_SURVEY)]
+    mean_light = float(np.mean(wd.LIGHT))
+    rest = SURVEY_TICKS * (wd.CHARGE_RATE * mean_light - wd.BASE_DRAIN)
     out = np.zeros((centres.shape[0], sm.N_OPTIONS))
     ramp = np.linspace(0.0, 1.0, PATH_SAMPLES)[:, None]
     for c, here in enumerate(centres):
@@ -118,7 +120,7 @@ def option_changes(centres):
             travel = float(np.linalg.norm(targets[k] - here)) / CRUISE
             survey = max(SURVEY_TICKS - travel, 0.0)
             out[c, k] = travel * _net_rate(path, CRUISE) + survey * sector_rate[k]
-        out[c, CHARGE] = SURVEY_TICKS * _net_rate(here[None], 0.0)  # parked here, in its light
+        out[c, CHARGE] = rest
     return out
 
 

@@ -56,9 +56,8 @@ N_TERRAIN = 3
 N_BANDS = 4
 N_SURVEY = 4  # survey options: one per sector
 N_OPTIONS = N_SURVEY + 1  # and charge
-SECTOR_SD = 1.0  # position sd of the survey target
-CHARGE_SD = 100.0  # the survey target's sd under charge: no effective pull on the position
-PARK_SD = 0.01  # under charge the speed target sits at zero with this sd: the rover parks
+SECTOR_SD = 1.5  # position sd of the survey target: half the width of a sector (a quadrant)
+CHARGE_SD = 100.0  # the survey target's sd under charge: no effective pull
 GRID_SHAPE = 16  # field cells per axis
 NOISE_NODES = 25  # fix-noise map nodes per axis
 POLICY_LEN = 12  # ticks the rover plans ahead: 9.6 map cells at the top speed of 0.3
@@ -124,22 +123,16 @@ def _band_table(d):
     return table
 
 
-def energy_table(centres, tiered=False):
+def energy_table(centres):
     """The band transition ``(next, band, terrain, cell)`` from the world's own energy rates at
-    the cell's centre and a terrain: driving at the measured survey speed (``SURVEY_SPEED``, no
-    charge: a moving rover does not charge). With ``tiered`` it is also indexed by the option,
-    ``(next, band, terrain, cell, option)``: under a survey option the rover drives, under charge
-    it parks (``option_position_target`` holds it still) and charges at the cell's solar yield."""
+    the cell's centre and a terrain, driving at the cruise speed (``CRUISE_SPEED``): the expected
+    change per tick ``d = charge - drain`` (``_band_table``)."""
     cells = jnp.asarray(centres)
-    d = np.zeros((N_TERRAIN, centres.shape[0], 2))
+    d = np.zeros((N_TERRAIN, centres.shape[0]))
     for m in range(N_TERRAIN):
-        for j, speed in enumerate((wd.SURVEY_SPEED, 0.0)):
-            drain, charge = jax.vmap(lambda xy, m=m, v=speed: wd.energy_rates(xy, m, v))(cells)
-            d[m, :, j] = np.asarray(charge - drain)
-    if not tiered:
-        return _band_table(d[..., 0])
-    per_option = np.concatenate([np.repeat(d[..., :1], N_SURVEY, axis=-1), d[..., 1:]], axis=-1)
-    return _band_table(per_option)
+        drain, charge = jax.vmap(lambda xy, m=m: wd.energy_rates(xy, m, wd.CRUISE_SPEED))(cells)
+        d[m] = np.asarray(charge - drain)
+    return _band_table(d)
 
 
 def wall_target():
@@ -202,17 +195,13 @@ def sector_centres():
 def option_position_target():
     """The target over the vehicle's state conditional on the option, ``(5, 5)`` locations and
     ``(5, 5, 5)`` factors: a Gaussian at the survey sector's centre (position sd ``SECTOR_SD``,
-    heading pair and speed sd 2) under a survey option; under charge no pull on the position or
-    heading and the speed held at zero (sd ``PARK_SD``), so the rover parks to charge."""
+    heading pair and speed sd 2) under a survey option, and a very wide one (no effective pull)
+    under charge."""
     loc = np.zeros((N_OPTIONS, 5), np.float32)
     loc[:N_SURVEY, :2] = sector_centres()
     chol = np.zeros((N_OPTIONS, 5, 5), np.float32)
     for k in range(N_OPTIONS):
-        sd = (
-            [SECTOR_SD, SECTOR_SD, 2.0, 2.0, 2.0]
-            if k < N_SURVEY
-            else [CHARGE_SD] * 4 + [PARK_SD]  # charge: anywhere, but parked
-        )
+        sd = [SECTOR_SD, SECTOR_SD, 2.0, 2.0, 2.0] if k < N_SURVEY else [CHARGE_SD] * 5
         chol[k] = np.diag(sd)
     return ConditionalGaussian(loc=jnp.asarray(loc), chol=jnp.asarray(chol), parent_ndims=1)
 
@@ -258,7 +247,7 @@ def rover(
         c_deps["img"] = ("energy", "u_opt") if tiered else ("energy",)
     system = System(
         A_deps=tuple(A_deps),
-        B_deps=((1,), (3,), (2, 0, 1, 4) if tiered else (2, 0, 1), ()) + (((),) if tiered else ()),
+        B_deps=((1,), (3,), (2, 0, 1), ()) + (((),) if tiered else ()),
         controls=(3, 4) if tiered else (3,),
         action_names=("a_v", "a_opt") if tiered else ("a_v",),
         factor_names=("terrain", "x", "energy", "v") + (("u_opt",) if tiered else ()),
@@ -312,8 +301,8 @@ def rover(
                 propagation=propagation,
             ),
             "energy": ConditionalCategorical(
-                log_table=jnp.log(jnp.clip(jnp.asarray(energy_table(centres, tiered)), 1e-6)),
-                parent_ndims=4 if tiered else 3,
+                log_table=jnp.log(jnp.clip(jnp.asarray(energy_table(centres)), 1e-6)),
+                parent_ndims=3,
             ),
         },
         initial_state_prior={
@@ -321,7 +310,7 @@ def rover(
             "x": x0,
             "energy": Categorical(logits=energy0),
         },
-        control={"v": Box(-jnp.ones(2), jnp.ones(2))},
+        control={"v": Box(jnp.asarray(wd.COMMAND_LOW), jnp.asarray(wd.COMMAND_HIGH))},
         state_targets={
             "energy": Categorical(logits=jnp.asarray(energy_target, jnp.float32)),
             **({"x": option_position_target()} if tiered else {}),

@@ -82,20 +82,24 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   one-level run is the rover alone, with no scheduler and no option). Bundles whose one-level run
   pinned an option carry `pinned_option` instead; the viewer reads either.
 - `meta.image`: `side` (32), `layout` (row 0 is the top of the picture), `view` (what the camera
-  renders: a camera fixed along +y), `camera_heading_degrees` (90), `heading_rule` and
-  `hold_speed` (the rover's heading, `true_heading` per tick, drawn as the arrow: the direction of
-  motion at `hold_speed` or more, held below it), `field_of_view_degrees`,
-  `camera_report` (with the decoder's noise calibration). `meta.map_layout` describes `map` and
-  `counts`.
+  renders: the scene ahead of the rover along its heading; a comparison camera fixed along +y
+  carries `camera_heading_degrees`), `camera_mode`, `heading_rule` (the rover's heading,
+  `true_heading` per tick, is part of its state and turns only by the turn command),
+  `field_of_view_degrees`, `tempering` (`alpha` and a `note`: the image's evidence is tempered for
+  the decoder's own error, its noise sd the calibrated sd over sqrt(alpha)) and `camera_report`
+  (the decoder's noise calibration and the tempering's measurement). `meta.map_layout` describes
+  `map` and `counts`.
 - `meta.wall_preference`: `offset` and `note`: the rover's wall preference leaf (`utility` on the
   fix) and each rover plan's `G` are recorded less `offset`, the preference's constant value over
   a plan inside the field.
-- `meta.dynamics`: `kind` ("vehicle"), `dt`, `gain`, `keep`, `turn_max_degrees`, `state_sd`,
-  `state`, `top_speed`, `survey_speed`, `terrain_names` and `rule`, a sentence giving the vehicle's
-  integration rule (position along the heading at the speed, a turn of at most `turn_max_degrees`,
-  in place too). The page rolls each plan of (acceleration, turn) forward with it from the
-  believed heading and speed, and while playing moves the rover between ticks (unless the reader
-  asks for reduced motion).
+- `meta.dynamics`: `kind` ("vehicle"), `dt`, `gain`, `keep`, `turn_max_degrees`, `command_low`
+  and `command_high` (the command's box: drive from 0 to 1, a target speed as a share of the top
+  speed, and turn from -1 to 1), `state_sd`, `state`, `top_speed`, `cruise_speed` (the measured
+  typical speed the energy tables are built at), `terrain_names` and `rule`, a sentence giving the
+  vehicle's integration rule (position along the heading at the speed, a turn of at most
+  `turn_max_degrees`, in place too, the speed moving toward the target). The page rolls each plan
+  of (drive, turn) forward with it from the believed heading and speed, and while playing moves
+  the rover between ticks (unless the reader asks for reduced motion).
 - `meta.sign_convention`: every leaf is added to G with its sign applied, so an epistemic leaf
   appears negative.
 - `graph`: `tiers` (factors, modalities, controls per tier), `edges` (`from`, `to`, `kind`:
@@ -111,7 +115,8 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   and its sd; `speed` and `speed_sd`), `true_speed`, `camera` (`log_evidence`, `scale_mean`, the
   decoder's noise at the belief), `policies` (the rover tier's four warm
   starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,
-  `free_energy`, `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
+  `free_energy`, `seconds` and `seconds_parts` (`infer`, the belief update, and `plan`, the
+  plan's descent), `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
   first), `counts` (observations absorbed per cell), `coverage` (fraction of cells whose top
   probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
   force; absent in the rover-alone run).

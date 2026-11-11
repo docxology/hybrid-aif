@@ -14,7 +14,19 @@ The decoder's noise is calibrated (``calibrate``): it is fit to the decoder's re
 images (sensor noise and the decoder's own error together) and inflated by ``sqrt(N / N_eff)``,
 where ``N_eff`` is the effective number of independent pixels in those residuals
 (``effective_pixels``, bias-corrected for the sample correlation's own noise), times
-``EMPIRICAL_TEMPER`` (one: no factor beyond the measurement). The recogniser is an
+``EMPIRICAL_TEMPER`` (one: no factor beyond the measurement).
+
+The image's evidence is then tempered for the decoder's own error (``TEMPERED``): the decoder's
+error against the clean picture is not pixel noise but a coherent shift of the position the image
+points to, which the diagonal noise does not carry. The rule, measured on held-out states
+(``tempering``): at each state the shift ``b`` that the decoder's error alone causes in a single
+image's position estimate, in units of that estimate's own covariance, ``m^2 = b' I b`` (``I`` the
+image's information about the position); with pixel noise alone a single image's squared error has
+mean 2 (two coordinates), so the image's precision is scaled by ``alpha = 2 / (2 + E[m^2])``. The
+declared likelihood is the tempered one: its noise sd is the calibrated sd over ``sqrt(alpha)``
+(``temper`` refits the scale half of the head to it). For the showcase's camera E[m^2] is 3.08 and
+alpha 0.394, so the image's noise sd is 1.59 times the calibrated one. This is a declared stand-in
+for a structured decoder-error term in the likelihood. The recogniser is an
 ``MLPCategorical`` from the image to the three terrain classes, trained by cross-entropy on states
 drawn over the field and a uniform terrain, so its output is a measurement that carries no prior
 of its own; ``evaluate`` measures its confusion table (the reading given the true class) on
@@ -52,6 +64,12 @@ CONVERGENCE_IMAGES = (2000, 4000, 8000, 16000)
 EMPIRICAL_TEMPER = 1.0
 #  the comparison camera (experiment B): fixed along the world's CAMERA_HEADING, not the heading
 FIXED_VIEW = False
+#  whether the image's evidence is tempered for the decoder's error (``tempering``, ``temper``)
+TEMPERED = True
+TEMPER_STATES = 2000  # held-out states the tempering rule is measured on
+TEMPER_KEY = 12345  # their key, used by no training draw
+TEMPER_FIT_STATES = 20000  # states the tempered noise head is fitted on
+_ACTIVATIONS = {"silu": jax.nn.silu, "gelu": jax.nn.gelu, "tanh": jnp.tanh, "relu": jax.nn.relu}
 DATASET = 80000  # rendered training images
 N_TERRAIN = 3
 BATCH = 256
@@ -259,6 +277,114 @@ def calibrate(decoder, data, key, inflation, steps=CALIBRATION_STEPS):
     return dataclasses.replace(eqx.combine(trainable, fixed), frozen=True), final
 
 
+def shift_sizes(decoder, states, terrain):
+    """Per state, ``m^2 = b' I b``: ``I = J' W J`` the image's information about the position
+    (``J`` the decoder mean's derivative in ``x, y``, ``W`` its noise precision per pixel) and
+    ``b = I^-1 J' W e`` the shift of the single-image position estimate that the decoder's error
+    ``e`` (its mean less the clean render) alone causes, in units of that estimate's covariance."""
+
+    def one(z, t):
+        onehot = jax.nn.one_hot(t, N_TERRAIN)
+
+        def head(xy):
+            return decoder.diag_moments((jnp.concatenate([xy, z[2:]]), onehot))
+
+        mean, scale = head(z[:2])
+        jac = jax.jacfwd(lambda xy: head(xy)[0])(z[:2])
+        clean = wd.render(z, t, view_of(z))
+        w = 1.0 / scale**2
+        info = jac.T @ (w[:, None] * jac)
+        b = jnp.linalg.solve(info, jac.T @ (w * (mean - clean)))
+        return b @ info @ b
+
+    return jax.jit(jax.vmap(one))(states, terrain)
+
+
+def tempering(decoder, n=TEMPER_STATES, key=TEMPER_KEY):
+    """The tempering of the image's evidence for the decoder's error, measured on ``n`` held-out
+    states drawn as the training states are (``sample_states``, key ``key``): ``alpha = 2 / (2 +
+    E[m^2])`` with ``m^2`` from ``shift_sizes``; a dict of alpha and the statistics of ``m^2``."""
+    states, terrain = sample_states(jax.random.PRNGKey(key), n)
+    m2 = np.asarray(shift_sizes(decoder, states, terrain), np.float64)
+    return dict(
+        alpha=float(2.0 / (2.0 + m2.mean())),
+        rule="alpha = 2 / (2 + E[m^2]), m^2 = b' I b, the decoder error's shift of a single "
+        "image's position estimate in units of its covariance, on held-out states",
+        states=n,
+        key=key,
+        mean_m2=float(m2.mean()),
+        median_m2=float(np.median(m2)),
+        p90_m2=float(np.percentile(m2, 90)),
+    )
+
+
+def _hidden(net, parents):
+    """The decoder's last hidden layer at ``parents``, the features its head layer reads."""
+    h = jnp.concatenate(parents)
+    act = _ACTIVATIONS[net.activation]
+    for i, layer in enumerate(net.layers[:-1]):
+        h = layer(h)
+        if net.norms:
+            h = net.norms[i](h)
+        h = act(h)
+    return h
+
+
+def temper(decoder, alpha, key, n=TEMPER_FIT_STATES):
+    """The decoder with its noise sd divided by ``sqrt(alpha)``, so that its likelihood is the
+    tempered one (the image's precision times ``alpha``); the mean is untouched. The head's scale
+    is ``min_scale + softplus(raw)``, which no change of its weights scales exactly, so the scale
+    half of the head is refitted: per pixel, the raw scale is replaced by an affine map of itself,
+    ``a raw + d``, fitted by least squares on ``n`` states (drawn as the training states are) to
+    the raw value whose scale is the tempered one, and folded into the head's weights. Returns the
+    decoder and the fit's relative error of the scale on those states and on as many fresh ones
+    (median, 99th percentile, largest)."""
+    k_fit, k_check = jax.random.split(key)
+    head = decoder.layers[-1]
+    d = decoder.child_dim
+    weight, bias = head.weight[d:], head.bias[d:]
+    c = 1.0 / np.sqrt(alpha)
+
+    def scale_of(raw):
+        return decoder.min_scale + np.logaddexp(0.0, raw)
+
+    states, terrain = sample_states(k_fit, n)
+    onehot = jax.nn.one_hot(terrain, N_TERRAIN)
+    hidden = jax.jit(jax.vmap(lambda s, t: _hidden(decoder, (s, t))))(states, onehot)
+    raw = np.asarray(hidden @ weight.T + bias, np.float64)
+    target = scale_of(raw) * c - decoder.min_scale
+    want = np.log(np.expm1(target))  # the raw value whose scale is the tempered one
+    mx, my = raw.mean(0), want.mean(0)
+    a = ((raw - mx) * (want - my)).sum(0) / ((raw - mx) ** 2).sum(0)
+    off = my - a * mx
+    new_weight = jnp.asarray(a[:, None], weight.dtype) * weight
+    new_bias = jnp.asarray(a * np.asarray(bias, np.float64) + off, bias.dtype)
+    tempered = eqx.tree_at(
+        lambda m: (m.layers[-1].weight, m.layers[-1].bias),
+        decoder,
+        (head.weight.at[d:].set(new_weight), head.bias.at[d:].set(new_bias)),
+    )
+
+    def error(got, want):
+        rel = np.abs(np.asarray(got, np.float64) / np.asarray(want, np.float64) - 1.0)
+        return dict(
+            median=float(np.median(rel)),
+            p99=float(np.percentile(rel, 99)),
+            max=float(rel.max()),
+        )
+
+    states, terrain = sample_states(k_check, n)
+    onehot = jax.nn.one_hot(terrain, N_TERRAIN)
+    mean0, scale0 = jax.jit(jax.vmap(lambda s, t: decoder.diag_moments((s, t))))(states, onehot)
+    mean1, scale1 = jax.jit(jax.vmap(lambda s, t: tempered.diag_moments((s, t))))(states, onehot)
+    return tempered, dict(
+        factor=float(c),
+        fit=error(scale_of(a * raw + off), c * scale_of(raw)),
+        fresh=error(scale1, c * scale0),
+        fresh_mean_change=float(jnp.max(jnp.abs(mean1 - mean0))),
+    )
+
+
 def likelihood_report(decoder, key, n=2000):
     """How the decoder's likelihood fits held-out noisy images: the mean scale, the residual
     RMSE, the mean squared standardised residual (one when the scale is the predictive error,
@@ -330,7 +456,7 @@ def load_or_train(cache, seed=0, verbose=True):
             raise SystemExit(f"{cache} holds a camera for {report.get('image_side')}-pixel images")
         dec = eqx.tree_deserialise_leaves(files["decoder"], dec_skel)
         enc = eqx.tree_deserialise_leaves(files["encoder"], enc_skel)
-        return dec, enc, report
+        return _tempered(dec, cache, report, report_path), enc, report
     k_data, k_dec, k_enc, k_eval, k_eff, k_cal, k_lik = jax.random.split(
         jax.random.PRNGKey(seed), 7
     )
@@ -369,9 +495,30 @@ def load_or_train(cache, seed=0, verbose=True):
     eqx.tree_serialise_leaves(files["decoder"], dec)
     eqx.tree_serialise_leaves(files["encoder"], enc)
     report_path.write_text(json.dumps(report, indent=1))
+    dec = _tempered(dec, cache, report, report_path)
     if verbose:
         print(json.dumps(report, indent=1), flush=True)
     return dec, enc, report
+
+
+def _tempered(decoder, cache, report, report_path):
+    """With ``TEMPERED``, the calibrated ``decoder`` with its evidence tempered (``tempering``,
+    ``temper``): the rule's alpha and the refit are measured once and cached beside the camera
+    (the report's ``tempering`` entry and ``camera_decoder_tempered.eqx``); else ``decoder``."""
+    if not TEMPERED:
+        return decoder
+    path = Path(cache) / "camera_decoder_tempered.eqx"
+    if "tempering" not in report:
+        report["tempering"] = tempering(decoder)
+    if path.exists() and "fit" in report["tempering"]:
+        return eqx.tree_deserialise_leaves(path, decoder)
+    tempered, fit = temper(
+        decoder, report["tempering"]["alpha"], jax.random.PRNGKey(TEMPER_KEY + 1)
+    )
+    report["tempering"]["fit"] = fit
+    eqx.tree_serialise_leaves(path, tempered)
+    report_path.write_text(json.dumps(report, indent=1))
+    return tempered
 
 
 if __name__ == "__main__":

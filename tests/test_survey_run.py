@@ -10,14 +10,14 @@ float32 rounding tolerance. A deliberate change of the showcase regenerates it.
 
 The pin covers the runner's and the renderer's plumbing; the test camera is an untrained width-8
 network, so the pin says nothing of the decoder's quality or the camera's calibration. The
-properties: the motion is bounded (at most one map cell per tick, a reversal takes several ticks,
-the heading turns by at most the declared bound, by the command alone, in place too, and holds at
-rest); the forward camera is coherent (a world point keeps its texture value as the rover moves
-and turns a little); the rover's position and heading beliefs are calibrated without the camera,
-and with a small trained camera (``slow``); the rover's plans respect the wall preference; the
-scheduler decides on the slow clock; an empty band cannot drive or turn, and a rover started low
-keeps its energy off the floor; the rover can observe the recogniser's reading instead of the
-image (experiment A).
+properties: the motion is bounded (at most one map cell per tick, forward only, a held command holds
+its target speed, the heading turns by at most the declared bound, by the command alone, in place
+too, and holds at rest); the forward camera is coherent (a world point keeps its texture value as
+the rover moves and turns a little); the rover alone drives forward under its planner and its
+position and heading beliefs are calibrated without the camera, and with a small trained camera
+(``slow``); the rover's plans respect the wall preference; the scheduler decides on the slow clock;
+an empty band cannot drive or turn, and a rover started low keeps its energy off the floor; the
+rover can observe the recogniser's reading instead of the image (experiment A).
 """
 
 import dataclasses
@@ -74,12 +74,12 @@ def small_camera(pixels, pixel_sd=0.04):
 
 def flatten(obj, path):
     """Every number of ``obj`` (nested dicts and lists of tick records) as arrays keyed by path,
-    ``seconds`` left out; a list of numbers (or of lists of numbers) is one array, and ``None``
-    an empty one."""
+    the timings (``seconds`` and ``seconds_parts``) left out; a list of numbers (or of lists of
+    numbers) is one array, and ``None`` an empty one."""
     if isinstance(obj, dict):
         out = {}
         for k in sorted(obj):
-            if k != "seconds":
+            if not k.startswith("seconds"):
                 out.update(flatten(obj[k], f"{path}/{k}"))
         return out
     if obj is None:
@@ -169,7 +169,7 @@ def _turn_bound(wd):
     return wd.TURN_MAX + 4 * np.sqrt(2) * float(wd.STATE_SD[2])
 
 
-def test_the_motion_moves_at_most_one_cell_a_tick_and_reverses_over_several():
+def test_the_motion_moves_at_most_one_cell_a_tick_holds_a_commanded_speed_and_never_reverses():
     wd = example("survey_world")
     assert wd.top_speed() <= CELL  # the top speed: under a cell per tick
     rng = np.random.default_rng(0)
@@ -178,11 +178,12 @@ def test_the_motion_moves_at_most_one_cell_a_tick_and_reverses_over_several():
     xs = _drive(wd, commands, [0.0, -1.5, 1.0, 0.0, 0.0], jax.random.PRNGKey(1))
     step = np.hypot(*np.diff(xs[:, :2], axis=0).T)
     assert step.max() <= wd.top_speed() + 4 * np.sqrt(2) * float(wd.STATE_SD[0]) + 1e-3
-    # a reversal at top speed: the speed changes sign only after several ticks (0.85^n < 0.5)
-    xs = _drive(
-        wd, [[-1.0, 0.0]] * 12, [0.0, -1.5, 1.0, 0.0, wd.top_speed()], jax.random.PRNGKey(2)
-    )
-    assert np.argmax(xs[:, 4] < 0) >= 4
+    # the command is a target speed: forward only, so the speed stays at zero or above (noise
+    # aside) whatever is asked, and a held drive reaches its speed within a few ticks
+    assert xs[:, 4].min() > -4 * float(wd.STATE_SD[4])
+    for drive in (1.0, 0.5, 0.0):
+        held = _drive(wd, [[drive, 0.0]] * 8, [0.0, -1.5, 1.0, 0.0, 0.15], jax.random.PRNGKey(2))
+        assert abs(held[-1, 4] - drive * wd.top_speed()) < 4 * float(wd.STATE_SD[4]), drive
 
 
 def test_the_heading_is_a_state_turns_by_the_command_alone_and_holds_at_rest():
@@ -209,6 +210,35 @@ def test_the_rover_s_position_belief_is_calibrated_without_the_camera():
     setting = dict(next(s for s in module.settings_grid_l2() if s["id"] == "one-level"))
     setting.update(grid=GRID, camera=False)
     rows = module.run_setting(setting, 40, None, STEPS, STARTS)["ticks"]
+    cal = module.position_calibration(rows)
+    assert not cal["lost"]
+    assert cal["ellipse_coverage"] >= 0.7  # 0.865 nominal for a 2-sigma ellipse
+    assert cal["heading_coverage"] >= 0.8  # 0.954 nominal for 2 sd of the heading
+
+
+def test_the_rover_alone_drives_forward_under_its_planner_and_stays_calibrated():
+    """The showcase's planner (its descent steps and warm starts) on the showcase's grid, the
+    camera off, 40 ticks: the rover moves (median speed at least a third of the top speed, under a
+    quarter of the ticks parked), forward only and along its heading, under a cell a tick, its
+    plans inside the wall, and its position and heading beliefs calibrated."""
+    module = example("survey_run")
+    wd = example("survey_world")
+    setting = dict(next(s for s in module.settings_grid_l2() if s["id"] == "one-level"))
+    setting.update(camera=False)
+    rows = module.run_setting(setting, 40, None)["ticks"]
+    speed = np.asarray([r["true_speed"] for r in rows])
+    assert np.median(speed) >= wd.top_speed() / 3
+    assert np.mean(speed < 0.02) < 0.25
+    assert speed.min() > -4 * float(wd.STATE_SD[4])  # forward only, noise aside
+    pos = np.asarray([r["true_x"][:2] for r in rows])
+    step = np.diff(pos, axis=0)
+    assert np.hypot(*step.T).max() < CELL
+    heading = np.asarray([r["true_heading"] for r in rows])
+    moving = speed[:-1] >= 0.1
+    lag = np.abs((np.arctan2(step[:, 1], step[:, 0]) - heading[:-1] + np.pi) % (2 * np.pi) - np.pi)
+    bound = np.arctan2(4 * np.sqrt(2) * float(wd.STATE_SD[0]), speed[:-1])
+    assert np.all(lag[moving] <= bound[moving])  # the motion runs along the heading
+    assert module.plan_excursions(rows, chosen_only=True).max() <= 0.1
     cal = module.position_calibration(rows)
     assert not cal["lost"]
     assert cal["ellipse_coverage"] >= 0.7  # 0.865 nominal for a 2-sigma ellipse
@@ -303,12 +333,12 @@ def test_the_rover_can_observe_the_recogniser_s_reading_instead_of_the_image():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="the forward camera's position belief is overconfident with the vehicle model "
-    "(2-sigma coverage 0.3 to 0.8 in the showcase runs); recorded as an open defect",
-    strict=False,
-)
 def test_the_rover_s_position_belief_is_calibrated_with_a_small_trained_camera(tmp_path):
+    """The camera's whole pipeline (train, calibrate the noise, temper it for the decoder's error)
+    on a small decoder, then 60 ticks of the rover alone: not lost, and covered by its belief. The
+    small decoder (128 by 2, 4,000 steps) misses the showcase camera's accuracy bar, in which case
+    the test skips; the showcase camera itself is too large for the repository, and its closed-loop
+    calibration is measured by the full runs."""
     cam = example("survey_camera")
     module = example("survey_run")
     saved = {k: getattr(cam, k) for k in ("DECODER_SHAPE", "DECODER_STEPS", "ENCODER_STEPS")}

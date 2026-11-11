@@ -317,12 +317,14 @@
   function planPath(t, p) {
     var dy = B.meta.dynamics, gain = dy.gain, keep = dy.keep, dt = dy.dt;
     if (dy.kind === "vehicle" && t.belief.heading != null) {
-      // the vehicle's rule: move along the heading at the speed, then turn and accelerate
+      // the vehicle's rule: move along the heading at the speed, then turn, and move the speed
+      // by the command (the bundle's command box, [-1, 1] on both when it states none)
       var th = t.belief.heading, sp = t.belief.speed || 0, turn = dy.turn_max_degrees * Math.PI / 180;
+      var lo = dy.command_low || [-1, -1], hi = dy.command_high || [1, 1];
       var px = p.start[0], py = p.start[1], path = [[px, py]];
       p.v_plan.forEach(function (a) {
         px += dt * sp * Math.cos(th); py += dt * sp * Math.sin(th);
-        th += dt * turn * clamp(a[1], -1, 1); sp = keep * sp + gain * clamp(a[0], -1, 1);
+        th += dt * turn * clamp(a[1], lo[1], hi[1]); sp = keep * sp + gain * clamp(a[0], lo[0], hi[0]);
         path.push([px, py]);
       });
       return path;
