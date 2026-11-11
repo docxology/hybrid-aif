@@ -272,6 +272,29 @@ def test_a_world_point_keeps_its_value_as_the_forward_camera_moves_and_turns():
         # or swings under the turn)
 
 
+def test_the_sky_is_clearly_brighter_than_the_ground_in_every_view():
+    """Over a grid of poses (positions across the field, eight headings, toward and away from the
+    sun), the sky's mean pixel exceeds the ground's by a clear margin: 0.15 (about four sd of the
+    pixel noise) on firm and rough ground, and 0.1 on ice, the stated exception, whose bright
+    ground may approach the sky. The sky reads no local light, so this holds in shade too."""
+    wd = example("survey_world")
+    render = jax.jit(wd.render)
+    view = jax.jit(wd.ground_view)
+    margins = {0: [], 1: [], 2: []}
+    for x in np.linspace(-0.7, 4.7, 5):
+        for y in np.linspace(-1.7, 3.7, 5):
+            terrain = int(wd.terrain_of(jnp.asarray([x, y])))
+            for h in np.linspace(0, 2 * np.pi, 8, endpoint=False):
+                z = jnp.asarray([x, y, np.cos(h), np.sin(h), 0.0], jnp.float32)
+                img = np.asarray(render(z, terrain, h))
+                sky = np.asarray(view(z, h)[2]).reshape(-1)
+                if sky.sum() >= 20:  # a view facing up a slope may show almost no sky
+                    margins[terrain].append(img[sky].mean() - img[~sky].mean())
+    assert len(margins[0]) > 100
+    assert min(margins[0] + margins[1]) > 0.15
+    assert not margins[2] or min(margins[2]) > 0.1
+
+
 def _plan_toward_the_wall(sm, wd, start):
     """The chosen plan of the rover (no camera) from the state ``start``: the positions it passes
     through under the noiseless dynamics."""

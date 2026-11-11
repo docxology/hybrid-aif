@@ -84,14 +84,22 @@ CAMERA_HEADING = np.pi / 2  # the comparison camera's fixed direction (``observe
 NEAR, REACH, MARCH = 0.15, 5.0, 96  # the ray march: nearest and farthest distance, samples
 SUBCOLUMNS = 3  # rays per pixel across its width (the pixel's footprint, a midpoint rule)
 WALL_EDGE = 0.05  # the ground's albedo ramps to WALL_ALBEDO over this width across a wall
-HAZE = 2.5  # distance over which the ground fades into the haze at the horizon
+HAZE = 8.0  # distance over which the ground fades toward HAZE_VALUE
+HAZE_VALUE = 0.5  # the tone far ground fades toward: a grey well below the sky
 WALL_ALBEDO = 0.15  # the ground beyond the field's walls is dark
 EXPOSURE = 1.4  # pixel value per unit of albedo times sunlight
-ALBEDO = np.asarray([0.55, 0.40, 0.82])  # mean ground albedo per terrain class
-TEXTURE_AMP = np.asarray([0.15, 0.22, 0.07])  # texture amplitude per class
+#  mean ground albedo per terrain class: firm mid-dark, rough darker, ice bright (it may approach
+#  the sky's tone)
+ALBEDO = np.asarray([0.40, 0.26, 0.72])
+#  texture strength per class: the albedo is scaled by 1 + TEXTURE_AMP * tanh(wave), the wave of
+#  unit sd, so the texture stays positive and bounded (at most 1 + TEXTURE_AMP) and its contrast is
+#  relative: rough the strongest, ice the weakest
+TEXTURE_AMP = np.asarray([0.5, 0.7, 0.12])
 TEXTURE_WAVES = 6  # plane waves summed per class
 TEXTURE_WAVELENGTH = (0.9, 1.8)  # field units: about two and a half to five map cells
-SKY_ZENITH, SKY_HORIZON, SUN_GLOW = 0.55, 0.8, 0.12
+#  the sky: brightest at the top, somewhat less at the horizon, and brighter toward the sun's
+#  azimuth; the same whether the rover stands in sun or shade
+SKY_ZENITH, SKY_HORIZON, SUN_GLOW = 0.9, 0.76, 0.08
 
 
 def _bump(x, y, cx, cy, s, a):
@@ -331,13 +339,14 @@ WAVES = _waves()
 
 def texture(points, terrain):
     """The ground albedo of a terrain class at world points ``(..., 2)``: the class's mean albedo
-    plus its texture, a sum of plane waves over world coordinates scaled to unit sd and then to
-    ``TEXTURE_AMP``. A function of the world point alone, so the ground keeps its pattern as the
-    rover moves and turns."""
+    scaled by ``1 + TEXTURE_AMP * tanh(wave)``, the wave a sum of plane waves over world
+    coordinates scaled to unit sd. A function of the world point alone, so the ground keeps its
+    pattern as the rover moves and turns."""
     w = jnp.asarray(WAVES)[terrain]  # (TEXTURE_WAVES, 3)
     phase = points[..., 0, None] * w[:, 0] + points[..., 1, None] * w[:, 1] + w[:, 2]
     wave = jnp.sum(jnp.cos(phase), axis=-1) / np.sqrt(TEXTURE_WAVES / 2)
-    return jnp.asarray(ALBEDO, jnp.float32)[terrain] + jnp.asarray(TEXTURE_AMP)[terrain] * wave
+    amp = jnp.asarray(TEXTURE_AMP, jnp.float32)[terrain]
+    return jnp.asarray(ALBEDO, jnp.float32)[terrain] * (1.0 + amp * jnp.tanh(wave))
 
 
 def _outside(points):
@@ -417,14 +426,16 @@ def ground_view(x, heading):
 
 
 def _sky_value(rows, az, pitch):
-    """The sky's brightness at image rows ``rows`` (any shape broadcast with ``az``): brighter
-    toward the horizon and toward the sun's azimuth."""
+    """The sky's brightness at image rows ``rows`` (any shape broadcast with ``az``): brightest
+    at the top, somewhat less at the horizon, and brighter toward the sun's azimuth (a smooth
+    function of the angle between the view and the sun); it does not depend on the sunlight where
+    the rover stands."""
     elev = jnp.arctan((IMG_SIDE / 2 - rows) / FOCAL) + pitch
     up = jnp.clip(elev / (np.pi / 4), 0.0, 1.0)
     return (
         SKY_HORIZON
         + (SKY_ZENITH - SKY_HORIZON) * up
-        + SUN_GLOW * jnp.maximum(jnp.cos(az - SUN_AZIMUTH), 0.0)
+        + SUN_GLOW * (0.5 + 0.5 * jnp.cos(az - SUN_AZIMUTH)) ** 2
     )
 
 
@@ -447,15 +458,15 @@ def render(x, terrain, heading):
 
     A ground sample shows the class's ``texture`` at its world point, blended toward the dark
     ``WALL_ALBEDO`` across a wall (``_outside``), times the sunlight there (``light``) and
-    ``EXPOSURE``, fading over ``HAZE`` into the sky's brightness at the horizon. The whole visible
-    ground carries the texture of the class under the rover. The sky brightens toward the horizon
-    and toward the sun's azimuth."""
+    ``EXPOSURE``, fading over ``HAZE`` toward the haze's grey ``HAZE_VALUE``. The whole visible
+    ground carries the texture of the class under the rover. The sky is brightest at the top and
+    brighter toward the sun's azimuth (``_sky_value``)."""
     pts, top, az, pitch = _march(x, heading, _SUBCOLS, _SUBALPHA)  # (C', K, 2), (C', K)
     outside = _outside(pts)
     albedo = (1 - outside) * texture(pts, terrain) + outside * WALL_ALBEDO
     lit = light(jnp.moveaxis(pts, -1, 0))
     fade = jnp.exp(-jnp.asarray(_DISTANCES, jnp.float32) / HAZE)[None, :]
-    value = EXPOSURE * albedo * lit * fade + SKY_HORIZON * (1 - fade)  # (C', K)
+    value = EXPOSURE * albedo * lit * fade + HAZE_VALUE * (1 - fade)  # (C', K)
     lo_row = jnp.arange(IMG_SIDE, dtype=jnp.float32)[None, :, None]  # each pixel's [r, r + 1]
     hi_row = lo_row + 1.0
     # the visible segments between consecutive samples, from row top[k] up to row top[k + 1]

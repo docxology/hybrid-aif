@@ -91,7 +91,9 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   `map` and `counts`.
 - `meta.wall_preference`: `offset` and `note`: the rover's wall preference leaf (`utility` on the
   fix) and each rover plan's `G` are recorded less `offset`, the preference's constant value over
-  a plan inside the field.
+  a plan inside the field. `meta.position_risk`: `note`: the rover's risk leaf on its position
+  and each plan's `G` are also recorded less a constant per tick, the smallest value of that leaf
+  over the tick's plans (each tick's `offsets.position_risk`; `offsets.wall` is the wall's).
 - `meta.dynamics`: `kind` ("vehicle"), `dt`, `gain`, `keep`, `turn_max_degrees`, `command_low`
   and `command_high` (the command's box: drive from 0 to 1, a target speed as a share of the top
   speed, and turn from -1 to 1), `state_sd`, `state`, `top_speed`, `cruise_speed` (the measured
@@ -116,7 +118,8 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   decoder's noise at the belief), `policies` (the rover tier's four warm
   starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,
   `free_energy`, `seconds` and `seconds_parts` (`infer`, the belief update, and `plan`, the
-  plan's descent), `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
+  plan's descent), `offsets` (`wall`, `position_risk`: the constants the plans' records are
+  shown less), `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
   first), `counts` (observations absorbed per cell), `coverage` (fraction of cells whose top
   probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
   force; absent in the rover-alone run).

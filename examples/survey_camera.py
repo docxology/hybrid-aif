@@ -24,8 +24,8 @@ image's position estimate, in units of that estimate's own covariance, ``m^2 = b
 image's information about the position); with pixel noise alone a single image's squared error has
 mean 2 (two coordinates), so the image's precision is scaled by ``alpha = 2 / (2 + E[m^2])``. The
 declared likelihood is the tempered one: its noise sd is the calibrated sd over ``sqrt(alpha)``
-(``temper`` refits the scale half of the head to it). For the showcase's camera E[m^2] is 3.08 and
-alpha 0.394, so the image's noise sd is 1.59 times the calibrated one. This is a declared stand-in
+(``temper`` refits the scale half of the head to it). For the showcase's camera E[m^2] is 4.68 and
+alpha 0.300, so the image's noise sd is 1.83 times the calibrated one. This is a declared stand-in
 for a structured decoder-error term in the likelihood. The recogniser is an
 ``MLPCategorical`` from the image to the three terrain classes, trained by cross-entropy on states
 drawn over the field and a uniform terrain, so its output is a measurement that carries no prior

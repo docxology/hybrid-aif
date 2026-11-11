@@ -140,6 +140,17 @@ def wall_offset(policy_len):
     return float(-policy_len * sm.wall_target().log_prob(centre)[0])
 
 
+def position_risk_offset(tree, name, outer):
+    """The constant the position risk's leaf (``risk`` on ``name``) is recorded less: the smallest
+    lower bound of that leaf over the tick's plans, so the page shows each plan's risk above the
+    best plan's and is not dominated by the part every plan shares (the divergence of a tight
+    belief from the broad sector target); zero when there is no such leaf."""
+    for leaf, iv in tree.get("risk", {}).items():
+        if page_name(leaf, outer) == name:
+            return float(jnp.min((term_sign("risk") * iv).lower))
+    return 0.0
+
+
 def approximate_record(tree, outer):
     return {
         term: {page_name(leaf, outer): bool(iv.approximate) for leaf, iv in leaves.items()}
@@ -373,13 +384,16 @@ def rover_step(setting, steps, starts, pre, decoder):
         wall = page_name(pre + "fix", outer)
         walled = any(page_name(leaf, outer) == wall for leaf in tree.get("utility", {}))
         offset = wall_offset(system.policy_len) if walled else 0.0
+        #  the position risk's leaf is recorded less its smallest value over the tick's plans
+        x_risk = position_risk_offset(tree, page_name(pre + "x", outer), outer)
+        offsets = {"utility": {wall: offset}, "risk": {page_name(pre + "x", outer): x_risk}}
         records = [
             dict(
                 id=i,
                 start=[float(mean[0]), float(mean[1])],
                 v_plan=[[float(c) for c in step] for step in v_plans[i]],
-                terms=term_record(tree, i, outer, {"utility": {wall: offset}}),
-                G=[v - offset for v in interval_pair(g, i)],
+                terms=term_record(tree, i, outer, offsets),
+                G=[v - offset - x_risk for v in interval_pair(g, i)],
                 q_pi=float(q_pi.probs[i]),
             )
             for i in range(v_plans.shape[0])
@@ -389,6 +403,9 @@ def rover_step(setting, steps, starts, pre, decoder):
             seconds=time.time() - t_start,
             #  the belief update (every reading, the camera's dominant) and the plan's descent
             seconds_parts=dict(infer=t_infer - t_start, plan=t_plan - t_infer),
+            #  the constants the page's records are shown less (``wall_offset``,
+            #  ``position_risk_offset``)
+            offsets=dict(wall=offset, position_risk=x_risk),
             belief=position_belief(beliefs, pre),
             policies=records,
             chosen=best,
@@ -967,6 +984,16 @@ def meta_record(ticks, camera_report, grid, camera="image"):
                 "inside the field (a constant across plans: the mixture's normaliser), so the "
                 "leaf's lower bound is near zero inside the field and the leaf grows as a plan "
                 "nears or crosses a wall"
+            ),
+        ),
+        position_risk=dict(
+            note=(
+                "the rover's risk leaf on its position (the sector target, two-level only) and "
+                "each rover plan's G are also recorded less a constant per tick: the smallest "
+                "value of that leaf over the tick's plans (the tick's offsets.position_risk), so "
+                "the leaf shows each plan's risk "
+                "above the best one's; the constant is the same for every plan of a tick, so the "
+                "ranking is untouched"
             ),
         ),
     )
