@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   var NS = "http://www.w3.org/2000/svg";
-  var B = null, S = { setting: null, t: 0, playing: false, timer: null, tier: "mission", showAll: false, layer: "terrain" };
+  var B = null, S = { setting: null, t: 0, frac: 0, playing: false, timer: null, raf: null, tier: "mission", showAll: false, layer: "terrain" };
   var $ = function (id) { return document.getElementById(id); };
   var TOP_N = 12, CACHE = {}, WIN = null, BG = null, tipEl;
 
@@ -59,6 +59,9 @@
   function termColor(t) { return css(TERM_VAR[t] || "--muted"); }
   function optColor(i) { return css("--o" + i); }
   function optLabel(i) { return (B.meta.tiers.options || [])[i] || "option " + i; }
+  function hasOpt(t) { return t.option != null; }
+  function pinnedOpt() { return B.meta.tiers.pinned_option; }  // set by bundles whose one-level run pins an option
+  function aloneText() { return "none: the rover runs alone"; }
   function optShort(i) { var n = optLabel(i), m = /(\d)$/.exec(n); return m ? "S" + m[1] : n === "charge" ? "C" : n; }
   function sectorOf(opt) { var m = /survey sector (\d)/.exec(optLabel(opt)); return m ? +m[1] - 1 : -1; }
   function terrColor(c) { return css(["--mf", "--mr", "--mi"][c]); }
@@ -70,7 +73,7 @@
     "mission.gauge": [140, 208], "mission.cell_obs": [280, 208],
     "rover.field": [420, 282],
     "rover.v": [150, 366], "rover.x": [150, 440], "rover.energy": [285, 440], "rover.terrain": [420, 440],
-    "rover.fix": [85, 528], "rover.gauge": [225, 528], "rover.img": [365, 528]
+    "rover.fix": [85, 528], "rover.gauge": [225, 528], "rover.img": [365, 528], "rover.look": [365, 528]
   };
   var BEND = { "rover.x>rover.energy": 0, "rover.terrain>rover.energy": 0, "rover.x>rover.img": -14, "rover.terrain>rover.img": 0, "rover.energy>rover.img": 8 };
   var FAM = { categorical: "categorical", gaussian_mixture: "Gauss. mixture", linear_gaussian: "lin. Gaussian", neural: "neural (MLP)" };
@@ -180,8 +183,9 @@
     document.querySelectorAll("#graph g[data-node]").forEach(function (g) {
       var n = g.getAttribute("data-node"), shape = g.firstElementChild, now = g.querySelector(".now");
       if (n === "mission.u_option") {
-        shape.setAttribute("fill", optColor(t.option)); shape.setAttribute("fill-opacity", 0.4);
-        if (now) now.textContent = "now: " + optLabel(t.option);
+        if (hasOpt(t)) { shape.setAttribute("fill", optColor(t.option)); shape.setAttribute("fill-opacity", 0.4); }
+        else { shape.setAttribute("fill", css("--bg")); shape.setAttribute("fill-opacity", 1); }
+        if (now) now.textContent = hasOpt(t) ? "now: " + optLabel(t.option) : "not run in this setting";
       }
     });
   }
@@ -284,7 +288,7 @@
     g.stroke();
   }
   function drawSectors(m, t) {
-    var g = m.g, f = B.meta.field, sp = B.meta.tiers.zone_split, k = sectorOf(t.option);
+    var g = m.g, f = B.meta.field, sp = B.meta.tiers.zone_split, k = hasOpt(t) ? sectorOf(t.option) : -1;
     var xr = [[f[0][0], sp[0]], [sp[0], f[0][1]]], yr = [[f[1][0], sp[1]], [sp[1], f[1][1]]];
     if (k >= 0) {
       var r = [xr[k % 2], yr[Math.floor(k / 2)]];
@@ -312,6 +316,17 @@
   }
   function planPath(t, p) {
     var dy = B.meta.dynamics, gain = dy.gain, keep = dy.keep, dt = dy.dt;
+    if (dy.kind === "vehicle" && t.belief.heading != null) {
+      // the vehicle's rule: move along the heading at the speed, then turn and accelerate
+      var th = t.belief.heading, sp = t.belief.speed || 0, turn = dy.turn_max_degrees * Math.PI / 180;
+      var px = p.start[0], py = p.start[1], path = [[px, py]];
+      p.v_plan.forEach(function (a) {
+        px += dt * sp * Math.cos(th); py += dt * sp * Math.sin(th);
+        th += dt * turn * clamp(a[1], -1, 1); sp = keep * sp + gain * clamp(a[0], -1, 1);
+        path.push([px, py]);
+      });
+      return path;
+    }
     var terr = argmax(t.belief.terrain), v = (t.belief.velocity || [0, 0]).slice(), x = p.start[0], y = p.start[1], pts = [[x, y]];
     p.v_plan.forEach(function (a) {
       x += dt * v[0]; y += dt * v[1];
@@ -330,20 +345,44 @@
       g.globalAlpha = 1;
     });
   }
-  function drawRover(m, t) {
-    var g = m.g, x = m.X(t.true_x[0]), y = m.Y(t.true_x[1]), vx = t.true_x[2], vy = t.true_x[3], sp = Math.hypot(vx, vy);
+  function hasHeading() { return run().ticks[0].true_heading != null; }  // the world's heading per tick
+  function interp(r, i, f) {
+    // the true state at tick i plus a fraction f of the way to tick i + 1: position and velocity,
+    // and as a fifth entry the heading, turned along the shorter arc (when the bundle has one)
+    var a = r[i], b = i + 1 < r.length && f > 0 ? r[i + 1] : a;
+    var out = a.true_x.map(function (v, k) { return v + f * (b.true_x[k] - v); });
+    if (a.true_heading != null) {
+      var d = b.true_heading - a.true_heading; d = Math.atan2(Math.sin(d), Math.cos(d));
+      out.push(a.true_heading + f * d);
+    }
+    return out;
+  }
+  function drawRover(m, xs) {
+    var g = m.g, x = m.X(xs[0]), y = m.Y(xs[1]), vx = xs[2], vy = xs[3], sp = Math.hypot(vx, vy);
     g.save(); g.translate(x, y);
-    if (sp > 0.03) { var ang = Math.atan2(-vy, vx); g.rotate(ang); }
+    // the arrow points along the heading when the bundle records one, else along the velocity
+    if (xs.length > 4) g.rotate(-xs[4]);
+    else if (sp > 0.03) { var ang = Math.atan2(-vy, vx); g.rotate(ang); }
     g.beginPath(); g.moveTo(13, 0); g.lineTo(-7, -7); g.lineTo(-3, 0); g.lineTo(-7, 7); g.closePath();
     g.fillStyle = css("--fg"); g.fill(); g.strokeStyle = css("--bg"); g.lineWidth = 2; g.stroke();
     g.restore();
   }
-  function drawField() {
-    var c = $("field"), m = setupCanvas(c), g = m.g, r = run().ticks, t = r[S.t];
+  function drawBeliefHeading(m, b) {
+    // the believed heading: a line from the believed position, with a wedge of two sd either side
+    var g = m.g, x = m.X(b.mean[0]), y = m.Y(b.mean[1]), r = 26, w = Math.min(2 * b.heading_sd, Math.PI);
+    g.save(); g.globalAlpha = 0.25; g.fillStyle = css("--ell"); g.beginPath(); g.moveTo(x, y);
+    g.arc(x, y, r, -b.heading - w, -b.heading + w); g.closePath(); g.fill();
+    g.globalAlpha = 1; g.strokeStyle = css("--ell"); g.lineWidth = 2; g.beginPath(); g.moveTo(x, y);
+    g.lineTo(x + r * Math.cos(-b.heading), y + r * Math.sin(-b.heading)); g.stroke(); g.restore();
+  }
+  function drawField(lite) {
+    // lite: a frame between ticks while playing (the rover moves on; panels below stay)
+    var c = $("field"), m = setupCanvas(c), g = m.g, r = run().ticks, t = r[S.t], xs = interp(r, S.t, S.frac);
     g.drawImage(background(m), 0, 0, m.w, m.h);
     drawMap(m, t); drawSectors(m, t);
     g.save(); g.setLineDash([2, 5]); g.lineCap = "round"; g.globalAlpha = 0.7; g.strokeStyle = css("--fg"); g.lineWidth = 1.4; g.beginPath();
     for (var i = 0; i <= S.t; i++) { var p = r[i].true_x; i ? g.lineTo(m.X(p[0]), m.Y(p[1])) : g.moveTo(m.X(p[0]), m.Y(p[1])); }
+    if (S.frac > 0) g.lineTo(m.X(xs[0]), m.Y(xs[1]));
     g.stroke(); g.restore();
     var f = B.meta.field;
     g.save(); g.beginPath(); g.rect(m.X(f[0][0]), m.Y(f[1][1]), (f[0][1] - f[0][0]) * m.sc, (f[1][1] - f[1][0]) * m.sc); g.clip();
@@ -354,15 +393,17 @@
       g.strokeStyle = css("--c2"); g.lineWidth = 2; g.beginPath();
       g.moveTo(fx - 4, fy - 4); g.lineTo(fx + 4, fy + 4); g.moveTo(fx - 4, fy + 4); g.lineTo(fx + 4, fy - 4); g.stroke();
     }
-    drawRover(m, t);
+    drawRover(m, xs);
     t.belief.components.forEach(function (cm) { ellipse(m, cm, css("--ell"), cm.w); });
+    if (t.belief.heading != null && t.belief.heading_sd != null) drawBeliefHeading(m, t.belief);
+    if (lite) return;
     drawHud(t);
     drawCamera(t);
   }
   function drawHud(t) {
     var e = t.true_energy, band = e.band, terr = t.belief.terrain, best = argmax(terr);
-    var pinned = !twoLevel();
-    var opt = optLabel(t.option) + (pinned ? " (pinned)" : "");
+    var pinned = !twoLevel() && pinnedOpt() != null;
+    var opt = hasOpt(t) ? optLabel(t.option) + (pinned ? " (pinned)" : "") : aloneText();
     var bar = "<span class='hbar' title='energy level " + e.level.toFixed(2) + " of 4'>";
     for (var b = 0; b < 4; b++) bar += "<i style='width:25%;background:" + (b <= band ? css("--c3") : "transparent") + ";opacity:" + (b < band ? 0.55 : 1) + "'></i>";
     bar += "</span>";
@@ -376,7 +417,7 @@
     $("fieldlegend").innerHTML =
       "<span>learned map: " + [0, 1, 2].map(function (c) { return sw(terrColor(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>true ground: " + [0, 1, 2].map(function (c) { return sw(terrBg(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
-      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
+      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
       (S.layer === "light" ? "<span>brighter: more sunlight</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
   }
 
@@ -397,22 +438,39 @@
     if (!host.children.length) {
       [["observed image", "obs"], ["decoder prediction at the belief", "rec"], ["terrain readout", "read"]].forEach(function (p, i) {
         var d = document.createElement("div"); d.className = "cam";
-        d.innerHTML = (i < 2 ? "<div class='camc'><canvas id='cam" + i + "' width='" + n + "' height='" + n + "' role='img' aria-label='" + p[0] + "'></canvas>" + (i === 0 ? "<span class='skylab'>sky</span>" : "") + "</div>" : "<div class='readout' id='cam2' role='img' aria-label='" + p[0] + "'></div>") +
+        // a fixed sky band is marked only for a camera whose top quarter is always sky
+        var sky = i === 0 && !hasHeading() ? "<span class='skylab'>sky</span>" : "";
+        d.innerHTML = (i < 2 ? "<div class='camc'><canvas id='cam" + i + "' width='" + n + "' height='" + n + "' role='img' aria-label='" + p[0] + "'></canvas>" + sky + "</div>" : "<div class='readout' id='cam2' role='img' aria-label='" + p[0] + "'></div>") +
           "<span class='cl'>" + p[0] + "</span><span class='cv' id='camv" + i + "'></span>";
         host.appendChild(d);
       });
     }
     paint($("cam0"), bytes(t.img, n), n);
-    paint($("cam1"), bytes(t.recon || t.img, n), n);
+    // a model that observes the recogniser's reading has no decoder: its panel stays blank
+    if (t.recon != null || !t.recogniser) paint($("cam1"), bytes(t.recon || t.img, n), n);
+    else $("cam1").getContext("2d").clearRect(0, 0, n, n);
     var h = "";
     t.belief.terrain.forEach(function (p, i) {
       var isTrue = i === t.true_terrain;
       h += "<div class='rb" + (isTrue ? " true" : "") + "'><span class='rn'>" + esc(nm("terrain", i)) + (isTrue ? " (true)" : "") + "</span><span class='rp'>" + p.toFixed(2) + "</span><span class='bar'><i style='width:" + (100 * p).toFixed(1) + "%;background:" + terrColor(i) + "'></i></span></div>";
     });
+    if (t.recogniser) {
+      // the frozen recogniser's class probabilities for this picture, and the class it reports
+      var rk = argmax(t.recogniser);
+      h += "<div class='rn'>recogniser: " + esc(nm("terrain", t.look != null ? t.look : rk)) + " " + t.recogniser[rk].toFixed(2) + "</div>";
+    }
     $("cam2").innerHTML = h;
     var cam = t.camera || {};
-    $("camv1").textContent = cam.log_evidence != null ? "log evidence " + cam.log_evidence.toFixed(0) : "";
-    $("camv0").textContent = "looking along +y";
+    $("camv1").textContent = (t.recon == null && t.recogniser ? "no decoder: the model observes the recogniser's reading" : "") +
+      (cam.log_evidence != null ? "log evidence " + cam.log_evidence.toFixed(0) : "") +
+      (cam.scale_mean != null ? ", noise sd " + cam.scale_mean.toFixed(2) : "");
+    var fixed = B.meta.image && B.meta.image.camera_heading_degrees != null;
+    if (t.true_heading == null || fixed) $("camv0").textContent = "looking along +y";
+    else {
+      // the rover's heading, in degrees counter-clockwise from +x
+      var deg = Math.round(t.true_heading * 180 / Math.PI);
+      $("camv0").textContent = "heading " + (deg < 0 ? deg + 360 : deg) + "° from +x";
+    }
   }
 
   // ---- timeline ----
@@ -434,8 +492,13 @@
     lab("option", yS + 17);
     C.segs.forEach(function (s) {
       var x0 = sx(s.t0), x1 = sx(s.t1);
+      if (s.option == null) {
+        el("rect", { x: x0, y: yS, width: x1 - x0, height: hS, fill: "none", stroke: css("--line"), "stroke-width": 1, "stroke-dasharray": "4 3" }, svg);
+        el("text", { x: (x0 + x1) / 2, y: yS + 17, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, svg, "no option: the rover runs alone, with no scheduler");
+        return;
+      }
       el("rect", { x: x0, y: yS, width: x1 - x0, height: hS, fill: optColor(s.option), "fill-opacity": 0.75, stroke: css("--panel"), "stroke-width": 1 }, svg);
-      var txt = (!twoLevel() && s.option === B.meta.tiers.pinned_option) ? "pinned: " + optLabel(s.option) : (x1 - x0 > 70 ? optLabel(s.option) : x1 - x0 > 16 ? optShort(s.option) : "");
+      var txt = (!twoLevel() && s.option === pinnedOpt()) ? "pinned: " + optLabel(s.option) : (x1 - x0 > 70 ? optLabel(s.option) : x1 - x0 > 16 ? optShort(s.option) : "");
       if (txt) el("text", { x: (x0 + x1) / 2, y: yS + 17, "text-anchor": "middle", "font-size": 10.5, fill: css("--fg") }, svg, txt);
     });
     if (twoLevel()) T.forEach(function (t, i) { if (t.slow && t.slow.decision) el("line", { x1: sx(i), x2: sx(i), y1: yS - 8, y2: yS, stroke: css("--fg"), "stroke-width": 1.2 }, svg); });
@@ -449,8 +512,10 @@
     T.forEach(function (t, i) { d += (i ? "L" : "M") + sx(i + 0.5).toFixed(1) + "," + ey(t.true_energy.level).toFixed(1); });
     el("path", { d: d, fill: "none", stroke: css("--c3"), "stroke-width": 2 }, svg);
     // coverage
-    var cmax = 0.5, cy = function (v) { return yC + hC - clamp(v / cmax, 0, 1) * hC; };
-    [0, 0.25, 0.5].forEach(function (v) {
+    var top = 0; T.concat(O).forEach(function (t) { top = Math.max(top, t.coverage); });
+    var cmax = Math.max(0.5, Math.ceil(top * 4) / 4), cy = function (v) { return yC + hC - clamp(v / cmax, 0, 1) * hC; }, ticks = [];
+    for (var cv = 0; cv <= cmax + 1e-9; cv += 0.25) ticks.push(cv);
+    ticks.forEach(function (v) {
       el("line", { x1: L, x2: W - R, y1: cy(v), y2: cy(v), stroke: css("--line"), "stroke-width": 0.8 }, svg);
       el("text", { x: L - 4, y: cy(v) + 3, "text-anchor": "end", "font-size": 9.5, class: "muted" }, svg, v.toFixed(2));
     });
@@ -512,7 +577,9 @@
     var host = $("decision"), note = $("decnote"), cap = $("deccap"), lg = $("declegend");
     reserve(host); lg.innerHTML = "";
     if (!twoLevel()) {
-      note.textContent = "In this setting the option is pinned to " + optLabel(B.meta.tiers.pinned_option) + ", so the scheduler does not run and there is no decision to show.";
+      note.textContent = pinnedOpt() != null
+        ? "In this setting the option is pinned to " + optLabel(pinnedOpt()) + ", so the scheduler does not run and there is no decision to show."
+        : "In this setting the rover runs alone, with no scheduler, so there is no decision to show.";
       cap.textContent = ""; host.hidden = true; return;
     }
     host.hidden = false;
@@ -525,10 +592,10 @@
     var sx = function (v) { return Lx + (v - lo) / (hi - lo) * (Wd - Lx - Rx); };
     var svg = el("svg", { viewBox: "0 0 " + Wd + " " + H, width: Wd, height: H, role: "img", "aria-label": "Expected free energy by first option, split into novelty and energy risk" }, host);
     svg.style.height = "auto";
-    var step = 10;
+    var step = Math.pow(10, Math.floor(Math.log10((hi - lo) / 4))); step *= (hi - lo) / step / 4 > 4 ? 5 : (hi - lo) / step / 4 > 2 ? 2 : 1;
     for (var v = Math.ceil(lo / step) * step; v <= hi; v += step) {
       el("line", { x1: sx(v), x2: sx(v), y1: 6, y2: H - 24, stroke: css("--line"), "stroke-width": v === 0 ? 1.6 : 0.8 }, svg);
-      el("text", { x: sx(v), y: H - 8, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, svg, v);
+      el("text", { x: sx(v), y: H - 8, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, svg, Math.round(v * 100) / 100);
     }
     var best = {};
     d.slow.policies.forEach(function (p) {
@@ -628,7 +695,7 @@
     var two = twoLevel();
     $("objnote").textContent = mission
       ? (two ? "Mission tier: the scheduler's option sequences are enumerated exactly, so each G is a point (lower equals upper) and is drawn as a tick, not a bar. Its objective terms are the novelty of the map and the energy risk."
-        : "Mission tier: in this setting the option is pinned and the scheduler does not run, so there are no sequences to show. Switch the setting to the scheduler over the rover.")
+        : "Mission tier: in this setting " + (pinnedOpt() != null ? "the option is pinned and " : "the rover runs alone and ") + "the scheduler does not run, so there are no sequences to show. Switch the setting to the scheduler over the rover.")
       : "Rover tier: the gradient planner descends from four warm starts (initial velocity plans) and keeps the best; the bars are the four starts' plans, the acted one outlined, and the intervals the closed-form mixture bounds put around each term." + (anyApprox() ? " Terms that read the camera are computed on the decoder's linearisation at the belief and are marked ≈ in the tooltip." : "");
     $("objcap").textContent = (mission
       ? "Expected free energy of the kept option sequences (the " + items.length + " the page keeps: the best overall and the best for each first option) at the most recent decision (tick " + o.decided + "), best first; lower is better. "
@@ -710,6 +777,7 @@
   function drawMdl() {
     var tb = document.querySelector("#mdltable tbody");
     tb.innerHTML = "";
+    if (!B.mdl) { $("mdlfoot").textContent = "This replay carries no description-length table."; return; }
     var C = B.mdl.components, mx = 0, tot = 0, exact = 0;
     C.forEach(function (c) { if (c.nats != null) { mx = Math.max(mx, Math.log10(c.nats + 1)); tot += c.nats; if (c.exact) exact += c.nats; } });
     function tierOf(c) { var m = /(?:^|:)(mission|rover)\./.exec(c.name); return m ? m[1] : null; }
@@ -755,10 +823,30 @@
     $("tick").value = S.t; $("tickout").textContent = S.t;
     drawField(); updateGraph(); drawTimeline(); drawDecision(); drawObjective();
   }
+  var TICK_MS = 120, MOTION = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  function smooth() {
+    // between ticks the rover is drawn moving only when the bundle's motion is bounded (it records
+    // the world's heading) and the reader has not asked for reduced motion
+    return hasHeading() && !(MOTION && MOTION.matches);
+  }
   function setPlaying(on) {
     S.playing = on; $("play").textContent = on ? "Pause" : "Play"; $("play").setAttribute("aria-label", on ? "Pause" : "Play");
-    clearInterval(S.timer);
-    if (on) S.timer = setInterval(function () { S.t = (S.t + 1) % run().ticks.length; render(); }, 120);
+    clearInterval(S.timer); if (S.raf) cancelAnimationFrame(S.raf); S.raf = null;
+    if (S.frac) { S.frac = 0; drawField(true); }
+    if (!on) return;
+    if (!smooth()) { S.timer = setInterval(function () { S.t = (S.t + 1) % run().ticks.length; render(); }, TICK_MS); return; }
+    var last = null;
+    function frame(now) {
+      if (!S.playing) return;
+      S.frac += last == null ? 0 : (now - last) / TICK_MS; last = now;
+      if (S.frac >= 1) {
+        S.t = (S.t + Math.floor(S.frac)) % run().ticks.length; S.frac -= Math.floor(S.frac);
+        if (S.t === run().ticks.length - 1) S.frac = 0;  // no next tick to move toward
+        render();
+      } else drawField(true);
+      S.raf = requestAnimationFrame(frame);
+    }
+    S.raf = requestAnimationFrame(frame);
   }
   function fullRedraw() { BG = null; drawGraph(); render(); }
   function hashParams() {
@@ -782,7 +870,7 @@
     if (hp.view === "terms") $("objmode").value = "terms";
     if (hp.layer && /^(terrain|light|fix)$/.test(hp.layer)) { S.layer = hp.layer; document.querySelector("input[name=layer][value=" + hp.layer + "]").checked = true; }
     sel.addEventListener("change", function () { S.setting = sel.value; S.t = $("restart").checked ? 0 : Math.min(S.t, run().ticks.length - 1); $("tick").max = run().ticks.length - 1; fullRedraw(); });
-    $("tick").addEventListener("input", function (e) { S.t = +e.target.value; render(); });
+    $("tick").addEventListener("input", function (e) { S.t = +e.target.value; S.frac = 0; render(); });
     $("play").addEventListener("click", function () { setPlaying(!S.playing); });
     $("objmode").addEventListener("change", drawObjective);
     $("objtier").addEventListener("change", function (e) { S.tier = e.target.value; drawObjective(); });
@@ -804,8 +892,10 @@
       if (o.view) $("objmode").value = o.view;
       if (o.all != null) S.showAll = o.all;
       if (o.layer) { S.layer = o.layer; BG = null; document.querySelector("input[name=layer][value=" + o.layer + "]").checked = true; }
-      if (o.t != null) S.t = o.t; render();
-    }, state: function () { return { t: S.t, setting: S.setting, playing: S.playing }; } };
+      if (o.t != null) { S.t = o.t; S.frac = 0; }
+      if (o.frac != null) S.frac = clamp(+o.frac, 0, 0.999);
+      render();
+    }, state: function () { return { t: S.t, frac: S.frac, setting: S.setting, playing: S.playing }; } };
     window.__ready = true;
     document.dispatchEvent(new Event("hybrid-aif:ready"));
   }

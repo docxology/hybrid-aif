@@ -1,5 +1,5 @@
 """The survey rover's slow tier: a scheduler that picks which sector of the field to survey, or
-to charge, every dozen fast ticks.
+to charge, every ``SURVEY_TICKS`` fast ticks.
 
 Factors, in declaration order: ``visit`` (the cell the rover is at, one level per cell of the
 rover's grid, row-major over the grid shape, x first), ``energy`` (the four bands) and ``map`` (the
@@ -25,12 +25,13 @@ Tables, all built here from the world's maps:
   a distribution over whole-band shifts that has the fractional part as the probability of the
   larger shift (the band moves by ``floor`` or ``ceil`` of the change), clipped at the empty and
   full bands. Under survey sector k the change is the travel from the visited cell's centre to
-  the sector's centre (a straight path sampled at ``PATH_SAMPLES`` points, at cruise speed
-  ``CRUISE``, the net of the world's charge and drain at firm ground, so a longer path costs
-  more) plus ``SURVEY_TICKS`` fast ticks of surveying (the mean net rate over the sector's cells
-  at cruise speed). Under charge it is ``SURVEY_TICKS`` fast ticks at rest, the world's charge at
-  the field-wide mean illumination (the scheduler does not know where light is) less the drain
-  at rest. The distance enters only through this energy cost.
+  the sector's centre (a straight path sampled at ``PATH_SAMPLES`` points, at the measured survey
+  speed ``CRUISE``, the world's drain at firm ground, so a longer path costs
+  more) plus the option's remaining fast ticks of surveying (the mean net rate over the sector's
+  cells at that speed); a travel longer than the option is costed in full. A moving rover does not
+  charge. Under charge it is ``SURVEY_TICKS`` fast ticks parked on the visited cell, the world's
+  solar charge at that cell's light less the drain at rest, so charging pays only on sunny cells.
+  The distance enters only through this energy cost.
 - ``cell_obs`` is right with probability ``CELL_ACC``, the rest spread uniformly over the other
   cells. This table says how the rover's cell belief relates to the scheduler's own ``visit``
   variable: the scheduler's belief about where the rover is, a different variable at a different
@@ -57,8 +58,8 @@ from hybrid_aif import (
     SystemParams,
 )
 
-SURVEY_TICKS = 12  # fast ticks an option lasts
-CRUISE = 0.8  # the speed at which travel and survey are costed
+SURVEY_TICKS = 24  # fast ticks an option lasts
+CRUISE = wd.SURVEY_SPEED  # the rover's measured survey speed: travel and survey are costed at it
 PATH_SAMPLES = 24
 CELL_ACC = 0.95  # the cell reading is right with this probability
 OPTION_NAMES = [
@@ -70,9 +71,12 @@ OPTION_NAMES = [
 ]
 SECTOR_NAMES = ["sector 1", "sector 2", "sector 3", "sector 4"]
 CHARGE = sm.N_SURVEY  # the charge level
-# readings of the map per option: a survey pools one reading of a distinct cell per fast tick, a
-# charge leaves the rover on one cell, so its twelve ticks read it once
-READINGS = jnp.asarray([SURVEY_TICKS] * sm.N_SURVEY + [1], jnp.float32)
+CELL_SIDE = (wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE
+# readings of the map per option: a survey pools one reading per distinct cell it crosses, the
+# median count measured over the vehicle's survey options (see the build record); a charge leaves
+# the rover parked on one cell, so its ticks read it once
+SURVEY_READINGS = 8
+READINGS = jnp.asarray([SURVEY_READINGS] * sm.N_SURVEY + [1], jnp.float32)
 
 
 def cell_zones(centres):
@@ -106,16 +110,15 @@ def option_changes(centres):
     zones = cell_zones(centres)
     targets = sm.sector_centres()
     sector_rate = [_net_rate(centres[zones == k], CRUISE) for k in range(sm.N_SURVEY)]
-    mean_light = float(np.mean(wd.LIGHT))
-    rest = SURVEY_TICKS * (wd.CHARGE_RATE * mean_light - wd.BASE_DRAIN)
     out = np.zeros((centres.shape[0], sm.N_OPTIONS))
     ramp = np.linspace(0.0, 1.0, PATH_SAMPLES)[:, None]
     for c, here in enumerate(centres):
         for k in range(sm.N_SURVEY):
             path = here + ramp * (targets[k] - here)
             travel = float(np.linalg.norm(targets[k] - here)) / CRUISE
-            out[c, k] = travel * _net_rate(path, CRUISE) + SURVEY_TICKS * sector_rate[k]
-        out[c, CHARGE] = rest
+            survey = max(SURVEY_TICKS - travel, 0.0)
+            out[c, k] = travel * _net_rate(path, CRUISE) + survey * sector_rate[k]
+        out[c, CHARGE] = SURVEY_TICKS * _net_rate(here[None], 0.0)  # parked here, in its light
     return out
 
 
@@ -168,9 +171,9 @@ def scheduler(
     rover's, so that ``Identify("rover.field", "mission.field")`` identifies them. With
     ``durations`` the control node declares a round of ``SURVEY_TICKS`` for every level; with
     ``readings`` the ``map`` factor's novelty at each plan step is multiplied by the number of
-    readings of the option selected at that step (``SURVEY_TICKS`` for a survey, one for charge,
-    since a stationary rover reads one cell), a slow step pooling the readings the fast tier
-    takes in it."""
+    readings of the option selected at that step (``SURVEY_READINGS`` for a survey, one for
+    charge, since a stationary rover reads one cell), a slow step pooling the readings the fast
+    tier takes in it."""
     n_cells = grid.n_cells
     # factors: visit 0, energy 1, map 2, u_option 3 (the option, a control node)
     system = System(

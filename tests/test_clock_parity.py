@@ -11,13 +11,12 @@ replayed here as closed Systems and compared bit for bit:
 - ``composite``: the same two robots merged, ``a`` held (the composite form), against
   ``with_mirror`` of the merge. Compared under all three orders: both robots' intended and
   realised moves, the positions of the two robots and the number of decisions.
-- ``scheduler``: the survey's two-tier scheduler (``examples/survey_scheduler.py``) held for
-  three rounds inside the merge run as one mind of the wired form, with the rover a fast learner
-  that writes the
-  shared parameter variable back every round. Compared under all three orders: the option held
-  each round, the shared field as each decision saw it and as the run left it. The recorded side is
-  driven by hand with a fixed gauge observation; the closed System has a world leaf with a
-  hand-written step that emits the same.
+- ``scheduler``: the survey's two-tier scheduler with the tables the recording used, frozen in
+  ``tests/survey_frozen.py``, held for three rounds inside the merge run as one mind of the wired
+  form, with the rover a fast learner that writes the shared parameter variable back every round.
+  Compared under all three orders: the option held each round, the shared field as each decision
+  saw it and as the run left it. The recorded side is driven by hand with a fixed gauge
+  observation; the closed System has a world leaf with a hand-written step that emits the same.
 - ``arena``: two minds whose tokens each read the other's hand through a mindless arena of state
   relays (``tests/test_run_both_ways.py``), a composite run, against
   ``with_mirror(per_component=True)``.
@@ -41,7 +40,6 @@ with the last key; ``run`` steps every node with ``2N + 1`` keys, so ``_round_ke
 
 import dataclasses
 import pathlib
-import sys
 
 import jax
 import jax.numpy as jnp
@@ -65,6 +63,7 @@ from hybrid_aif.factors import LinearGaussianTransition
 from hybrid_aif.reads import Emission
 from hybrid_aif.system import System, SystemParams
 from hybrid_aif.system.mirror import mirror
+from tests import survey_frozen
 from tests.test_run_both_ways import _arena
 from tests.test_run_parity import _bump, _run_old_keys, cm, idle, states
 
@@ -72,21 +71,10 @@ FIXTURE = np.load(pathlib.Path(__file__).parent / "data" / "clock_parity.npz")
 KEY = jax.random.PRNGKey(1)
 ORDERS = ("simultaneous", "sequential", "async")
 TICKS = 20
-EXAMPLES = pathlib.Path(__file__).resolve().parents[1] / "examples"
 
 
 def same(got, name):
     np.testing.assert_array_equal(np.asarray(got), FIXTURE[name], err_msg=name)
-
-
-def _survey_modules():
-    sys.path.insert(0, str(EXAMPLES))
-    try:
-        import survey_model as sm
-        import survey_scheduler as ss
-    finally:
-        sys.path.remove(str(EXAMPLES))
-    return sm, ss
 
 
 def _robots(durations):
@@ -218,12 +206,9 @@ def _gauge_step(system, key, obs, carry, params):
 
 def scheduler_system():
     """The two-tier survey agent (the scheduler ``mission`` and the rover) coupled to the gauge
-    world: ``(system, params, grid, ss)``."""
-    sm, ss = _survey_modules()
-    rs, rp, grid, centres = sm.rover(
-        None, grid_shape=4, camera=False, image_preference=False, tiered=True
-    )
-    ms, mp = ss.scheduler(grid, centres, durations=True, policy_len=rs.policy_len)
+    world: ``(system, params, constants)``, ``constants.SURVEY_TICKS`` the option's duration."""
+    rs, rp, grid = survey_frozen.rover()
+    ms, mp = survey_frozen.scheduler(grid, policy_len=rs.policy_len)
     agent = merge(
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
@@ -241,7 +226,7 @@ def scheduler_system():
             Identify("world.fix", "agent.rover.fix"),
         ],
     )
-    return system, params, ss
+    return system, params, survey_frozen.CONSTANTS
 
 
 def _fast_rover():

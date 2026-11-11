@@ -10,7 +10,8 @@ With ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are f
 one agent: the scheduler's option action node drives the rover's option control node (an
 ``Identify``), the field is one parameter variable (an ``Identify``), and the scheduler's cell
 modality observes an emission of the rover, its position belief through the cell indicator
-realised by ``mode`` (the ``Link`` sugar).
+realised by ``mode`` (the ``Link`` sugar); the control setting of ``--level 2`` is the rover
+alone, the fast tier with its own novelty term and no scheduler.
 The agent is coupled to the world as one component, and one ``run`` call over the closed System
 steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics kept in the
 carry's trace), the rover by a custom step (it learns the field, decodes the image for the page and
@@ -18,7 +19,7 @@ emits the cell), and the world by its hand-written step. The scheduler's params 
 for every option, so it decides once per option, every ``SLOW_TICKS`` rounds, and the rover holds
 the option between decisions. What the rover learns is written back to the shared field each
 round, so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
-ablation pins the option to one sector. The order is sequential: the scheduler steps first, the
+order is sequential: the scheduler steps first, the
 rover as soon as the option it reads is realised, the world last on the command just realised; the
 scheduler's cell reading is the rover's emission of the round before, absent in round 0. A level-1
 setting is the epistemic terms (the field's novelty, the position fix's information gain, both or
@@ -37,7 +38,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -56,7 +57,7 @@ from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
 from hybrid_aif.objectives.base import term_sign
-from hybrid_aif.planning.gradient import make_gradient_planner
+from hybrid_aif.planning.gradient import gradient_plan
 from hybrid_aif.reads import EMIT_TAG
 
 PLANNER_STEPS = 40
@@ -71,6 +72,9 @@ MARKS = (50, 100, 200)  # the ticks REPORT.md gives coverage at
 MAP_SIDE = 61  # the world maps are published at this many samples per axis
 IMAGE_PREFERENCE = True  # whether the default settings declare the image target
 EPI = ("transition:terrain", "obs:fix")
+#  how the rover sees through its camera (``camera_mode``): "image", the forward camera's picture
+#  through the decoder (the showcase); "fixed" and "look" are the comparison experiments B and A
+CAMERA = "image"
 NAMES = {"terrain": sm.TERRAIN_NAMES, "energy": sm.ENERGY_NAMES}
 
 
@@ -113,14 +117,27 @@ def page_name(leaf, outer):
     return f"{head}{colon}{name.removeprefix(outer)}"
 
 
-def term_record(tree, i, outer):
-    return {
-        term: {
-            page_name(leaf, outer): interval_pair(term_sign(term) * iv, i)
-            for leaf, iv in leaves.items()
-        }
-        for term, leaves in tree.items()
-    }
+def term_record(tree, i, outer, offsets=None):
+    """Plan ``i``'s leaves for the page, by term and page name, each an interval with its sign
+    applied, less the constant ``offsets[term][name]`` where one is given (``wall_offset``)."""
+    offsets = offsets or {}
+    out = {}
+    for term, leaves in tree.items():
+        out[term] = {}
+        for leaf, iv in leaves.items():
+            name = page_name(leaf, outer)
+            lo, hi = interval_pair(term_sign(term) * iv, i)
+            c = offsets.get(term, {}).get(name, 0.0)
+            out[term][name] = [lo - c, hi - c]
+    return out
+
+
+def wall_offset(policy_len):
+    """The wall preference's value over a plan that stays inside the field: ``policy_len`` steps
+    of ``-log C`` at the field's centre, where the preference's log density is flat. A constant
+    across plans (the mixture's normaliser), so the page's records show the leaf less it."""
+    centre = jnp.asarray([[np.mean(wd.FIELD[0]), np.mean(wd.FIELD[1])]], jnp.float32)
+    return float(-policy_len * sm.wall_target().log_prob(centre)[0])
 
 
 def approximate_record(tree, outer):
@@ -148,11 +165,23 @@ def position_belief(beliefs, pre=""):
             )
         )
     mean = np.asarray(x.mean())
+    cov = np.asarray(x.cov())
+    # the heading's mean and sd from the moment-matched belief over (cos theta, sin theta),
+    # linearised through atan2; the speed's from its own coordinate
+    c, s = mean[2], mean[3]
+    jac = np.asarray([-s, c]) / max(c * c + s * s, 1e-9)
+    heading_sd = float(np.sqrt(max(jac @ cov[2:4, 2:4] @ jac, 0.0)))
+    heading = float(np.arctan2(s, c))
+    speed = float(mean[4])
     return dict(
         components=comps,
         terrain=[float(p) for p in np.asarray(beliefs[pre + "terrain"].probs)],
         energy=[float(p) for p in np.asarray(beliefs[pre + "energy"].probs)],
-        velocity=[float(mean[2]), float(mean[3])],
+        velocity=[speed * float(np.cos(heading)), speed * float(np.sin(heading))],
+        heading=heading,
+        heading_sd=heading_sd,
+        speed=speed,
+        speed_sd=float(np.sqrt(max(cov[4, 4], 0.0))),
         mean=[float(mean[0]), float(mean[1])],
     )
 
@@ -182,12 +211,78 @@ def field_record(params, strength, home="field"):
 
 class RoverCarry(NamedTuple):
     """The rover step's carry: the prior for the next round, the round's posterior and action
-    (what the next round's learning reads), and the round's record for the page."""
+    (what the next round's learning reads), the plan it acted on (the next round's warm start)
+    and the round's record for the page."""
 
     beliefs: Any = None
     previous: Any = None
     action: Any = None
+    plan: Any = None
     record: Any = None
+
+
+class WarmPlanner(eqx.Module):
+    """The rover's planner: ``gradient_plan`` with ``steps`` descent steps from the warm starts
+    ``init`` (``(starts, policy_len, 2)``, ``warm_starts``). ``init`` is an array field, so a new
+    plan each round reuses the compiled face."""
+
+    init: jax.Array
+    steps: int = eqx.field(static=True)
+    starts: int = eqx.field(static=True)
+    needs_key: ClassVar[bool] = False
+
+    def __call__(self, ctx, use_bound="midpoint", metrics=True):
+        result = gradient_plan(
+            ctx,
+            steps=self.steps,
+            starts=self.starts,
+            init=self.init,
+            use_bound=use_bound,
+            metrics=metrics,
+        )
+        return result.q_pi, result.start_tree, result.start_plans
+
+
+def shifted(plan):
+    """A plan moved one tick on: its steps after the first, the last step held."""
+    return jnp.concatenate([plan[1:], plan[-1:]], axis=0)
+
+
+def toward(position, heading, target, horizon):
+    """A plan of (acceleration, turn) commands that turns the vehicle from ``heading`` toward
+    ``target`` (at most ``TURN_MAX`` a tick) and then drives at it at full acceleration."""
+    plan = np.zeros((horizon, 2), np.float32)
+    gap = np.arctan2(target[1] - position[1], target[0] - position[0]) - heading
+    gap = (gap + np.pi) % (2 * np.pi) - np.pi
+    for k in range(horizon):
+        turn = float(np.clip(gap / float(wd.TURN_MAX), -1.0, 1.0))
+        plan[k] = (1.0 if abs(gap) < np.pi / 4 else 0.0, turn)
+        gap -= turn * float(wd.TURN_MAX)
+    return plan
+
+
+def warm_starts(previous, belief, counts, centres, horizon, starts):
+    """The planner's warm starts, ``(starts, horizon, 2)``: the plan acted on in the round before,
+    shifted one tick on (zeros in the first round); a plan toward the nearest cell the field has
+    not yet seen (fewer than ``SEEN_COUNTS`` counts, by the rover's own field), so a rover whose
+    neighbourhood is mapped still has a start that reaches new ground; full speed ahead; and
+    standing still. The descent then moves each by the objective's gradient, and the best final
+    plan is acted on."""
+    position, heading = np.asarray(belief["mean"]), belief["heading"]
+    unseen = np.flatnonzero(np.asarray(counts) < SEEN_COUNTS)
+    if len(unseen):
+        near = unseen[np.argmin(np.linalg.norm(centres[unseen] - position, axis=1))]
+        explore = toward(position, heading, centres[near], horizon)
+    else:
+        explore = np.tile(np.asarray([1.0, 0.0], np.float32), (horizon, 1))
+    first = np.zeros((horizon, 2), np.float32) if previous is None else np.asarray(previous)
+    candidates = [
+        first,
+        explore,
+        np.tile(np.asarray([1.0, 0.0], np.float32), (horizon, 1)),
+        np.zeros((horizon, 2), np.float32),
+    ]
+    return jnp.asarray(np.stack(candidates[:starts]), jnp.float32)
 
 
 def rover_step(setting, steps, starts, pre, decoder):
@@ -200,9 +295,9 @@ def rover_step(setting, steps, starts, pre, decoder):
     The step is handed its view sliced at the option it reads (``sliced``), as a planner is,
     since the rover plans over a horizon at one option. Each round's record for the page is the
     carry's ``record``; ``decoder`` renders the reconstruction it holds."""
-    planner = make_gradient_planner(steps=steps, starts=starts)
     home = pre + "field"
     outer = pre.split(".", 1)[0] + "."  # the coupling's prefix of the agent's names
+    _, centres = sm.field_grid(setting["grid"])
     faces = {}
 
     def step(system, key, obs, carry, params):
@@ -222,6 +317,17 @@ def rover_step(setting, steps, starts, pre, decoder):
                 action=carry.action,
                 lr=setting["field_lr"],
             )
+        belief_now = position_belief(beliefs, pre)
+        counts_now = field_record(params, setting["field_strength"], home)[1]
+        init = warm_starts(
+            None if carry.plan is None else shifted(carry.plan),
+            belief_now,
+            counts_now,
+            centres,
+            system.policy_len,
+            starts,
+        )
+        planner = WarmPlanner(init=init, steps=steps, starts=starts)
         q_pi, tree, policies = compiled.infer_policies(
             params, beliefs, planner=planner, metrics=True, return_policies=True
         )
@@ -231,15 +337,27 @@ def rover_step(setting, steps, starts, pre, decoder):
         pushed = compiled.update_empirical_prior(params, beliefs, action)
         mean = np.asarray(beliefs[pre + "x"].mean())
         terrain = int(jnp.argmax(beliefs[pre + "terrain"].probs))
-        recon, _ = decoder.diag_moments((jnp.asarray(mean), jax.nn.one_hot(terrain, 3)))
+        camera = None
+        if decoder is not None:  # the decoder's picture and noise at the belief, for the page
+            recon, recon_scale = decoder.diag_moments(
+                (jnp.asarray(mean), jax.nn.one_hot(terrain, 3))
+            )
+            camera = dict(
+                log_evidence=float(detail.log_evidence[pre + "img"]),
+                scale_mean=float(jnp.mean(recon_scale)),
+            )
         g = total(tree)
+        #  the wall preference's leaf is recorded less its constant inside the field
+        wall = page_name(pre + "fix", outer)
+        walled = any(page_name(leaf, outer) == wall for leaf in tree.get("utility", {}))
+        offset = wall_offset(system.policy_len) if walled else 0.0
         records = [
             dict(
                 id=i,
                 start=[float(mean[0]), float(mean[1])],
                 v_plan=[[float(c) for c in step] for step in v_plans[i]],
-                terms=term_record(tree, i, outer),
-                G=interval_pair(g, i),
+                terms=term_record(tree, i, outer, {"utility": {wall: offset}}),
+                G=[v - offset for v in interval_pair(g, i)],
                 q_pi=float(q_pi.probs[i]),
             )
             for i in range(v_plans.shape[0])
@@ -251,9 +369,9 @@ def rover_step(setting, steps, starts, pre, decoder):
             policies=records,
             chosen=best,
             approximate=approximate_record(tree, outer),
-            camera=dict(log_evidence=float(detail.log_evidence[pre + "img"])),
+            camera=camera,
             free_energy=float(detail.free_energy),
-            recon=image_rows(recon),
+            recon=None if camera is None else image_rows(recon),
             map=table,
             counts=counts,
             coverage=coverage,
@@ -261,60 +379,121 @@ def rover_step(setting, steps, starts, pre, decoder):
         )
         #  the view's emissions (the cell the scheduler reads) are realised from the posterior
         emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs)
-        carry = RoverCarry(beliefs=pushed, previous=beliefs, action=action, record=record)
+        carry = RoverCarry(
+            beliefs=pushed, previous=beliefs, action=action, plan=v_plans[best], record=record
+        )
         return {**action, **emitted}, carry, params
 
     step.sliced = True
     return step
 
 
-def tick_rows(rec, rover, ticks, extra=None):
+def tick_rows(rec, rover, ticks, extra=None, recognise=None):
     """The per-tick records of a run, read from its ``Trajectory``: the world's true state at the
     start of the tick (its carry), the readings the rover was handed and the command it chose
     (the record of the stepped node ``rover``), and the rover's own record of the tick (its carry
-    after the tick)."""
+    after the tick). The camera image is the one the rover was handed, or, when its model has no
+    image, the one the world emitted for that round; ``recognise`` (an image to the recogniser's
+    class probabilities) adds the recogniser's readout of it."""
     world, mind = rec["world"], rec[rover]
     rows = []
     for t in range(ticks):
         state = world.carries[t]
         energy = float(state["energy"])
+        if "img" in mind.received:
+            image = mind.received["img"][t]
+        else:  # the world's emission the round before (its start for round 0)
+            image = world.start["img"] if t == 0 else world.emitted["img"][t - 1]
         row = dict(
             t=t,
             v=[float(c) for c in mind.intended["a_v"][t]],
-            true_x=[float(c) for c in state["x"]],
+            true_x=[
+                *(float(c) for c in state["x"][:2]),
+                *(float(c) for c in wd.velocity_of(state["x"])),
+            ],
+            true_heading=float(wd.heading_of(state["x"])),
+            true_speed=float(state["x"][4]),
             true_terrain=int(state["terrain"]),
             true_energy=dict(band=int(wd.band_of(jnp.asarray(energy))), level=energy),
             stalled=bool(wd.band_of(jnp.asarray(energy)) == 0),
             fix=[float(c) for c in mind.received["fix"][t]],
             gauge=int(mind.received["gauge"][t]),
-            img=image_rows(mind.received["img"][t]),
+            img=image_rows(image),
             **mind.carries[t + 1].record,
         )
+        if recognise is not None:
+            row["recogniser"] = [float(p) for p in recognise(jnp.asarray(image))]
+        if "look" in mind.received:
+            row["look"] = int(mind.received["look"][t])
         if extra is not None:
             row.update(extra(t))
         rows.append(row)
     return rows
 
 
-def world_bindings(agent):
+def camera_mode(setting):
+    """How a setting's rover sees through its camera: ``"image"`` (the image, through the
+    decoder), ``"look"`` (the recogniser's reading of the terrain) or ``"none"``; the setting's
+    ``camera`` entry (``True`` and ``False`` read as image and none)."""
+    mode = setting.get("camera", CAMERA)
+    return {True: "image", False: "none"}.get(mode, mode)
+
+
+def sees_image(mode):
+    """Whether the rover's model inverts the image (through the decoder) under a camera mode."""
+    return mode in ("image", "fixed")
+
+
+def world_bindings(agent, mode="image"):
     """The identifications that couple the world to the rover inside the component ``agent``
     (``"agent.rover"`` or ``"rover"``): the rover's command drives the world's ``v``, and the
-    world's three emissions feed the rover's modalities."""
+    world's emissions feed the rover's modalities (the image or the recogniser's reading, by the
+    camera ``mode``)."""
     return [
         Identify(f"{agent}.a_v", "world.v"),
         Identify("world.fix", f"{agent}.fix"),
-        Identify("world.img", f"{agent}.img"),
+        *([Identify("world.img", f"{agent}.img")] if sees_image(mode) else []),
+        *([Identify("world.look", f"{agent}.look")] if mode == "look" else []),
         Identify("world.gauge", f"{agent}.gauge"),
     ]
 
 
-def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
-    """One run of a setting: the rover coupled to the world (level 1), or the two-tier agent
-    (``run_tiered``)."""
-    if "tiers" in setting:
-        return run_tiered(setting, ticks, decoder, steps, starts)
+def sensors(mode, encoder):
+    """``(world step, readout)`` for a camera ``mode``: the world's step (its camera fixed along +y
+    for ``"fixed"``, reporting the recogniser's class for ``"look"``) and the recogniser's class
+    probabilities of an image for the page (``None`` without a recogniser)."""
+    fixed = mode == "fixed"
+    if encoder is None:
+        return wd.world_stepper(fixed=fixed), None
+
+    def readout(image):
+        return cam.terrain_probs(encoder, image)
+
+    if mode != "look":
+        return wd.world_stepper(fixed=fixed), readout
+    return wd.world_stepper(lambda image: jnp.argmax(readout(image))), readout
+
+
+def run_setting(
+    setting,
+    ticks,
+    decoder,
+    steps=PLANNER_STEPS,
+    starts=PLANNER_STARTS,
+    encoder=None,
+    confusion=None,
+):
+    """One run of a setting: the two-tier agent (``run_tiered``, ``tiers`` 2), or the rover alone
+    coupled to the world (level 1, and the one-level setting of the two-tier comparison). The
+    camera's form is the setting's (``camera_mode``): the image through ``decoder``, or the
+    reading of the recogniser ``encoder`` through its ``confusion`` table, or none."""
+    if setting.get("tiers") == 2:
+        return run_tiered(setting, ticks, decoder, steps, starts, encoder, confusion)
+    mode = camera_mode(setting)
     rs, rp, _, _ = sm.rover(
         decoder,
+        camera=sees_image(mode),
+        look=confusion if mode == "look" else None,
         epistemic=tuple(setting["epistemic"]),
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
@@ -323,8 +502,10 @@ def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STA
         image_preference=setting["image_preference"],
     )
     system, params = couple(
-        {"rover": (rs, rp), "world": wd.world_system()}, world_bindings("rover")
+        {"rover": (rs, rp), "world": wd.world_system(look=mode == "look")},
+        world_bindings("rover", mode),
     )
+    world_step, readout = sensors(mode, encoder)
     start = setting.get("start_energy")
     rec = run(
         system,
@@ -332,25 +513,31 @@ def run_setting(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STA
         ticks,
         jax.random.PRNGKey(setting["seed"]),
         steps={
-            "rover": rover_step(setting, steps, starts, "rover.", rp.likelihood["img"]),
-            "world": wd.world_step,
+            "rover": rover_step(setting, steps, starts, "rover.", rp.likelihood.get("img")),
+            "world": world_step,
         },
         tick_order="sequential",
         carries=None if start is None else {"world": {"energy": start}},
         record_carries=True,
     )
-    rows = tick_rows(rec, "rover", ticks)
+    rows = tick_rows(rec, "rover", ticks, recognise=readout)
     return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
 
 
-SLOW_TICKS = 12  # fast ticks per slow step
+SLOW_TICKS = ss.SURVEY_TICKS  # fast ticks per slow step
+#  the two-tier comparison leaves the image preference out: over a camera that looks along the
+#  heading, a preference for bright pictures rewards turning toward bright views (the sky), and the
+#  rover hunted for views instead of driving (measured with the velocity-heading camera); the light
+#  it needs is in its energy table
+IMAGE_PREFERENCE_L2 = False
 READINGS_AVAILABLE = "readings" in {f.name for f in dataclasses.fields(ss.System)}
-PINNED_OPTION = 0  # the one-level run holds this survey sector for the whole run
 
 
 def settings_grid_l2():
-    """The two-tier settings: the full composite, and the same composite with the option pinned
-    to one survey sector for the whole run (level 1)."""
+    """The settings of the two-tier comparison: the scheduler over the rover (two levels), and
+    the rover alone (one level), the fast tier with its own novelty term and no scheduler, free to
+    go where it likes. Both share the rover's epistemic terms and field, and neither declares the
+    image preference (``IMAGE_PREFERENCE_L2``)."""
 
     def setting(sid, label, tiers):
         return dict(
@@ -358,7 +545,7 @@ def settings_grid_l2():
             label=label,
             tiers=tiers,
             epistemic=list(EPI),
-            image_preference=True,
+            image_preference=IMAGE_PREFERENCE_L2,
             field_lr=FIELD_LR,
             field_strength=FIELD_STRENGTH,
             energy_logits=list(sm.ENERGY_TARGET),
@@ -370,20 +557,22 @@ def settings_grid_l2():
 
     return [
         setting("two-level", "Scheduler over the rover", 2),
-        setting("one-level", "The option pinned to one survey sector", 1),
+        setting("one-level", "Rover alone", 1),
     ]
 
 
-def agent_system(decoder, setting):
+def agent_system(decoder, setting, confusion=None):
     """The two-tier agent, the merge of the scheduler ``mission`` and the rover:
     ``((System, SystemParams), grid)``. The option's action node drives the rover's option control
     node, the field is one parameter variable, and the scheduler's cell modality observes the
     rover's position belief through the cell indicator, realised by ``mode`` (the ``Link`` sugar:
-    an emission ``rover.cell_obs`` of the rover, observed by ``mission.cell_obs``). The pinned run
-    (``tiers == 1``) is the same agent, its scheduler stepped by a step that always chooses
-    ``PINNED_OPTION``."""
+    an emission ``rover.cell_obs`` of the rover, observed by ``mission.cell_obs``). The rover's
+    camera is the setting's (``camera_mode``)."""
+    mode = camera_mode(setting)
     rs, rp, grid, centres = sm.rover(
         decoder,
+        camera=sees_image(mode),
+        look=confusion if mode == "look" else None,
         epistemic=tuple(setting["epistemic"]),
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
@@ -413,13 +602,14 @@ def agent_system(decoder, setting):
     return agent, grid
 
 
-def survey_system(decoder, setting):
+def survey_system(decoder, setting, confusion=None):
     """The closed System of a two-tier run: the agent (``agent_system``) coupled to the world, the
     gauge feeding both tiers. Returns ``(System, SystemParams)``."""
-    agent, _ = agent_system(decoder, setting)
+    agent, _ = agent_system(decoder, setting, confusion)
+    mode = camera_mode(setting)
     return couple(
-        {"agent": agent, "world": wd.world_system()},
-        [*world_bindings("agent.rover"), Identify("world.gauge", "agent.mission.gauge")],
+        {"agent": agent, "world": wd.world_system(look=mode == "look")},
+        [*world_bindings("agent.rover", mode), Identify("world.gauge", "agent.mission.gauge")],
     )
 
 
@@ -438,17 +628,6 @@ def timed(step, seconds):
         return out
 
     return wrapper
-
-
-def pinned_step(name):
-    """The pinned run's scheduler: a step that chooses ``PINNED_OPTION`` for the action node
-    ``name`` every round it is called, and nothing at the reset."""
-    level = jnp.asarray(PINNED_OPTION, jnp.int32)
-
-    def step(system, key, obs, carry, params):
-        return ({} if obs is None else {name: level}), carry, params
-
-    return step
 
 
 def decision_record(carry, option, reading, seconds, pre="agent.mission."):
@@ -494,30 +673,35 @@ def decision_record(carry, option, reading, seconds, pre="agent.mission."):
     )
 
 
-def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STARTS):
+def run_tiered(
+    setting,
+    ticks,
+    decoder,
+    steps=PLANNER_STEPS,
+    starts=PLANNER_STARTS,
+    encoder=None,
+    confusion=None,
+):
     """A run of the two-tier agent coupled to the world: one ``run`` call over the closed System
     steps the scheduler (``plan()``, once per option, its trace recorded), the rover (every round)
-    and the world (every round); with ``tiers == 1`` the scheduler always chooses
-    ``PINNED_OPTION``."""
-    system, params = survey_system(decoder, setting)
-    two = setting["tiers"] == 2
+    and the world (every round)."""
+    system, params = survey_system(decoder, setting, confusion)
+    world_step, readout = sensors(camera_mode(setting), encoder)
     every = setting["slow_ticks"]
     seconds = []
-    mission = (
-        timed(
-            plan(trace=True, selection="deterministic", replace={"policy_len": 2}),
-            seconds,
-        )
-        if two
-        else pinned_step("agent.mission.option")
+    mission = timed(
+        plan(trace=True, selection="deterministic", replace={"policy_len": 2}),
+        seconds,
     )
-    rover = rover_step(setting, steps, starts, "agent.rover.", params.likelihood["agent.rover.img"])
+    rover = rover_step(
+        setting, steps, starts, "agent.rover.", params.likelihood.get("agent.rover.img")
+    )
     rec = run(
         system,
         params,
         ticks,
         jax.random.PRNGKey(setting["seed"]),
-        steps={"agent.mission": mission, "agent.rover": rover, "world": wd.world_step},
+        steps={"agent.mission": mission, "agent.rover": rover, "world": world_step},
         clocks={"agent.mission": every / ss.SURVEY_TICKS},
         tick_order="sequential",
         record_carries=True,
@@ -526,21 +710,17 @@ def run_tiered(setting, ticks, decoder, steps=PLANNER_STEPS, starts=PLANNER_STAR
     options = scheduler.intended["option"]
     decided = [t for t in range(ticks) if bool(scheduler.decided[t])]
     decisions = {}
-    if two:
-        for t, secs in zip(decided, seconds, strict=True):
-            reading = int(scheduler.received["cell_obs"][t])
-            present = bool(scheduler.present["cell_obs"][t])
-            option = int(options[t])
-            carry = scheduler.carries[t + 1]
-            decisions[t] = decision_record(carry, option, reading if present else None, secs)
+    for t, secs in zip(decided, seconds, strict=True):
+        reading = int(scheduler.received["cell_obs"][t])
+        present = bool(scheduler.present["cell_obs"][t])
+        option = int(options[t])
+        carry = scheduler.carries[t + 1]
+        decisions[t] = decision_record(carry, option, reading if present else None, secs)
 
     def extra(t):
-        out = dict(option=int(options[t]))
-        if two:
-            out["slow"] = decisions.get(t, dict(decision=False))
-        return out
+        return dict(option=int(options[t]), slow=decisions.get(t, dict(decision=False)))
 
-    rows = tick_rows(rec, "agent.rover", ticks, extra)
+    rows = tick_rows(rec, "agent.rover", ticks, extra, recognise=readout)
     return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
 
 
@@ -565,23 +745,135 @@ def downsampled_maps():
 
 
 def dynamics_record():
-    """The true dynamics a velocity plan integrates under, per terrain (firm, rough, ice)."""
+    """The vehicle's motion, the rule a plan of (acceleration, turn) commands integrates under, the
+    same on every terrain."""
     return dict(
+        kind="vehicle",
         dt=float(wd.DT),
-        gain=[float(g) for g in wd.GAIN],
-        keep=[float(k) for k in wd.KEEP],
-        terrain_sd=[float(v) for v in wd.TERRAIN_SD],
+        gain=float(wd.GAIN),
+        keep=float(wd.KEEP),
+        turn_max_degrees=float(np.degrees(wd.TURN_MAX)),
+        state_sd=[float(v) for v in wd.STATE_SD],
+        state=["x", "y", "cos heading", "sin heading", "forward speed"],
+        top_speed=wd.top_speed(),
+        survey_speed=float(wd.SURVEY_SPEED),
         terrain_names=list(wd.TERRAIN_NAMES),
         rule=(
-            "per tick, with the terrain at the current position: position += dt * velocity (the "
-            "velocity before the tick), velocity = keep * velocity + gain * command (command in "
-            "[-1, 1]^2) + noise of sd terrain_sd; then the position is clipped to the field, "
-            "the velocity into a wall is zeroed, and an empty energy band zeroes the gain"
+            "per tick, the command (acceleration, turn) in [-1, 1]^2: position += dt * speed * "
+            "(cos heading, sin heading) (the heading and speed before the tick), heading += dt * "
+            "turn_max * turn (in place too), speed = keep * speed + gain * acceleration (negative "
+            "reverses), with noise of sd state_sd; then the position is clipped to the field and a "
+            "rover that hits a wall stops, and an empty energy band zeroes the command (the model "
+            "knows neither). The top speed is gain / (1 - keep)"
         ),
     )
 
 
-def meta_record(ticks, camera_report, grid):
+def plan_path(tick, policy):
+    """The positions a rover plan passes through, as the page draws it: from the plan's start,
+    the believed heading and speed, rolled forward by the vehicle's rule without noise
+    (``survey_world.VehicleStep``, ``dynamics_record``), one position per plan step after the
+    start."""
+    theta, speed = tick["belief"]["heading"], tick["belief"]["speed"]
+    x = np.asarray(policy["start"], float)
+    out = []
+    for a in np.clip(np.asarray(policy["v_plan"], float), -1.0, 1.0):
+        x = x + wd.DT * speed * np.asarray([np.cos(theta), np.sin(theta)])
+        theta = theta + wd.DT * wd.TURN_MAX * a[1]
+        speed = wd.KEEP * speed + wd.GAIN * a[0]
+        out.append(x)
+    return np.asarray(out)
+
+
+def excursion(points):
+    """How far points ``(..., 2)`` lie beyond the field's walls (zero inside)."""
+    (x0, x1), (y0, y1) = wd.FIELD
+    p = np.asarray(points, float)
+    gaps = np.stack([x0 - p[..., 0], p[..., 0] - x1, y0 - p[..., 1], p[..., 1] - y1], -1)
+    return np.maximum(gaps.max(-1), 0.0)
+
+
+def plan_excursions(rows, chosen_only=False):
+    """Every plan's largest excursion beyond the field over a run (the chosen plan's alone with
+    ``chosen_only``)."""
+    return np.asarray(
+        [
+            float(excursion(plan_path(t, p)).max())
+            for t in rows
+            for i, p in enumerate(t["policies"])
+            if not chosen_only or i == t["chosen"]
+        ]
+    )
+
+
+LOST_ERROR = 0.375  # a position belief whose mean is a map cell or more from the truth ...
+LOST_TICKS = 10  # ... for more than this many ticks running is lost
+
+
+def position_calibration(rows, lost_error=LOST_ERROR, lost_ticks=LOST_TICKS):
+    """How the rover's position belief tracks the truth over a run: the largest and median error
+    of its mean, the share of ticks whose true position lies inside the belief's 2-sigma ellipse
+    (of the mixture's moment-matched Gaussian; ``1 - exp(-2)``, about 0.865, for a calibrated
+    belief), the share of ticks whose true heading lies within 2 sd of the believed heading (about
+    0.954 for a calibrated belief), and the spells of more than ``lost_ticks`` ticks with an error
+    of ``lost_error`` or more (the run is lost if there is one)."""
+    errors, inside, heading_in = [], [], []
+    for r in rows:
+        if "heading_sd" in r["belief"] and "true_heading" in r:
+            gap = (r["true_heading"] - r["belief"]["heading"] + np.pi) % (2 * np.pi) - np.pi
+            heading_in.append(abs(gap) <= 2 * r["belief"]["heading_sd"])
+        comps = r["belief"]["components"]
+        w = np.asarray([c["w"] for c in comps])
+        w = w / w.sum()
+        mu = np.asarray([c["mu"] for c in comps])
+        mean = w @ mu
+        cov = sum(
+            wk * (np.asarray(c["cov"]) + np.outer(m - mean, m - mean))
+            for wk, c, m in zip(w, comps, mu, strict=True)
+        )
+        d = np.asarray(r["true_x"][:2]) - mean
+        errors.append(float(np.hypot(*d)))
+        inside.append(float(d @ np.linalg.solve(cov, d)) <= 4.0)
+    spells, run = [], 0
+    for e in errors + [0.0]:
+        if e >= lost_error:
+            run += 1
+        else:
+            if run > lost_ticks:
+                spells.append(run)
+            run = 0
+    return dict(
+        max_error=max(errors),
+        median_error=float(np.median(errors)),
+        ellipse_coverage=float(np.mean(inside)),
+        heading_coverage=float(np.mean(heading_in)) if heading_in else None,
+        lost_spells=spells,
+        lost=bool(spells),
+    )
+
+
+def motion_stats(rows, at_speed=0.1):
+    """The true motion: the per-tick displacement, the speed, and the change of the rover's
+    heading per tick (degrees; bounded by ``TURN_MAX`` plus noise), the median over the ticks
+    where the speed is at least ``at_speed``."""
+    xs = np.asarray([r["true_x"] for r in rows], float)
+    step = np.hypot(*np.diff(xs[:, :2], axis=0).T)
+    speed = np.hypot(xs[:, 2], xs[:, 3])
+    angle = np.asarray([r["true_heading"] for r in rows], float)
+    turn = np.degrees(np.abs((np.diff(angle) + np.pi) % (2 * np.pi) - np.pi))
+    moving = (speed[:-1] >= at_speed) & (speed[1:] >= at_speed)
+    return dict(
+        step_median=float(np.median(step)),
+        step_max=float(step.max()),
+        speed_median=float(np.median(speed)),
+        speed_max=float(speed.max()),
+        turn_median=float(np.median(turn[moving])) if moving.any() else None,
+        turn_max=float(turn.max()),
+        moving_ticks=int(moving.sum()),
+    )
+
+
+def meta_record(ticks, camera_report, grid, camera="image"):
     return dict(
         library_version=__version__,
         ticks=ticks,
@@ -594,14 +886,31 @@ def meta_record(ticks, camera_report, grid):
         image=dict(
             side=wd.IMG_SIDE,
             layout=(
-                "rows of uint8 0..255, the forward camera: row 0 is the top of the picture, the "
-                "top quarter is sky, columns run left to right"
+                "rows of uint8 0..255, the camera: row 0 is the top of the picture, "
+                "columns run left to right"
             ),
-            half_view_note=(
-                "the camera looks along +y from the rover; the ground rows span a perspective "
-                "depth of 1 / (0.12 + v) ahead, so the picture shows only the half of the field "
-                "in front of the rover"
+            view=(
+                "the scene ahead of the rover along its heading (the camera is mounted forward), "
+                "a 70 degree field of view: the ground ray-marched over the height map out to 5 "
+                "units, lit by the sun and textured in world coordinates with the class under "
+                "the rover, the dark ground beyond the field's walls, fading into haze under a "
+                "sky; the ground scrolls as the rover moves and swings as it turns"
+                if camera != "fixed"
+                else "a comparison camera fixed along the field's +y (not the showcase)"
             ),
+            **(
+                {"camera_heading_degrees": float(np.degrees(wd.CAMERA_HEADING))}
+                if camera == "fixed"
+                else {}
+            ),
+            camera_mode=camera,
+            heading_rule=(
+                "the rover's heading (true_heading per tick, radians from +x) is part of its "
+                "state: it turns only by the turn command, at most turn_max_degrees a tick, in "
+                "place too, and holds otherwise; the model believes it too (belief.heading and "
+                "belief.heading_sd)"
+            ),
+            field_of_view_degrees=70.0,
             camera_report=camera_report,
         ),
         map_layout=(
@@ -612,6 +921,16 @@ def meta_record(ticks, camera_report, grid):
         sign_convention=(
             "every leaf is added to G with its registered sign already applied, so the leaves of "
             "a policy sum to its G and an epistemic leaf appears negative"
+        ),
+        wall_preference=dict(
+            offset=wall_offset(sm.POLICY_LEN),
+            note=(
+                "the rover's utility leaf on the fix (the wall preference) and each rover plan's "
+                "G are recorded less offset, the preference's value over a plan that stays "
+                "inside the field (a constant across plans: the mixture's normaliser), so the "
+                "leaf's lower bound is near zero inside the field and the leaf grows as a plan "
+                "nears or crosses a wall"
+            ),
         ),
     )
 
@@ -645,6 +964,11 @@ def run_summary(run_, marks=MARKS):
             for k in range(sm.N_SURVEY)
         ],
         position_error=float(np.mean(err)),
+        motion=motion_stats(rows),
+        calibration=position_calibration(rows),
+        plan_excursion_max=float(plan_excursions(rows).max()),
+        plan_excursion_chosen_max=float(plan_excursions(rows, chosen_only=True).max()),
+        energy_floor=float(min(r["true_energy"]["level"] for r in rows)),
         ticks_per_band=[int(b) for b in bands],
         ticks_on_ice=int(terrain[2]),
         ticks_on_rough=int(terrain[1]),
@@ -691,7 +1015,18 @@ def report_text(settings, runs, marks=MARKS, mdl=None):
             "",
             f"- seen (cells with at least {SEEN_COUNTS} counts) at tick {seen}",
             f"- coverage (cells whose field's top probability exceeds {COVERED_MAX}) at tick {cov}",
-            f"- mean position error: {r['position_error']:.3f}",
+            f"- mean position error: {r['position_error']:.3f}; largest "
+            f"{r['calibration']['max_error']:.3f}; true position inside the belief's 2-sigma "
+            f"ellipse {r['calibration']['ellipse_coverage']:.3f} of ticks (0.865 nominal); lost "
+            f"spells (error {LOST_ERROR} or more for over {LOST_TICKS} ticks): "
+            f"{r['calibration']['lost_spells'] or 'none'}",
+            f"- motion: per-tick displacement median {r['motion']['step_median']:.3f}, max "
+            f"{r['motion']['step_max']:.3f}; top speed {r['motion']['speed_max']:.3f}; change of "
+            f"direction per tick at speed 0.1 or more, median {r['motion']['turn_median']} and "
+            f"max {r['motion']['turn_max']} degrees over {r['motion']['moving_ticks']} ticks",
+            f"- plans beyond the field's walls: the largest excursion of any plan "
+            f"{r['plan_excursion_max']:.3f}, of a chosen plan {r['plan_excursion_chosen_max']:.3f}",
+            f"- energy floor (lowest true level): {r['energy_floor']:.3f}",
             f"- ticks per true energy band: {bands}",
             f"- ticks on ice: {r['ticks_on_ice']}, on rough ground: {r['ticks_on_rough']}",
             f"- first tick on ice: {r['first_ice']}, "
@@ -888,11 +1223,12 @@ def assemble(out_dir, camera_report, decoder):
         #  the page's graph, description length and document are of the agent's joint planner
         #  (each tier's option read as one decision), not of the coupled System that run steps:
         #  the page shows the agent's model, and the world is a black box, its ports alone
-        model = joint_planner(*agent_system(decoder, settings[0])[0])
+        confusion = camera_report.get("recogniser_confusion")
+        model = joint_planner(*agent_system(decoder, settings[0], confusion)[0])
     else:
         model = sm.rover(decoder, image_preference=True, grid_shape=n_grid)[:2]
     n = ticks.pop()
-    meta = meta_record(n, camera_report, grid)
+    meta = meta_record(n, camera_report, grid, camera_mode(settings[0]))
     if tiered:
         meta["tiers"] = dict(
             slow_ticks=settings[0]["slow_ticks"],
@@ -900,7 +1236,13 @@ def assemble(out_dir, camera_report, decoder):
             zones=ss.SECTOR_NAMES,
             zone_split=list(wd.ZONE_SPLIT),
             sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
-            pinned_option=PINNED_OPTION,
+            survey_readings=ss.SURVEY_READINGS,
+            one_level=(
+                "the one-level setting is the rover alone: the fast tier with its own objective "
+                "(the field's novelty, the fix's information gain, the energy target and the wall "
+                "preference), no scheduler, no option and no sector target, free to go where it "
+                "likes; its ticks have no option and no slow record"
+            ),
         )
     bundle = dict(meta=meta, graph=graph_record(*model), settings=settings, runs=runs)
     try:
@@ -940,11 +1282,15 @@ def main():
         help="pool the scheduler's map reading over an option (default: on if available)",
     )
     ap.add_argument("--seed", type=int, default=None, help="the world's key (default: 0)")
+    ap.add_argument(
+        "--camera", default=CAMERA, choices=("image", "fixed", "look"), help="camera_mode"
+    )
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    decoder, _, camera_report = cam.load_or_train(out_dir)
+    decoder, encoder, camera_report = cam.load_or_train(out_dir)
+    confusion = camera_report.get("recogniser_confusion")
     if args.assemble:
         assemble(out_dir, camera_report, decoder)
         return
@@ -970,7 +1316,10 @@ def main():
         if args.energy_logits:
             s["energy_logits"] = [float(v) for v in args.energy_logits.split(",")]
         t0 = time.time()
-        result = run_setting(s, args.ticks, decoder, args.steps, args.starts)
+        s["camera"] = args.camera
+        result = run_setting(
+            s, args.ticks, decoder, args.steps, args.starts, encoder=encoder, confusion=confusion
+        )
         elapsed = time.time() - t0
         result["seconds"] = elapsed
         part = out_dir / f"part_{s['id']}{args.tag}.json"

@@ -76,29 +76,46 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   `height`, `light` (illumination), `openness`, `sd_fix` (the satellite fix's noise sd, larger
   where terrain blocks the sky), `slope`, `terrain` (class index per `meta.names.terrain`).
 - `meta.names`: `terrain` (firm, rough, ice) and `energy` (empty, low, medium, full).
-- `meta.tiers`: `slow_ticks` (12), `options` (survey sector 1 to 4, charge), `zones`,
+- `meta.tiers`: `slow_ticks` (24), `options` (survey sector 1 to 4, charge), `zones`,
   `zone_split` (the field's quadrants are split at these x and y), `sector_centres`,
-  `pinned_option` (the option of the one-level run).
-- `meta.image`: `side` (48), `layout` (row 0 is the top of the picture, the top quarter is sky;
-  the camera looks along +y), `camera_report`. `meta.map_layout` describes `map` and `counts`.
-- `meta.dynamics`: `dt`, `gain` and `keep` per terrain class, `terrain_sd`, `terrain_names` and
-  `rule`, a sentence giving the integration rule. The page rolls each plan forward with it.
+  `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
+  one-level run is the rover alone, with no scheduler and no option). Bundles whose one-level run
+  pinned an option carry `pinned_option` instead; the viewer reads either.
+- `meta.image`: `side` (32), `layout` (row 0 is the top of the picture), `view` (what the camera
+  renders: a camera fixed along +y), `camera_heading_degrees` (90), `heading_rule` and
+  `hold_speed` (the rover's heading, `true_heading` per tick, drawn as the arrow: the direction of
+  motion at `hold_speed` or more, held below it), `field_of_view_degrees`,
+  `camera_report` (with the decoder's noise calibration). `meta.map_layout` describes `map` and
+  `counts`.
+- `meta.wall_preference`: `offset` and `note`: the rover's wall preference leaf (`utility` on the
+  fix) and each rover plan's `G` are recorded less `offset`, the preference's constant value over
+  a plan inside the field.
+- `meta.dynamics`: `kind` ("vehicle"), `dt`, `gain`, `keep`, `turn_max_degrees`, `state_sd`,
+  `state`, `top_speed`, `survey_speed`, `terrain_names` and `rule`, a sentence giving the vehicle's
+  integration rule (position along the heading at the speed, a turn of at most `turn_max_degrees`,
+  in place too). The page rolls each plan of (acceleration, turn) forward with it from the
+  believed heading and speed, and while playing moves the rover between ticks (unless the reader
+  asks for reduced motion).
 - `meta.sign_convention`: every leaf is added to G with its sign applied, so an epistemic leaf
   appears negative.
 - `graph`: `tiers` (factors, modalities, controls per tier), `edges` (`from`, `to`, `kind`:
   transition, likelihood, target, parameter) and `parameters` (`[{name: "rover.field", readers:
   [...]}]`). The viewer places the nodes by hand (the model is fixed) and draws the parameter
   variable once, with an edge to each reader.
-- Per tick of a run: `t`, `v`, `true_x` (position and velocity), `true_terrain`,
-  `true_energy` (`band`, `level`), `stalled`, `fix`, `gauge`, `img` and `recon` (48 x 48 uint8,
+- Per tick of a run: `t`, `v`, `true_x` (position and velocity), `true_heading`, `true_terrain`,
+  `recogniser` (the frozen recogniser's class probabilities for the image), `look` (the class it
+  reported, when the rover observes it: `--camera look`; such a run has no `recon`),
+  `true_energy` (`band`, `level`), `stalled`, `fix`, `gauge`, `img` and `recon` (32 x 32 uint8,
   observed and the decoder's prediction at the belief), `belief` (`components` with `w`, `mu`,
-  `cov`; `terrain`; `energy`; `velocity`; `mean`), `policies` (the rover tier's four warm
+  `cov`; `terrain`; `energy`; `velocity`; `mean`; `heading` and `heading_sd`, the believed heading
+  and its sd; `speed` and `speed_sd`), `true_speed`, `camera` (`log_evidence`, `scale_mean`, the
+  decoder's noise at the belief), `policies` (the rover tier's four warm
   starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,
   `free_energy`, `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
   first), `counts` (observations absorbed per cell), `coverage` (fraction of cells whose top
   probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
-  force).
-- Per tick of the two-level run, `slow`: `decision` (true every twelfth tick), and on a decision
+  force; absent in the rover-alone run).
+- Per tick of the two-level run, `slow`: `decision` (true every 24th tick), and on a decision
   `option`, `cell` (the scheduler's cell reading: the cell holding most of the rover's position belief), `efe_by_option` (G of the best sequence per first option), `q_by_option`,
   `policies` (the best option sequences, trimmed to keep at least the best one per first option: `options`, `terms` with the `infogain`
   `transition:mission.map` leaf and the `risk` `mission.energy` leaf, `G`, `q_pi`), `chosen`,
