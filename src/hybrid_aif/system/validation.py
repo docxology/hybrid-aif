@@ -44,6 +44,7 @@ from hybrid_aif.factors import (
 from hybrid_aif.inference import amortized as _amortized
 from hybrid_aif.objectives import hybrid as _hybrid
 from hybrid_aif.objectives import registry
+from hybrid_aif.reads import BLACK_BOX
 from hybrid_aif.system.selectors import (
     _DIM_NAME,
     _DIM_RESERVED,
@@ -514,6 +515,8 @@ def _validate_emissions(system: System, params: SystemParams, facs: tuple[str, .
         if emit.kernel is None:
             continue
         system._static_type(params, emit, name)
+        if emit.kernel == BLACK_BOX:
+            continue
         families = families or system._families(params)
         (parent,) = emit.parents
         f = table.state_names.index(parent)

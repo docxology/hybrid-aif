@@ -425,6 +425,7 @@ class CompiledSystem:
         key: Array | None = None,
     ):
         """:meth:`System.infer_states`, compiled: ``(beliefs, detail)``."""
+        self.system._refuse_black_box("infer_states")
         observations = self._observations(params, observations, "infer_states")
         priors = _complete_priors(self.system, params, priors, "infer_states")
         return self._call(

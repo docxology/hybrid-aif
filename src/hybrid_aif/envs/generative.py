@@ -128,6 +128,13 @@ class GenerativeEnv(Env):
                 "GenerativeEnv.wrap takes a positional environment, and this one is already a "
                 "GenerativeEnv (keyed); use it as it is, or wrap its .inner"
             )
+        if getattr(system, "black_box", ()):
+            raise TypeError(
+                "GenerativeEnv.wrap names a positional environment by a modelling System's "
+                "factors and modalities, and this System is or holds a black box, which states "
+                "neither; run the environment as a black box's step with "
+                "hybrid_aif.composition.env_step(env, params)"
+            )
         names = system._face_names(params)
         if env.num_factors != len(names.factors):
             raise ValueError(

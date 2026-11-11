@@ -777,6 +777,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
     emissions: list[tuple[str, Emission]] = []  # composite names, parents namespaced
     emission_kernels: dict[str, object] = {}  # composite name -> kernel (or its reference)
     emission_reads: dict[str, str] = {}  # composite name -> the parameter variable it reads
+    black_box: list[tuple[str, tuple[str, int]]] = []  # a black box's ports, composite names
 
     terms: list[str] = []
     configs: dict[str, tuple] = {}  # leaf name (composite) -> its own planner configuration
@@ -864,6 +865,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
                 emission_reads[composite_name] = f"{name}{SEPARATOR}{kernel.name}"
             else:
                 emission_kernels[composite_name] = kernel
+        black_box.extend((f"{name}{SEPARATOR}{port}", t) for port, t in system.black_box)
         likelihood.extend(p.likelihood)
         transition.extend(p.transition)
         initial_state_prior.extend(p.initial_state_prior)
@@ -949,6 +951,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         emissions=emissions,
         emission_kernels=emission_kernels,
         emission_reads=emission_reads,
+        black_box=black_box,
         terms=terms,
         configs=configs,
         parts=parts,
@@ -1332,26 +1335,27 @@ def _assemble(
                 )
             for m in sensing:  # the node's realised value is its driver's: observe that
                 A_deps[m] = tuple(-d - 1 if g == -c - 1 else g for g in A_deps[m])
-            old = nodes[c].action
-            if old in identified_outs:
+            old = nodes[c].action  # None for an in-port of a black box, which has no action node
+            if old is not None and old in identified_outs:
                 raise ValueError(
                     f"{identified_outs[old]} names {old!r}, the action node of control node "
                     f"{slot!r}, and {label} drives {slot!r} by {variable!r}, so {old!r} has no "
                     f"value of its own: it would carry {variable!r}'s; name {variable!r} "
                     f"itself, or drive {slot!r} from elsewhere"
                 )
-            inert[slot] = old
-            alias[old] = variable
-            del action_to_node[old]
+            if old is not None:
+                inert[slot] = old
+                alias[old] = variable
+                del action_to_node[old]
             node_to_action.pop(slot, None)
             nodes[c].action = None
             if d is not None:
                 identified_pairs.append((slot, driver))
             for k, v in driven_by.items():  # a node this node's action node drove follows it
-                if v == old:
+                if old is not None and v == old:
                     driven_by[k] = variable
             for i, (pair_slot, pair_variable) in enumerate(port_observes):
-                if pair_variable == old:
+                if old is not None and pair_variable == old:
                     port_observes[i] = (pair_slot, variable)
             for i, (pair_node, pair_driver) in enumerate(identified_pairs):
                 if pair_driver == slot and d is not None:
@@ -1651,6 +1655,13 @@ def _assemble(
                 f"{sorted(node_index)}"
             )
         elif isinstance(binding, Clamp):
+            if binding.node in dict(sp.black_box):
+                raise ValueError(
+                    f"Clamp for {binding.node!r}: it is an in-port of a black box, which a Clamp "
+                    "would remove from the tables that read it, and a black box's step reads it "
+                    "itself; drive it from a component that emits the constant (an Identify of "
+                    "that out-port with it)"
+                )
             c = driven_node(binding.node, "Clamp")
             if nodes[c].kind == FLOAT:
                 raise NotImplementedError(
@@ -1690,6 +1701,17 @@ def _assemble(
                             if "a state factor" in (what_a, what_b)
                             else ""
                         )
+                    )
+                if (
+                    coupled
+                    and outs[0].split(SEPARATOR)[0] == ins[0].split(SEPARATOR)[0]
+                    and outs[0] in dict(sp.black_box)
+                ):
+                    raise ValueError(
+                        f"couple(): {label} joins two ports of the black box "
+                        f"{outs[0].split(SEPARATOR)[0]!r}; a coupling identifies ports of "
+                        "different components, and what a black box reads of its own outputs it "
+                        "keeps in its step's carry"
                     )
                 if coupled and outs[0].split(SEPARATOR)[0] == ins[0].split(SEPARATOR)[0]:
                     raise ValueError(
@@ -1932,6 +1954,7 @@ def _assemble(
         for _, sub in system.subsystems or ():
             for node, action in sub.actions:
                 action_of.setdefault(namespaced_key(name, node), namespaced_key(name, action))
+    boxed = dict(sp.black_box)
     this_relayed = {nodes[k].name: factor_names[d] for k, d in relayed.items()}
     this_terminated = [nodes[k].name for k in terminations]
     entries: list[tuple[str, tuple[int, ...], tuple[int, ...], dict, list, list]] = []
@@ -1990,7 +2013,8 @@ def _assemble(
         )
         relays = dict(sorted(relays.items(), key=lambda kv: _node_order(kv[0], factor_names)))
         ended = sorted(ended, key=lambda node: _node_order(node, factor_names))
-        named = [*chosen, *relays, *ended, *(node for node, _ in pairs)]
+        #  an in-port of a black box has no action node, so no pair of its own
+        named = [*chosen, *relays, *ended, *(node for node, _ in pairs if node not in boxed)]
         metadata.append(
             (
                 name,
@@ -2027,7 +2051,14 @@ def _assemble(
         )
 
     # ------------------------------------------------------ the composite System
-    leaf_config = {leaf: dict(config) for leaf, config in sp.configs.items()}
+    #  a black box's configuration is inert (it plans nothing and carries no belief), so the
+    #  composite's planner fields and its belief carry are its other leaves'
+    boxed_ports = [port for port, _ in sp.black_box]
+    leaf_config = {
+        leaf: dict(config)
+        for leaf, config in sp.configs.items()
+        if not any(port.startswith(f"{leaf}{SEPARATOR}") for port in boxed_ports)
+    } or {leaf: dict(config) for leaf, config in sp.configs.items()}
     #  a term a leaf's scoring owns answers to that leaf's critic alone: the leaf's own terms
     #  carry it, the coupling's none
     owned_terms = {
@@ -2040,9 +2071,12 @@ def _assemble(
             f"merged Systems declare different mixture budgets mixture_k={sorted(mixture_ks)}; "
             "the budget is shared by the whole belief carry, so declare one value"
         )
-    if all(s.epistemic is True for s in subsystems.values()):
+    #  a component of black boxes alone selects nothing (it has no variable to gain information
+    #  about), at whatever depth the boxes sit
+    selecting = [s for s in subsystems.values() if not s._only_ports] or [*subsystems.values()]
+    if all(s.epistemic is True for s in selecting):
         epistemic: bool | tuple[str, ...] = True
-    elif all(s.epistemic is False or s.epistemic == () for s in subsystems.values()):
+    elif all(s.epistemic is False or s.epistemic == () for s in selecting):
         epistemic = False
     else:
         epistemic = tuple(epistemic_keys)
@@ -2084,6 +2118,7 @@ def _assemble(
         recognition=tuple(recognition_decl) or None,
         external_inputs=tuple(external_inputs),
         subsystems=tuple(metadata),
+        black_box=tuple(sp.black_box),
     )
     boxes = {nodes[k].name: nodes[k].box for k in live if nodes[k].box is not None}
     for (slot, i), home in reads.items():  # every reader's position holds its variable's table
@@ -2561,6 +2596,14 @@ def subsystem(
         )
     driven = set(_driven_nodes(composite, name))
     sliced = {k for variable in given for k in valid[variable] if k in driven}
+    ported = dict(composite.black_box)
+    opaque = sorted(c_nodes[k] for k in sliced if c_nodes[k] in ported)
+    if opaque:
+        raise ValueError(
+            f"inputs names the variable driving {opaque}, in-port(s) of a black box: a sliced "
+            "view takes a level of a node out of the tables that read it, and nothing inside a "
+            "black box is stated; take its view unsliced (a custom step without the sliced mark)"
+        )
     priors = {c_nodes[k]: given[variable] for variable in given for k in valid[variable]}
     ours, view_nodes, partner_nodes = _view_nodes(composite, meta, facs, name, sliced)
     n_cols = len(composite.B_deps)
@@ -2807,6 +2850,11 @@ def subsystem(
         readings=tuple(view_readings),
         observes=tuple(view_observes),
         emissions=tuple(view_emissions),
+        black_box=tuple(
+            (port, t)
+            for port, t in composite.black_box
+            if port in set(view_nodes) or port in {e for e, _ in view_emissions}
+        ),
         subsystems=_view_metadata(
             composite,
             name,

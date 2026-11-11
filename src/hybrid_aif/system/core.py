@@ -99,7 +99,7 @@ from hybrid_aif.planning.enumerate import (
     action_marginals,
     enumerate_policies,
 )
-from hybrid_aif.reads import REALISATIONS, Emission
+from hybrid_aif.reads import BLACK_BOX, REALISATIONS, Emission
 from hybrid_aif.system import emissions as _emissions
 from hybrid_aif.system import keyed, selectors, validation
 from hybrid_aif.system.selectors import _KEY_KINDS, _EpistemicVar
@@ -847,6 +847,17 @@ class System(eqx.Module):
     #   action ``a_<f>``. Action
     #   nodes follow the control nodes in node order, so ``A_deps`` names action node ``k`` as
     #   ``len(B_deps) + k``
+    black_box: tuple[tuple[str, tuple[str, int]], ...] = eqx.field(static=True, default=())
+    #   the ports of a black box, an external process declared by its ports alone, **by name**:
+    #   ``{"v": (FLOAT, 2), "gauge": (LEVEL, 4)}`` at construction, stored as ``(port, (kind,
+    #   size))`` pairs in the order given because static fields must hash. An in-port is a control
+    #   node no declaration reads and no action node realises (a link into it drives it), an
+    #   out-port an emission with no parents whose kernel is ``"black_box"``; nothing between them
+    #   is stated, so no face that needs the inside (inference, planning, learning, sampling,
+    #   ``as_env``, ``mirror``, ``joint_planner``) runs on a System that holds one, and its step
+    #   under ``run`` is a custom one. A splice carries each component's entries under its prefix.
+    #   Built by :func:`~hybrid_aif.composition.black_box.black_box`; docs/composing-systems.md,
+    #   "External processes"
     policy_len: int = eqx.field(static=True, kw_only=True)
     controlled: dataclasses.InitVar[tuple[bool, ...] | None] = eqx.field(default=None, kw_only=True)
     #   sugar: per state factor, whether it gets a control node ``u_<f>``
@@ -903,6 +914,33 @@ class System(eqx.Module):
         self.cells = self._normalized_cells()
         self.emissions = self._normalized_emissions()
         self.observes = self._normalized_observes()
+        self.black_box = self._normalized_black_box()
+
+    def _normalized_black_box(self) -> tuple:
+        """``black_box`` as ``(port, (kind, size))`` pairs (a mapping, or pairs), the in-ports in
+        control-node order and then the out-ports in emission order, whatever order they were
+        given in, so every path that builds one System builds it alike; a name that is neither
+        sorts last, and a value of another shape is passed through, for
+        :meth:`_check_black_box` to refuse."""
+        given = self.black_box
+        if not given:
+            return ()
+        items = tuple(given.items()) if isinstance(given, Mapping) else given
+        try:
+            pairs = [
+                (name, (kind, int(size) if isinstance(size, np.integer) else size))
+                for name, (kind, size) in items
+            ]
+        except (TypeError, ValueError):
+            return given
+        names = self.factor_names or ()
+        nodes = [names[c] for c in self.controls if 0 <= c < len(names)]
+        try:
+            emitted = [e for e, _ in self.emissions]
+        except (TypeError, ValueError):
+            emitted = []
+        order = {name: i for i, name in enumerate([*nodes, *emitted])}
+        return tuple(sorted(pairs, key=lambda pair: order.get(pair[0], len(order))))
 
     def _normalized_observes(self) -> tuple:
         """``observes`` as ``(slot, variable)`` pairs in the order given (a mapping, or pairs); a
@@ -1216,6 +1254,136 @@ class System(eqx.Module):
         self._check_readings()
         self._check_C_deps()
         self._check_cells()
+        self._check_black_box()
+
+    def _check_black_box(self) -> None:
+        """``black_box``: each entry a port and its type, ``(LEVEL, levels)`` or ``(FLOAT,
+        width)`` with a positive size; an in-port a control node with no action node that no
+        transition, modality, emission, target or reading names, an out-port an emission whose
+        kernel is ``"black_box"``; and every such emission declared here. A System with no
+        components that declares one is a black box: it has no state factors or modalities, and
+        its every control node and emission is a port."""
+        entries = self.black_box
+        if not isinstance(entries, tuple) or not all(
+            isinstance(e, tuple)
+            and len(e) == 2
+            and isinstance(e[0], str)
+            and isinstance(e[1], tuple)
+            and len(e[1]) == 2
+            for e in entries
+        ):
+            raise TypeError(
+                "black_box maps each port of a black box to its type, (LEVEL, levels) or (FLOAT, "
+                f"width), got {entries!r}"
+            )
+        names = [name for name, _ in entries]
+        repeated = sorted({n for n in names if names.count(n) > 1})
+        if repeated:
+            raise ValueError(f"black_box names {repeated} twice: one type per port")
+        for name, (kind, size) in entries:
+            if kind not in (LEVEL, FLOAT) or isinstance(size, bool) or not isinstance(size, int):
+                raise ValueError(
+                    f"black_box[{name!r}] is ({kind!r}, {size!r}); a port's type is (LEVEL, "
+                    "levels) or (FLOAT, width), with an integer size"
+                )
+            if size < 1:
+                raise ValueError(
+                    f"black_box[{name!r}] has size {size}; a port has at least one level or one "
+                    "dimension"
+                )
+        table = self._table
+        emissions = dict(self.emissions)
+        boxed = {n for n, e in emissions.items() if e.kernel == BLACK_BOX}
+        undeclared = sorted(boxed - set(names))
+        if undeclared:
+            raise ValueError(
+                f"emission(s) {undeclared} have the kernel {BLACK_BOX!r}, an out-port of a black "
+                "box, and black_box gives them no type; declare each one's type there"
+            )
+        readers = {
+            *(table.control_names[k] for k, rs in enumerate(table.readers) if rs),
+            *(p for e in emissions.values() for p in e.parents),
+            *(p for _, parents in self.C_deps for p in parents),
+            *(node for _, node in self.readings),
+        }
+        for name in names:
+            if name in boxed:
+                continue
+            if name not in table.control_names:
+                raise ValueError(
+                    f"black_box names {name!r}, which is neither a control node (an in-port) nor "
+                    f"an emission with the kernel {BLACK_BOX!r} (an out-port) of this System"
+                )
+            k = table.control_names.index(name)
+            if self.action_names[k] is not None or name in readers:
+                raise ValueError(
+                    f"black_box names the control node {name!r} as an in-port, and "
+                    + (
+                        f"it has the action node {self.action_names[k]!r}"
+                        if self.action_names[k] is not None
+                        else "a declaration of the System reads it"
+                    )
+                    + ": an in-port of a black box is read by nothing the System states and "
+                    "realised by nothing, so declare it with no action node and no reader"
+                )
+        if self.subsystems is None and entries:
+            stated = [
+                *table.state_names,
+                *self.modality_names,
+                *(u for u in table.control_names if u not in names),
+                *(e for e in emissions if e not in boxed),
+            ]
+            if stated:
+                raise ValueError(
+                    f"this System declares the black-box ports {names} and also {stated}: a "
+                    "black box states nothing but its ports, so declare those in a System of "
+                    "their own and couple the two"
+                )
+
+    @property
+    def _black_boxes(self) -> tuple[str, ...]:
+        """The black boxes this System holds, by component name: ``("",)`` for a black box
+        itself, and for a composite each leaf that owns a port of ``black_box``."""
+        if not self.black_box:
+            return ()
+        if not self.subsystems:
+            return ("",)
+        ports = [name for name, _ in self.black_box]
+        sep = keyed.NAMESPACE_SEPARATOR
+        return tuple(
+            name
+            for name, sub in self.subsystems
+            if sub.config and any(p.startswith(f"{name}{sep}") for p in ports)
+        )
+
+    @property
+    def _only_ports(self) -> bool:
+        """Whether this System states nothing but black-box ports: no state factor, no modality,
+        and every control node and emission a port of ``black_box`` (a black box, a view of one,
+        or a coupling or merge of black boxes alone)."""
+        if not self.black_box:
+            return False
+        boxed = dict(self.black_box)
+        table = self._table
+        return (
+            not table.state_names
+            and not self.modality_names
+            and all(u in boxed for u in table.control_names)
+            and all(e in boxed for e, _ in self.emissions)
+        )
+
+    def _refuse_black_box(self, face: str) -> None:
+        """Refuse ``face`` on a System that is or holds a black box, whose inside it would need."""
+        boxes = self._black_boxes
+        if not boxes:
+            return
+        which = "is a black box" if boxes == ("",) else f"holds the black box(es) {list(boxes)}"
+        raise ValueError(
+            f"{face}: this System {which}, an external process declared by its ports alone, "
+            f"and {face} needs what lies between the ports, which is not stated. Under run a "
+            "black box is stepped by a custom step of its own; where a face needs the inside, "
+            "declare the process as a System of factors and kernels in its place"
+        )
 
     def _check_dims(self) -> None:
         """``dims``: pairs of a node name and a tuple of str, one entry per factor, each list of
@@ -1330,6 +1498,7 @@ class System(eqx.Module):
         leaves differ on a planner field (:data:`UNSET`), or several top-level components are
         coupled. No planner chooses a control node that has no action node (an input, driven
         from outside)."""
+        self._refuse_black_box(face)
         coupled = sum(sub.boundary == "coupled" for _, sub in self.subsystems or ()) > 1
         unset = [f for f in _PLANNER_FIELDS if getattr(self, f) is UNSET]
         if unset or coupled or (params is not None and params.parts):
@@ -1436,13 +1605,22 @@ class System(eqx.Module):
                     f"emission {name!r}: realise must be one of {list(REALISATIONS)}, got "
                     f"{emit.realise!r}"
                 )
+            if emit.kernel == BLACK_BOX:
+                if emit.parents:
+                    raise ValueError(
+                        f"emission {name!r} is an out-port of a black box (kernel "
+                        f"{BLACK_BOX!r}) and names parents {list(emit.parents)}: nothing inside a "
+                        "black box is stated, so its out-ports have none; declare the kernel, or "
+                        "drop the parents"
+                    )
+                continue
             if emit.kernel is not None and not (
                 emit.kernel == "identity" or isinstance(emit.kernel, Grid)
             ):
                 raise ValueError(
-                    f"emission {name!r}: a static kernel is 'identity' or a Grid, got "
-                    f"{emit.kernel!r}; kernel=None means the kernel is in params.emission, and "
-                    "any other kernel is declared there"
+                    f"emission {name!r}: a static kernel is 'identity' or a Grid ({BLACK_BOX!r} "
+                    f"marks an out-port of a black box), got {emit.kernel!r}; kernel=None means "
+                    "the kernel is in params.emission, and any other kernel is declared there"
                 )
             if emit.kernel is not None and len(emit.parents) != 1:
                 raise ValueError(
@@ -1563,6 +1741,11 @@ class System(eqx.Module):
                 **params.durations,  # the composite's own value is authoritative
             },
             emissions=self._emission_readers(params),
+            declared={
+                name: kind_size
+                for name, kind_size in self.black_box
+                if name in self._table.control_names
+            },
         )
 
     def _control_layout(self, params: SystemParams) -> ControlLayout | None:
@@ -1795,7 +1978,9 @@ class System(eqx.Module):
     def _static_type(self, params: SystemParams, emit: Emission, name: str) -> tuple[str, int]:
         """The port type of a static-kernel emission: a Grid's is ``(LEVEL, cells)``, and the
         identity's is its parent's, ``(LEVEL, levels)`` of a categorical factor and ``(FLOAT,
-        width)`` of a continuous one."""
+        width)`` of a continuous one; an out-port of a black box's is its declared type."""
+        if emit.kernel == BLACK_BOX:
+            return dict(self.black_box)[name]
         if isinstance(emit.kernel, Grid):
             return LEVEL, emit.kernel.n_cells
         (parent,) = emit.parents
@@ -2094,6 +2279,7 @@ class System(eqx.Module):
         """
         from hybrid_aif.train.world import belief_tuple
 
+        self._refuse_black_box("beliefs_from_states")
         params = self._params_in(params, "beliefs_from_states")
         positional = belief_tuple(self._amortized_structure(params, "beliefs_from_states"), states)
         return self._beliefs_out(params, positional)
@@ -2232,6 +2418,7 @@ class System(eqx.Module):
         place of a raw conditional ``D``. On the amortized path it returns the episode-start values:
         each carry's learned initial value, and each code's transition read at it.
         """
+        self._refuse_black_box("initial_priors")
         params = self._params_in(params, "initial_priors")
         return self._beliefs_out(params, self._initial_priors(params, "initial_priors"))
 
@@ -2276,6 +2463,7 @@ class System(eqx.Module):
         emission), lowered, run forward by the positional process, with the env's faces keyed by
         this System's names; a System that declares emissions has no such mirror and is refused.
         """
+        self._refuse_black_box("as_env")
         from hybrid_aif.system.mirror import mirror
 
         ms, mp = mirror(self, params, lower=True, param_key=param_key, face="as_env")
@@ -2445,6 +2633,7 @@ class System(eqx.Module):
         it: ``(emitted, state)``, both keyed by name. The forward process's reset, over the
         emissions in place of modalities, each emission realised by its declared rule; a control
         node an emission reads is at level 0 (the zero vector when continuous)."""
+        self._refuse_black_box("sample_initial")
         env, ep = self._forward_env(params)
         emitted, state = env.reset(key, ep, state)
         space = self._space(self._params_in(params, "sample_initial"))
@@ -2472,6 +2661,7 @@ class System(eqx.Module):
         rule. For ``mirror(s, p)`` of a System ``s`` with no actuator kernel and every control node
         driven, the emissions and the state equal ``s.as_env(p).step`` under the same key.
         """
+        self._refuse_black_box("sample_step")
         inputs = dict(inputs or {})
         unknown = sorted(set(inputs) - set(self._table.control_names))
         if unknown:
@@ -2555,6 +2745,7 @@ class System(eqx.Module):
         mass by ``stats``. Nothing in inference or planning reads an emission; a modality
         observes one through ``System.observes``, its datum then supplied to the faces.
         """
+        self._refuse_black_box("emit")
         params = self._params_in(params, "emit")
         if self.emissions:
             self._validate(params, "emit")
@@ -2718,6 +2909,7 @@ class System(eqx.Module):
         variable is optional: a slot whose variable is left out, or ``None``, is absent that tick
         (the first tick of an own-belief read has none). Design: nesting-and-coupling.md N3.
         """
+        self._refuse_black_box("infer_states")
         return _infer_face.infer_states(
             self,
             params,
@@ -2980,6 +3172,7 @@ class System(eqx.Module):
         docs/design/per-variable-infogain.md V1 V7; docs/design/amortization.md A2;
         docs/design/structure-learning.md S3 S4.
         """
+        self._refuse_black_box("learn")
         return _learn_face.learn(
             self,
             params,
@@ -3167,6 +3360,7 @@ class System(eqx.Module):
         Discrete control nodes only: raises under continuous ones. Under the sophisticated
         planner it is the first step's control assignments.
         """
+        self._refuse_black_box("policies")
         self._plannable("policies", params)
         params = self._params_in(params, "policies")
         if FLOAT in self._space(params).kinds:
@@ -3365,6 +3559,7 @@ class System(eqx.Module):
         name to a bool per level, read at each step's level of the node; a modality left out is
         present. An absent modality's leaves are zero at that step on every path.
         """
+        self._refuse_black_box("planner_context")
         return _plan_face.planner_context(
             self,
             params,
@@ -3544,6 +3739,7 @@ class System(eqx.Module):
         absent modality's leaves are zero at that step, and under
         ``planning_belief="posterior"`` the epistemic chain is not conditioned on it there.
         """
+        self._refuse_black_box("infer_policies")
         return _plan_face.infer_policies(
             self,
             params,
@@ -3609,6 +3805,7 @@ class System(eqx.Module):
         ``aux_beliefs`` passes to :meth:`planner_context`. ``key`` is the scoring rows' key: rows
         that roll a model of their own take the sampled rollout under it, the expected one without.
         """
+        self._refuse_black_box("score_policies")
         return _plan_face.score_policies(self, params, beliefs, policies, aux_beliefs, key)
 
     def _check_plan(self, plan: Array, what: str, params: SystemParams) -> Array:
@@ -3656,6 +3853,7 @@ class System(eqx.Module):
 
         Design: docs/design/action-legality.md.
         """
+        self._refuse_black_box("act")
         return _plan_face.act(
             self,
             key,
@@ -3680,6 +3878,7 @@ class System(eqx.Module):
         ``policies`` is the positional policy set ``q_pi`` is over (``None``: :meth:`policies`);
         the level counts come from ``params``' tables. Discrete controls only.
         """
+        self._refuse_black_box("action_marginals")
         params = self._params_in(params, "action_marginals")
         names = self._names(params)
         if FLOAT in names.kinds:
@@ -3710,6 +3909,7 @@ class System(eqx.Module):
         step, as :meth:`update_empirical_prior` gives it. ``key`` selects the sampled rollout,
         split once per step; ``None`` is the expected one.
         """
+        self._refuse_black_box("predict_beliefs")
         return _infer_face.predict_beliefs(self, params, beliefs, policy, key)
 
     @_eager_face
@@ -3741,6 +3941,7 @@ class System(eqx.Module):
         legal carry but a point mass: a collapsed Gaussian or mixture cannot be conditioned and has
         no finite entropy. See docs/composing-systems.md.
         """
+        self._refuse_black_box("update_empirical_prior")
         return _infer_face.update_empirical_prior(self, params, beliefs, action, key)
 
     def _update_empirical_prior(

@@ -1040,6 +1040,7 @@ def control_space(
     observations: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
     durations: Mapping[str, object] | None = None,
     emissions: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
+    declared: Mapping[str, tuple[str, int]] | None = None,
 ) -> ControlSpace:
     """Each control node's kind and size, read off the params; the flat layout when every node
     is continuous.
@@ -1056,11 +1057,20 @@ def control_space(
     the per-level axis of an emission that reads the node (``emissions``, in the same triples, the
     node written as its action node is in ``A_deps``), and the length of a per-level
     ``durations`` entry. A discrete node that nothing reads or sizes is
-    refused, as is a continuous node that nothing reads.
+    refused, as is a continuous node that nothing reads. A node ``declared`` types (an in-port of
+    a black box, ``(kind, size)``) takes that kind and size, has no box and no reader, and holds
+    no flat layout.
     Each sentence names what to pass instead.
     """
     names = table.control_names
     control = dict(control or {})
+    declared = dict(declared or {})
+    boxed = sorted(n for n in declared if n in control)
+    if boxed:
+        raise ValueError(
+            f"params.control holds a box for {boxed}, in-port(s) of a black box, whose type is "
+            "its declaration alone (a kind and a size, no support); drop the box"
+        )
     unknown = [k for k in control if k not in names]
     if unknown:
         raise ValueError(
@@ -1072,6 +1082,10 @@ def control_space(
     for k, name in enumerate(names):
         box = control.get(name)
         readers = table.readers[k]
+        if name in declared:
+            kinds.append(declared[name][0])
+            boxes.append(None)
+            continue
         admits = {factor_names[f]: _admits(transition[f]) for f, _ in readers}
         if box is None:
             floats_only = [r for r, a in admits.items() if LEVEL not in a]
@@ -1103,6 +1117,9 @@ def control_space(
     sizes: list[int] = []
     for k, name in enumerate(names):
         readers = table.readers[k]
+        if name in declared:
+            sizes.append(declared[name][1])
+            continue
         if kinds[k] == FLOAT:
             if not readers:
                 raise ValueError(
@@ -1163,7 +1180,7 @@ def control_space(
             )
         sizes.append(next(iter(named.values())))
     layout = None
-    if kinds and all(k == FLOAT for k in kinds):
+    if kinds and all(k == FLOAT for k in kinds) and not declared:
         spans, at = [], 0
         for size in sizes:
             spans.append((at, at + size))

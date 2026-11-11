@@ -194,6 +194,27 @@ volume term is what makes a table cost what a table costs.
 - **A factor that is arbitrary code**: nothing intrinsic to count; a code length for the
   program is the floor, out of scope here.
 
+*Note, 2026-11-10 (Alex's ruling on external environments).* A black box, an external process
+declared to `couple` and `run` by its ports and its step alone (`black_box(ins=..., outs=...)`,
+an environment or a hand-written world, one node of the factor graph whose inside is not stated),
+is excluded from the score for now. Its description length is not zero and is not "nothing to
+price": it is unscored, and the measure reports it as such by name. `description_length` lists
+it under `black_box:<component>` (`black_box` for a System that is one) with every link `None`,
+its four `(address, link)` pairs in `unscored`, nothing of it in `structure`, `parameters` or
+`total`, and `exact` `False`, so the exclusion is stated wherever the number is read. The floor
+is a code length for the program, which is unbuilt.
+
+*What of a black box is priced, and what is not (ruled 2026-11-10 under Alex's delegation, the
+C1b review, S7).* Its ports are declared structure and are priced as the structure they are: each
+out-port is an emission of the graph code, counted in `log*(E + 1)` and given its own record
+(`emission:<port>`, the parent set it reads, none, and its size or width code), and an in-port
+nothing drives is a control node (`control:<port>`, its size or width code); an in-port another
+component's action node drives is a slot of that node, priced there once, as any driven node. Only
+the inside, the kernel between the ports, is unscored. So every variable a coupled model observes
+is coded once, and a coupling of a model with a black box prices at or above the model alone. A
+System that states nothing but black-box ports has no graph record (no state factor to code); its
+totals are its ports' codes, with `exact` `False` and the unscored pairs of each black box.
+
 ## D4 — The Gaussian base (SETTLED: a reference prior at a declared scale)
 
 A location family has infinitely many distinguishable distributions unless something bounds its
@@ -348,4 +369,5 @@ head is room, not a member of the family. Built (2026-10-16).
 
 - The learning coefficient estimator for singular families (D3); the regression families'
   Fisher volume (D3); an extent for a Gaussian declared without a prior (D4, reported
-  unscored); the search loop, which is the customer's; program-length costs for code factors.
+  unscored); the search loop, which is the customer's; program-length costs for code factors,
+  and with them for black boxes, reported unscored meanwhile (D3, note of 2026-11-10).

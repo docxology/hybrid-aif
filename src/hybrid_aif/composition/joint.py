@@ -147,6 +147,14 @@ def _leaves_of(system: System, node: str | None) -> list[tuple[str, Subsystem]]:
     leaves = [(n, sub) for n, sub in system.subsystems if sub.config and n.startswith(prefix)]
     if not leaves:
         raise ValueError(f"joint_planner: {node!r} holds no leaf to plan")
+    boxes = [n for n, _ in leaves if n in system._black_boxes]
+    if boxes:
+        raise ValueError(
+            f"joint_planner: {node or 'the System'!r} holds the black box {boxes[0]!r}, an "
+            "external process declared by its ports alone, and one mind's model needs every "
+            "leaf's inside; plan a node that leaves the black box out (the components it is "
+            "coupled with), or declare the process as a System of factors and kernels"
+        )
     return leaves
 
 

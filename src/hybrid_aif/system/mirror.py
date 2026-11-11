@@ -104,6 +104,15 @@ def mirror(
 def _prepared(system: System, params: SystemParams, lower: bool, param_key, face: str):
     """The refusals every mirror shares, then ``(keyed params, positional params, lowered
     params)``."""
+    if system._black_boxes:
+        boxes = system._black_boxes
+        which = "is a black box" if boxes == ("",) else f"holds the black box(es) {list(boxes)}"
+        raise ValueError(
+            f"{face}: this System {which}, an external process declared by its ports alone, and "
+            "a mirror runs a model's inside forward, which a black box does not state; a black "
+            "box is already the world it stands for, so couple it as it is, or declare the "
+            "process as a System of factors and kernels to mirror"
+        )
     if param_key is not None and not lower:
         raise ValueError(
             f"{face}: param_key draws the learnable declarations' parameters, so it needs "

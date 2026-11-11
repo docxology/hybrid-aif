@@ -1,4 +1,4 @@
-"""The true world of the survey rover showcase, a System of its own coupled to the rover's mind.
+"""The true world of the survey rover showcase, a black box coupled to the rover's mind.
 
 A single rover drives over a walled field of smooth hills (the position is clipped to the field
 and the velocity into a wall is lost). It holds the rover's position and velocity, the terrain
@@ -8,12 +8,11 @@ satellite position fix whose noise grows where the terrain closes the sky, a for
 and a noisy gauge of the energy band (the option of a slow tier never reaches the world). The
 field's height map, sky openness, sunlight, slope and fix noise are tabulated at import.
 
-The world is declared by ``world_system()``: three state factors (terrain, position and velocity,
-energy), the velocity command ``v`` as a control node that the rover's action node drives once the
-two are coupled, and three emissions (``fix``, ``img``, ``gauge``) whose kernels type the
-out-ports. Its dynamics are hand-written in ``world_step``, a step of ``run``; the physical
-constants, the true dynamics, the energy rates and the image renderer live here, and the rover's
-model reads them as its own.
+The world is declared by ``world_system()`` as a black box, by its ports alone: the velocity
+command ``v`` in, which the rover's action node drives once the two are coupled, and the readings
+``fix``, ``img`` and ``gauge`` out. Its dynamics are hand-written in ``world_step``, a step of
+``run``; the physical constants, the true dynamics, the energy rates and the image renderer live
+here, and the rover's model reads them as its own.
 
     python examples/survey_world.py
 """
@@ -23,17 +22,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.ndimage import map_coordinates
 
-from hybrid_aif import (
-    Categorical,
-    ConditionalCategorical,
-    ConditionalGaussian,
-    Gaussian,
-    Grid,
-    LinearGaussianObservation,
-)
-from hybrid_aif.controls import Box
-from hybrid_aif.factors import LinearGaussianTransition
-from hybrid_aif.system import System, SystemParams
+from hybrid_aif.composition.black_box import black_box
+from hybrid_aif.controls import FLOAT, LEVEL
 
 FIELD = ((-1.0, 5.0), (-2.0, 4.0))
 START = (-0.2, -0.6)
@@ -68,9 +58,6 @@ IMG_SIDE = 48
 IMG_PIXELS = IMG_SIDE * IMG_SIDE
 PIXEL_SD = 0.04
 SKY_ROWS = IMG_SIDE // 4
-
-CELLS = 16  # cells per axis of the grid the world's declared terrain and energy tables read
-MIXTURE_K = 3  # the position's mixture budget: its transition switches with the terrain
 
 
 def _bump(x, y, cx, cy, s, a):
@@ -337,88 +324,20 @@ def move(key, state, command):
     return {"terrain": terrain_of(x[:2]), "x": x, "energy": energy}
 
 
-def _cc(table, parent_ndims):
-    return ConditionalCategorical(
-        log_table=jnp.log(jnp.clip(jnp.asarray(table, jnp.float32), 1e-12)),
-        parent_ndims=parent_ndims,
-    )
-
-
 def world_system():
-    """``(System, SystemParams)``: the world's declaration, for ``couple``.
+    """``(System, SystemParams)``: the world's declaration, for ``couple``: a black box, its
+    ports and their types alone.
 
-    Factors ``terrain`` (three classes, read from the cell of the position), ``x`` (position and
-    velocity, a linear step switched by the terrain under the command ``v``) and ``energy`` (four
-    bands, from the band, the terrain and the cell); the control node ``v`` (a velocity command in
-    ``[-1, 1]^2``, driven by the rover's action node once coupled); and three emissions, the
-    out-ports: ``fix`` (from ``x``), ``img`` (from ``x`` and ``terrain``) and ``gauge`` (from
-    ``energy``).
-
-    ``world_step`` realises the dynamics and the readings by hand, so no face samples these tables:
-    they declare the shapes and types the coupling checks. Where a table is cheap to state truly it
-    is (the terrain at each cell's centre, the linear part of the motion per terrain, the gauge's
-    confusion, the start); the energy table holds each band (the true change is a function of the
-    speed, which no factor carries), and the fix and image kernels are linear-Gaussian with an
-    identity noise and, for the image, a zero map, typing their float ports."""
-    (x0, x1), (y0, y1) = FIELD
-    grid = Grid(shape=(CELLS, CELLS), low=(x0, y0), high=(x1, y1), axes=(0, 1))
-    centres = np.stack(
-        np.meshgrid(
-            x0 + (np.arange(CELLS) + 0.5) * (x1 - x0) / CELLS,
-            y0 + (np.arange(CELLS) + 0.5) * (y1 - y0) / CELLS,
-            indexing="ij",
-        ),
-        axis=-1,
-    ).reshape(-1, 2)
-    n_cells = centres.shape[0]
-    terrain_at = np.asarray(jax.vmap(terrain_of)(jnp.asarray(centres, jnp.float32)))
-    terrain_table = np.zeros((3, n_cells))
-    terrain_table[terrain_at, np.arange(n_cells)] = 1.0
-    held_band = np.broadcast_to(np.eye(4)[:, :, None, None], (4, 4, 3, n_cells))
-    F, G, loc, chol = (np.stack([dynamics(m)[i] for m in range(3)]) for i in range(4))
-    system = System(
-        factor_names=("terrain", "x", "energy", "v"),
-        B_deps=((1,), (0, 3), (2, 0, 1), ()),
-        controls=(3,),
-        action_names=("a_v",),
-        cells={"x": grid},
-        emissions={"fix": ("x",), "img": ("x", "terrain"), "gauge": ("energy",)},
-        policy_len=1,
-        mixture_k=MIXTURE_K,
-        mixture_schedule="mode_aligned",
+    The in-port ``v`` is the velocity command, a float vector of width 2 that the rover's action
+    node drives once the two are coupled; the out-ports are the readings, ``fix`` (a float vector
+    of width 2, the position fix), ``img`` (a float vector of ``IMG_PIXELS``, the camera image)
+    and ``gauge`` (four levels, the energy band's reading). What lies between them is
+    ``world_step``, the hand-written dynamics; the world states no factor and no table, so its
+    description length is reported unscored."""
+    return black_box(
+        ins={"v": (FLOAT, 2)},
+        outs={"fix": (FLOAT, 2), "img": (FLOAT, IMG_PIXELS), "gauge": (LEVEL, 4)},
     )
-    start = initial_state()
-    params = SystemParams(
-        transition={
-            "terrain": _cc(terrain_table, 1),
-            "x": LinearGaussianTransition(
-                F=jnp.asarray(F, jnp.float32),
-                G=jnp.asarray(G, jnp.float32),
-                innovations=ConditionalGaussian(
-                    loc=jnp.asarray(loc, jnp.float32),
-                    chol=jnp.asarray(chol, jnp.float32),
-                    parent_ndims=1,
-                ),
-            ),
-            "energy": _cc(held_band, 3),
-        },
-        initial_state_prior={
-            "terrain": Categorical(logits=jnp.log(jnp.clip(jnp.eye(3)[start["terrain"]], 1e-12))),
-            "x": Gaussian(loc=start["x"], chol=1e-3 * jnp.eye(4)),
-            "energy": Categorical(
-                logits=jnp.log(jnp.clip(jnp.eye(4)[band_of(start["energy"])], 1e-12))
-            ),
-        },
-        control={"v": Box(-jnp.ones(2), jnp.ones(2))},
-        emission={
-            "fix": LinearGaussianObservation(H=jnp.eye(4)[:2], c=jnp.zeros(2), noise=jnp.eye(2)),
-            "img": LinearGaussianObservation(
-                H=jnp.zeros((IMG_PIXELS, 4)), c=jnp.zeros(IMG_PIXELS), noise=jnp.eye(IMG_PIXELS)
-            ),
-            "gauge": _cc(gauge_table(), 1),
-        },
-    )
-    return system, params
 
 
 def world_step(system, key, obs, carry, params):

@@ -391,7 +391,11 @@ def couple(
     identifications, a variable one out-port feeds to several in-ports counted once. It plans
     nothing as one mind: a planner field its leaves share it states, and holds
     :data:`~hybrid_aif.system.UNSET` where they differ, a face needing it refusing. A coupling
-    may be merged and a merge coupled.
+    may be merged and a merge coupled. A black box
+    (:func:`~hybrid_aif.composition.black_box.black_box`, an external process declared by its
+    ports alone) is a component like any other: its in-ports are control nodes an ``Identify``
+    drives, its out-ports emissions an ``Identify`` feeds a modality or a control node from, and a
+    ``Clamp`` on an in-port is refused.
 
     The keywords ``minds=``, ``processes=``, ``links=`` and ``fixed=`` (a constant per process
     input) give the checked :class:`Wiring` of separate participants that

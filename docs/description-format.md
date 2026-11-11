@@ -32,7 +32,7 @@ written; reading one of them first is a good way in.
 | `variables` | yes | every variable, with its domain and size (section 2) |
 | `parameters` | no | named parameter variables that several factor records read (section 3.7) |
 | `factors` | no | the factor records, keyed by child variable and label (section 3) |
-| `relations` | no | `controls`, `driven`, `observed`, `external` (section 5) |
+| `relations` | no | `controls`, `driven`, `observed`, `external`, `black_box` (section 5) |
 | `clamps` | no | the values of the fixed parameter variables (section 6) |
 | `objective` | no | the terms the planner scores; absent means `{"decomposition": "utility_infogain"}` (section 8) |
 | `configuration` | yes | planning, inference and learning settings (section 9) |
@@ -471,8 +471,19 @@ each naming the field.
 | `driven` | `{control node: variable}` | each key is a control node with no action node of its own: the variable (an action node or an emission of the document) is its level, the realised value of the out-port; no decision is planned for it. It is a per-step variable with a categorical or real domain, read by the records that read a control node |
 | `observed` | `[observation, ...]` | the variables the System receives data for at every step; each has a likelihood record |
 | `external` | `[input, ...]` | vectors the System receives as data with no likelihood (domain `real` with `dim`), read only by recognition records |
+| `black_box` | `{"ins": [port, ...], "outs": [port, ...]}` | the ports of a black box, an external process declared by its ports alone (`black_box(ins=..., outs=...)`): each in-port a control node with no action node that no record reads, each out-port a variable with no record; a port's type is its variable's domain and size (`categorical` with `levels`, or `real` with `dim` and no bounds). What lies between the ports is not stated, so no record names a port |
 
-A variable plays at most one of these roles. A per-step variable that is in none of them and
+A variable plays at most one of these roles, with one exception: an in-port of a black box that
+another variable drives is also a key of `driven` (it is then a slot with no record of its own and
+takes the driver's domain and size, without the driver's bounds), while an in-port nothing drives
+has a variable record of its own. An out-port of a black box is written as a variable record and
+nothing else; a record under any label for a port, and bounds on an in-port, are refused. The
+step that realises a black box is code and is not part of the document: `build` rebuilds the
+declaration, and the caller gives `run` its step. A document holding `black_box` is unreadable by
+a reader older than the key (hybrid-aif 0.19.0 refuses it, naming the relation); a document
+without it is written and read exactly as before the key existed.
+
+A per-step variable that is in none of these roles and
 whose one record is an `actuator` is an emission. Every other per-step variable that is in none of
 them and has an initial and a transition record is a latent. A control node and its action node are named
 freely; `describe` writes `u_f` and `a_f` for the control node a latent `f` declares with the

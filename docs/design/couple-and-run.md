@@ -660,6 +660,10 @@ equivalence bitwise. Per commit, the suite count of the final gates and what was
 
 ## 10. Open items, carried forward
 
+- **Black boxes** (2026-11-10): an external process is declared by its ports and its step alone
+  (`black_box`, `composing-systems.md`, "External processes"), the survey world moved onto it,
+  and its description length is unscored until a code length for its program is built
+  (`description-length.md` D3, note of 2026-11-10).
 - **Actuator pricing**, next, as its own commit: price an action node's kernel family (the
   identity is structure only, a noisy table has parameters) without paying the control node's
   domain again; it moves every model with an actuator, pinned numbers and the showcase included.

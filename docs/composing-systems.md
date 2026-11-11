@@ -1062,6 +1062,108 @@ foreign `D_deps` parent; a habit on a component; a node shared by components (th
 components that are themselves composed (the whole mirror takes those); and a System with no
 components (mirror it whole).
 
+## External processes: a black box
+
+An environment, or a world whose dynamics are hand-written code, enters a coupling as one node of
+the factor graph whose inside is not stated: an opaque map from its in-ports and its own carried
+state to its out-ports and its next state. `black_box(ins=..., outs=...)`
+(`hybrid_aif.composition`) declares it by its ports alone, each a name and a type, `(LEVEL,
+levels)` or `(FLOAT, width)` (`hybrid_aif.controls.LEVEL` and `FLOAT`), and returns a real
+`(System, SystemParams)`: one control node per in-port, with no action node and no reader, one
+emission per out-port, with no parents and the static kernel `"black_box"`, and
+`System.black_box` holding every port's type, the mark every face reads. It holds no state
+factor, no table and no control or modality kernel; the params are empty.
+
+```python
+from hybrid_aif.composition import Identify, black_box, couple, plan, run
+from hybrid_aif.controls import FLOAT, LEVEL
+
+world = black_box(
+    ins={"v": (FLOAT, 2)},
+    outs={"fix": (FLOAT, 2), "img": (FLOAT, 2304), "gauge": (LEVEL, 4)},
+)
+system, params = couple(
+    {"agent": agent, "world": world},
+    [
+        Identify("agent.rover.a_v", "world.v"),       # an action node drives the in-port
+        Identify("world.fix", "agent.rover.fix"),     # an out-port feeds a modality
+        Identify("world.img", "agent.rover.img"),
+        Identify("world.gauge", "agent.rover.gauge"),
+    ],
+)
+traj = run(system, params, 400, key, {"agent": plan(), "world": world_step},
+           record_carries=True)
+traj["world"].carries                                 # the state world_step carried, per round
+```
+
+`couple` binds its ports with `Identify` exactly as it binds any component's: the types of the two
+ends must agree, an in-port is driven at most once, and an in-port nothing drives leaves the
+coupling open, which `run` refuses naming the in-port. A `Clamp` on an in-port is refused (it would
+remove the node; drive it from a component that emits the constant). Under `run` the black box is
+a leaf stepped by a custom step, the step contract of every leaf: `obs` holds the in-ports by the
+view's names (`None` on the reset call), `out` every out-port, and the carry is whatever state the
+step keeps; the reset call, the timing rules, the keys and the `Trajectory` (`received`,
+`emitted`, `start`, `carries`) are those of any leaf. `env_step(env, params=None, *, actions=None)`
+is that step for a positional (pymdp-style) environment: one out-port per observation in the
+environment's order, level in-ports filling a level action at their factors (`actions` maps an
+in-port to its factor, in-port `k` at factor `k` by default), float in-ports concatenated into the
+continuous action; on the same keys it steps the environment as `GenerativeEnv.wrap` does, without
+a modelling System to name it.
+
+Refused, each with a sentence that says what to do, because each needs what lies between the
+ports: `plan()` and `sample()` as the black box's step, a step marked `sliced` on it, a node
+planned jointly with a black box beneath it (`joint_planner` over it too), `mirror` and
+`with_mirror` of a System that is or holds one, `as_env`, `sample_initial`, `sample_step`,
+`emit`, the inference, planning and learning faces of such a System, and a `subsystem` view of
+the black box sliced at a driven level (its unsliced view, its ports under the coupling's names,
+is what `run` hands its step). `describe` writes it under `relations.black_box`, its ports with
+their types and no records (the step is code, so it is not part of the document);
+`build` rebuilds the same System. In its description length the ports are priced as the declared
+structure they are (each out-port an emission of the graph code with its size code, an in-port
+nothing drives a control node), and the inside is unscored: it is listed under
+`black_box:<component>` with every link `None`, its four `(address, link)` pairs are in
+`DescriptionLength.unscored`, nothing of it enters `structure`, `parameters` or `total`, and
+`exact` is `False`.
+
+**A process outside the computation graph.** A black box's step may be arbitrary host Python:
+real hardware (an agent hooked to a camera), a socket, a simulator in another language. `run`
+calls a custom step once per round from its own Python loop and never traces, compiles, batches
+or differentiates it; the step may do I/O, keep any Python object as its carry (no JAX pytree is
+asked of it), and return NumPy arrays or Python numbers, which `run` checks against the port's
+declared type and stores in one dtype: a level port takes one integer level in range (a Python or
+NumPy integer of any width, stored as `int32`) and refuses a float or a vector; a float port takes
+a vector of its width (an integer vector converted to the library's float dtype, and one number
+accepted for width 1); a refusal names the port and its type. `run` stores the carry object a
+step returns as it is (`record_carries=True` keeps a reference per round, not a copy), so a step
+whose carry is recorded returns a new object each round rather than mutating the old one. Where the user's code
+owns the timing instead (a control loop paced by the hardware), the agent's own faces
+(`infer_states`, `act`, `learn`) are called from that loop and `run` is not used. What does not
+work: compiling, batching (`vmap`) or differentiating through the external process, and
+wall-clock scheduling under `run`, whose round is a logical tick (the step blocks the loop for as
+long as it takes).
+
+**When to declare a black box, and when to open it.** Structure is taken out of the box only where
+it pays.
+
+- *A world run forward as a model.* When the world is a model you mean to sample, run its mirror
+  of, or compare with the agent's own model, state it as a System of factors and kernels and step
+  it with `sample()` (`with_mirror` builds one from the agent's model). A black box is for a
+  process whose dynamics are code you will not state: an environment from elsewhere, a
+  hand-written simulator.
+- *A component another mind models.* A planner that plans jointly over a node, or a mind whose
+  model includes the process, needs its inside. A black box is coupled to minds, never planned
+  over; open it where some mind must model it.
+- *Shared variables.* A black box shares nothing but its ports: no parameter variable
+  (`Identify` of two parameters), no structural `Link`, no belief read into it. Two components that
+  must share a latent or a parameter are both stated.
+- *Pricing a world.* A black box has no description length the library computes: its floor is a
+  code length for its program, which is not built, so it is reported unscored and left out of the
+  totals. To compare worlds by description length, state them.
+- *Partial opening.* Open the part that pays and keep the rest in the box: declare the part to be
+  sampled, priced or modelled (a gauge as a table, say) as a System of its own, keep the
+  hand-written remainder a black box, and couple the two through ports, the box reading the
+  opened part's emissions on in-ports of its own.
+
 ## The composite form of `run`, the wired form and `particle`
 
 The composite form and the wired form of `run` take a `MindStep` per participant,

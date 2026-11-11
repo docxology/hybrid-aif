@@ -27,6 +27,10 @@ particles by links, and the clock that runs them.
   :func:`plan` for a planning mind, :func:`sample` for a process, or a function of the same shape.
   :func:`with_mirror` couples a System to its own mirror, which closes it. A node whose view
   declares durations decides once per option, ``clocks=`` converting a duration into rounds.
+- :mod:`~hybrid_aif.composition.black_box`: :func:`black_box` declares an external process (an
+  environment, a hand-written world) by its ports and their types alone, a component
+  :func:`couple` binds like any other and :func:`run` steps with a custom step;
+  :func:`env_step` is that step for a positional environment.
 - :mod:`~hybrid_aif.composition.component_mirror`: :func:`~hybrid_aif.system.mirror.mirror` with
   ``per_component=True``, the merge of one mirror per component of a merged or coupled System,
   a state factor of another component that a transition or a modality reads fed to the reader by
@@ -40,6 +44,7 @@ particles by links, and the clock that runs them.
 Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
 """
 
+from hybrid_aif.composition.black_box import black_box, env_step, is_black_box
 from hybrid_aif.composition.couple import Wiring, couple, with_mirror
 from hybrid_aif.composition.driver import (
     CompositeTrajectory,
@@ -88,9 +93,12 @@ __all__ = [
     "Wiring",
     "agent_step",
     "ancestral_step",
+    "black_box",
     "couple",
     "driven_nodes",
+    "env_step",
     "hold",
+    "is_black_box",
     "joint_planner",
     "merge",
     "namespaced_key",

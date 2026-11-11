@@ -34,6 +34,7 @@ from scipy.special import digamma, gammaln, multigammaln
 from hybrid_aif import description as _description
 from hybrid_aif import distributions as _dist
 from hybrid_aif import factors as _factors
+from hybrid_aif.reads import BLACK_BOX
 from hybrid_aif.system import System, SystemParams
 
 _LOG_2PI = math.log(2.0 * math.pi)
@@ -257,12 +258,13 @@ def reference_head(d: int, p: int, scale: float):
 
 
 class Links(NamedTuple):
-    """One address's links in nats: ``graph`` (always exact), ``family`` at resolution ``n``,
-    ``prior`` and ``posterior`` (``None`` where the model gives nothing to score); ``exact`` is
-    whether every scored link is the exact quantity rather than a bound; ``note`` names the
-    family and the prior the links were read from."""
+    """One address's links in nats: ``graph`` (exact wherever it is scored), ``family`` at
+    resolution ``n``, ``prior`` and ``posterior`` (``None`` where the model gives nothing to
+    score); ``exact`` is whether every scored link is the exact quantity rather than a bound;
+    ``note`` names the family and the prior the links were read from. A black box's address
+    (``black_box:<component>``) has every link ``None``: unscored, not zero."""
 
-    graph: float
+    graph: float | None
     family: float | None
     prior: float | None
     posterior: float | None
@@ -272,7 +274,7 @@ class Links(NamedTuple):
 
     @property
     def structure(self) -> float:
-        return self.graph + (self.family or 0.0)
+        return (self.graph or 0.0) + (self.family or 0.0)
 
     @property
     def parameters(self) -> float:
@@ -290,7 +292,16 @@ class DescriptionLength(NamedTuple):
     each read through its linearisation, so the data part is the free energy of the linearised
     model; ``None`` without a replay), ``unscored`` the
     ``(address, link)`` pairs reported ``None``. ``learned`` names the addresses a replay
-    learned, whose family links the data part pays for instead (D6)."""
+    learned, whose family links the data part pays for instead (D6). A black box the System holds
+    (an external process declared by its ports alone) is priced by its ports, which are declared
+    structure: its out-ports are emissions of the graph code, each with its size code, and an
+    in-port nothing drives a control node. Its inside, the kernel between the ports, is listed
+    under ``black_box:<component>`` (``black_box`` for a System that is one) with every link
+    unscored: its four pairs are in ``unscored``, nothing of it is in ``structure``,
+    ``parameters`` or ``total``, and ``exact`` is ``False``, since the total leaves the inside
+    out. Its floor would be a code length for its program, which is not built (description-length.md
+    D3). A System that states nothing but black-box ports has no graph record: its totals are its
+    ports' codes."""
 
     structure: float
     parameters: float
@@ -518,27 +529,35 @@ class _Walk:
         #  a modality that observes a variable of the System is no variable of its own
         #  a driven control node is a slot of the variable that drives it, which is priced once
         #  on its driver's own control node
+        #  an in-port of a black box nothing drives is a control node of the System, typed by
+        #  its declaration
+        boxed = dict(self.system.black_box)
+        observed = dict(self.system.observes)
         self.driven = {
-            u for u, a in zip(self.controls, self.system.action_names, strict=True) if a is None
+            u
+            for u, a in zip(self.controls, self.system.action_names, strict=True)
+            if a is None and not (u in boxed and u not in observed)
         }
         f_count, u_count = len(self.states), len(self.controls) - len(self.driven)
         m_count = sum(1 for o in self.mods if o not in self.system._observed)
+        #  a black box's out-ports are declared structure, counted as emissions are
         e_count = len(self.system._emission_names)
-        self.out["graph"] = Links(
-            graph=(
-                log_star(f_count)
-                + log_star(m_count + 1)
-                + log_star(u_count + 1)
-                + log_star(e_count + 1)
-            ),
-            family=None,
-            prior=None,
-            posterior=None,
-            exact=True,
-            n=None,
-            note=f"{f_count} state factors, {m_count} modalities, {u_count} control nodes"
-            + (f", {e_count} emissions" if e_count else ""),
-        )
+        if not self.system._only_ports:
+            self.out["graph"] = Links(
+                graph=(
+                    log_star(f_count)
+                    + log_star(m_count + 1)
+                    + log_star(u_count + 1)
+                    + log_star(e_count + 1)
+                ),
+                family=None,
+                prior=None,
+                posterior=None,
+                exact=True,
+                n=None,
+                note=f"{f_count} state factors, {m_count} modalities, {u_count} control nodes"
+                + (f", {e_count} emissions" if e_count else ""),
+            )
         space = self.system._space(self.params) if self.controls else None
         for k, u in enumerate(self.controls):
             if u in self.driven:
@@ -551,7 +570,13 @@ class _Walk:
                 posterior=None,
                 exact=True,
                 n=None,
-                note="a continuous control node" if continuous else "a control node",
+                note=(
+                    "an in-port of a black box: its type"
+                    if u in boxed
+                    else "a continuous control node"
+                    if continuous
+                    else "a control node"
+                ),
             )
         d_deps = self.system.D_deps
         for f, s in enumerate(self.states):
@@ -639,8 +664,11 @@ class _Walk:
                 n=None,
                 note="the identity"
                 if emit.kernel == "identity"
+                else "an out-port of a black box: its type (its kernel, the inside, is unscored)"
+                if emit.kernel == BLACK_BOX
                 else "an indicator kernel over a grid",
             )
+        self.black_boxes()
         self.homes()
         ordered = [self.out[key] for key in sorted(self.out)]
         structure = math.fsum(link.structure for link in ordered)
@@ -648,7 +676,7 @@ class _Walk:
         unscored = tuple(
             (addr, name)
             for addr, link in self.out.items()
-            for name in ("family", "prior", "posterior")
+            for name in ("graph", "family", "prior", "posterior")
             if getattr(link, name) is None
             and not (addr == "graph" or addr.startswith("control:") or addr in self.static)
             and addr not in self.referencing
@@ -661,6 +689,30 @@ class _Walk:
             exact=all(link.exact for link in self.out.values()),
             unscored=unscored,
         )
+
+    def black_boxes(self) -> None:
+        """One record per black box, under ``black_box:<component>`` (``black_box`` for a System
+        that is one): every link unscored, since nothing between its ports is stated (its ports are
+        priced at their own addresses); the note names its ports and types."""
+        ports = dict(self.system.black_box)
+        sep = _description._SEP
+        for box in self.system._black_boxes:
+            mine = {p: t for p, t in ports.items() if not box or p.startswith(f"{box}{sep}")}
+            listed = ", ".join(f"{p} {kind} {size}" for p, (kind, size) in mine.items())
+            self.out[f"black_box:{box}" if box else "black_box"] = Links(
+                graph=None,
+                family=None,
+                prior=None,
+                posterior=None,
+                exact=False,
+                n=None,
+                note=(
+                    f"a black box, an external process declared by its ports alone ({listed}): "
+                    "its inside is unscored, not zero, and left out of the totals (its ports are "
+                    "priced at their own addresses); its floor is a code length for its program, "
+                    "which is not built"
+                ),
+            )
 
     def emission_deps(self, name: str) -> tuple[int, ...]:
         """The parents of the emission ``name`` as node indices: a state factor at its index, a

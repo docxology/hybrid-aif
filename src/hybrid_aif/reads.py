@@ -29,6 +29,11 @@ REALISATIONS = ("sample", "mode", "stats")
 #: of that key.
 EMIT_TAG = 0x454D4954
 
+#: The static kernel of an out-port of a black box (:attr:`System.black_box`): the emission has no
+#: parents and no kernel the System states; its value is what the black box's step returns, and its
+#: type is the one ``System.black_box`` declares.
+BLACK_BOX = "black_box"
+
 
 class Emission(NamedTuple):
     """The declaration of an emission: an output of a System realised from its state factors.
@@ -48,7 +53,10 @@ class Emission(NamedTuple):
       one continuous state factor, a level port with as many levels as the grid has cells: from a
       point the cell the point falls in, from a belief the belief's mass in each cell
       (:func:`~hybrid_aif.cells.cell_mass`), of which ``mode`` is the largest cell, ``stats``
-      the vector and ``sample`` a draw.
+      the vector and ``sample`` a draw;
+    - :data:`BLACK_BOX` (``"black_box"``): an out-port of a black box, with no parents; nothing
+      in the library realises it, the black box's step returns its value, and its type is its
+      entry in ``System.black_box``.
 
     Declared in ``System.emissions`` as ``name -> parents`` (a draw through the params' kernel)
     or ``name -> Emission(parents, realise, kernel)``. Design: docs/design/nesting-and-coupling.md

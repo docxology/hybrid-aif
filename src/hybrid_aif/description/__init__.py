@@ -48,7 +48,7 @@ from hybrid_aif.objectives import registry as _registry
 from hybrid_aif.objectives.base import INFOGAIN
 from hybrid_aif.objectives.closed_loop import FEEDBACK
 from hybrid_aif.planning.base import planner_branches
-from hybrid_aif.reads import Emission
+from hybrid_aif.reads import BLACK_BOX, Emission
 from hybrid_aif.system import _KEY_KINDS, System, SystemParams
 from hybrid_aif.system.core import _PLANNER_FIELDS, UNSET, PartParams, Subsystem
 from hybrid_aif.system.validation import _check_dim_names
@@ -1305,7 +1305,12 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
             )
         first = next(dict(sub.config) for _, sub in system.subsystems if sub.config)
         cfg_system = dataclasses.replace(system, **{f: first[f] for f in unset})
-    driven = {u: system._observed.get(u) for u, a in zip(nodes, actions, strict=True) if a is None}
+    boxed = dict(system.black_box)
+    driven = {
+        u: system._observed.get(u)
+        for u, a in zip(nodes, actions, strict=True)
+        if a is None and not (u in boxed and u not in system._observed)
+    }
     unfed = sorted(u for u, v in driven.items() if v is None)
     if unfed:
         raise DescriptionError(
@@ -1369,9 +1374,10 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
     for k, u in enumerate(nodes):
         if u in driven:
             #  a driven node is a slot: its variable is the driver's (see relations), and a
-            #  continuous slot is read back with the box of the driver's control node
+            #  continuous slot is read back with the box of the driver's control node (an in-port
+            #  of a black box has none: relations.black_box names it)
             source = control_of.get(driven[u])
-            if space.kinds[k] == FLOAT and source is not None:
+            if space.kinds[k] == FLOAT and source is not None and u not in boxed:
                 mine, theirs = params.control[u], params.control[source]
                 if not (
                     np.array_equal(np.asarray(mine.low), np.asarray(theirs.low))
@@ -1385,6 +1391,10 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
                         "written as a slot of its driver and read back with the driver's box, so "
                         "give the two nodes one box"
                     )
+            continue
+        if u in boxed:  # an in-port of a black box nothing drives: its type, no box
+            kind, size = boxed[u]
+            w.variables[u] = _real(size) if kind == FLOAT else _categorical(size)
             continue
         if space.kinds[k] == FLOAT:
             box = params.control[u]
@@ -1537,8 +1547,8 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         w.record(e, "actuator", _with_parents(record, list(emit.parents)))
 
     for e, emit in system.emissions:
-        if emit.kernel is None:
-            continue
+        if emit.kernel is None or emit.kernel == BLACK_BOX:
+            continue  # an out-port of a black box has no record: relations.black_box names it
         #  a static kernel has no family or parameters: the record names the kernel
         options: dict[str, Any] = {
             "kernel": "identity" if emit.kernel == "identity" else "indicator"
@@ -1622,6 +1632,11 @@ def _write_system(w: _Writer, system: System, params: SystemParams, where: str) 
         relations["observed"] = list(mods)
     if externals:
         relations["external"] = externals
+    if boxed:
+        relations["black_box"] = {
+            "ins": [u for u in nodes if u in boxed],
+            "outs": [e for e in emitted if e in boxed],
+        }
     return {
         "variables": w.variables,
         **({"parameters": homes} if homes else {}),
@@ -2228,7 +2243,7 @@ _RECORD_KEYS = (
 )
 _LEAF_KEYS = ("domain", "levels", "dim", "dims", "cells", "low", "high", "shape", "duration")
 _TERM_KEYS = ("term", "on", "parameters", "options", "model", "leaf")
-_RELATIONS = ("controls", "observed", "external", "driven", "driven_actions")
+_RELATIONS = ("controls", "observed", "external", "driven", "driven_actions", "black_box")
 _CONFIGURATION = {
     "planning": ("planner", "horizon", "gamma", "precision", "branch_on", "belief", "feedback"),
     "inference": ("iterations", "mixture_k", "mixture_schedule"),
@@ -2559,6 +2574,8 @@ class _Model:
         if isinstance(relations, Mapping):
             controls = relations.get("controls") or {}
             paired = {a: u for u, a in controls.items()} if isinstance(controls, Mapping) else {}
+            boxed = relations.get("black_box") or {}
+            boxed_ins = boxed.get("ins") or [] if isinstance(boxed, Mapping) else []
             for slot, driver in dict(relations.get("driven") or {}).items():
                 if slot in variables or not isinstance(driver, str) or driver not in variables:
                     continue
@@ -2566,7 +2583,9 @@ class _Model:
                 if isinstance(record, Mapping) and record.get("domain") == "real":
                     record = variables.get(paired.get(driver), record)
                 if isinstance(record, Mapping):
-                    variables[slot] = {k: v for k, v in record.items() if k != "duration"}
+                    #  an in-port of a black box takes the driver's type and no box
+                    dropped = ("duration", "low", "high") if slot in boxed_ins else ("duration",)
+                    variables[slot] = {k: v for k, v in record.items() if k not in dropped}
         self.variables: Mapping[str, Any] = variables
         for name, record in self.variables.items():
             address = f"variables[{name!r}]"
@@ -3003,6 +3022,26 @@ class _Model:
         self.inert: dict[str, str] = dict(inert)
         self.observed: list[str] = list(relations.get("observed", []))
         self.external: list[str] = list(relations.get("external", []))
+        boxed = relations.get("black_box", {})
+        if (
+            not isinstance(boxed, Mapping)
+            or not set(boxed) <= {"ins", "outs"}
+            or not all(isinstance(boxed.get(k, []), list) for k in ("ins", "outs"))
+        ):
+            raise self.fail(
+                "relations.black_box lists a black box's ports: {'ins': [control node, ...], "
+                "'outs': [variable, ...]}"
+            )
+        self.boxed_ins: list[str] = list(boxed.get("ins", []))
+        self.boxed_outs: list[str] = list(boxed.get("outs", []))
+        for name in self.boxed_ins:
+            if not isinstance(name, str) or name not in self.variables:
+                raise self.fail(f"relations.black_box.ins names {name!r}, which is not a variable")
+            if name in self.controls:
+                raise self.fail(
+                    f"relations.black_box.ins names {name!r}, which relations.controls pairs with "
+                    "an action node; an in-port of a black box has none"
+                )
         named: dict[str, str] = {}
         for what, names in (
             ("a control node in relations.controls", list(self.controls)),
@@ -3010,6 +3049,7 @@ class _Model:
             ("a driven control node in relations.driven", list(self.driven)),
             ("observed", self.observed),
             ("external", self.external),
+            ("an out-port of a black box in relations.black_box", self.boxed_outs),
         ):
             for name in names:
                 if not isinstance(name, str) or name not in self.variables:
@@ -3225,6 +3265,8 @@ class _Model:
             *self.driven.values(),
             *self.observed,
             *self.external,
+            *self.boxed_ins,
+            *self.boxed_outs,
         ]:
             per_step.setdefault(name, "relations")
         for u, a in self.controls.items():
@@ -3271,8 +3313,21 @@ class _Model:
             *self.driven,
             *self.observed,
             *self.external,
+            *self.boxed_ins,
+            *self.boxed_outs,
         }
-        self.nodes = [v for v in self.per_step if v in self.controls or v in self.driven]
+        recorded = [v for v in (*self.boxed_ins, *self.boxed_outs) if labels.get(v)]
+        if recorded:
+            raise self.fail(
+                f"{recorded[0]!r} is a port of a black box (relations.black_box) and has a record "
+                f"under {sorted(labels[recorded[0]])}; nothing inside a black box is stated, so "
+                "its ports have no records"
+            )
+        self.nodes = [
+            v
+            for v in self.per_step
+            if v in self.controls or v in self.driven or v in self.boxed_ins
+        ]
         #  the nodes of one component follow one another, a driven slot (listed after the
         #  variables) beside the component's own nodes
         rank: dict[str, int] = {}
@@ -3376,6 +3431,7 @@ class _Model:
                     ("low" in record or "high" in record)
                     and name not in self.controls
                     and name not in self.driven
+                    and name not in self.boxed_ins
                 ):
                     raise self.fail(
                         f"variables[{name!r}]: bounds (low, high) give a continuous control "
@@ -3402,6 +3458,13 @@ class _Model:
         self.boxes: dict[str, Box] = {}
         for u, a in zip(self.nodes, self.actions, strict=True):
             record, target = self.variables[u], (None if a is None else self.variables[a])
+            if u in self.boxed_ins:
+                if "low" in record or "high" in record:
+                    raise self.fail(
+                        f"variables[{u!r}]: an in-port of a black box is typed by its domain and "
+                        "size alone and has no box; drop low and high"
+                    )
+                continue
             if record["domain"] == "real":
                 if "low" not in record or "high" not in record:
                     raise self.fail(
@@ -3666,6 +3729,18 @@ class _Model:
             for node in (record.get("durations") or {})
         }
         for u, a in zip(self.nodes, self.actions, strict=True):
+            if u in self.boxed_ins:
+                named = [
+                    fac.address
+                    for fac in (*self.transition.values(), *self.targets.values())
+                    if any(p == u for p, _ in fac.parents)
+                ]
+                if named:
+                    raise self.fail(
+                        f"{named[0]} reads {u!r}, an in-port of a black box, which nothing the "
+                        "document states reads"
+                    )
+                continue
             for fac in self.transition.values():
                 if any(p == a for p, _ in fac.parents):
                     raise self._reads_action(fac, u, a)
@@ -5355,14 +5430,22 @@ class _Model:
             reduction_period=self.config["reduction_period"],
             reduction_pairs=self.config["reduction_pairs"],
             emissions={
-                e: Emission(
+                e: Emission((), "sample", BLACK_BOX)
+                if e in self.boxed_outs
+                else Emission(
                     tuple(p for p, _ in self.emission[e].parents),
                     self.realised.get(e, "sample"),
                     "identity"
                     if e in self.statics and self.statics[e][1] is None
                     else (self.statics[e][1] if e in self.statics else None),
                 )
-                for e in self.emitted
+                for e in self.per_step
+                if e in self.emitted or e in self.boxed_outs
+            },
+            black_box={
+                v: ("float" if self.variables[v]["domain"] == "real" else "level", self.width[v])
+                for v in self.per_step
+                if v in self.boxed_ins or v in self.boxed_outs
             },
             observes=(
                 *((o, self.observes[o]) for o in mods if o in self.observes),
@@ -5505,6 +5588,8 @@ class _Model:
         for (child, _), home in self.reads.items():
             cross("shared", child, home)
         for u, driver in self.driven.items():
+            if driver in self.boxed_outs:
+                continue  # merge records no crossing for a black box's out-port driving a node
             cross("blanket", u, driver)
         return {
             c: "shared" if "shared" in k else "blanket" if k else "none" for c, k in kinds.items()
@@ -5524,7 +5609,11 @@ class _Model:
             prefix = f"{name}{_SEP}"
             facs = tuple(i for i, s in enumerate(self.states) if s.startswith(prefix))
             mods = tuple(m for m, o in enumerate(self.mods) if o.startswith(prefix))
-            chosen = tuple(u for u in self.nodes if u.startswith(prefix) and u not in self.driven)
+            chosen = tuple(
+                u
+                for u in self.nodes
+                if u.startswith(prefix) and u not in self.driven and u not in self.boxed_ins
+            )
             action_of = dict(zip(self.nodes, self.actions, strict=True))
             node_of = {a: u for u, a in self.controls.items()}
             #  an action node a modality observes is no state factor of any component
@@ -5578,7 +5667,11 @@ class _Model:
                         ),
                         reads=reads,
                         boundary="coupled" if name in coupled else boundary.get(name, "none"),
-                        emissions=tuple(e for e in self.emitted if e.startswith(prefix)),
+                        emissions=tuple(
+                            e
+                            for e in self.per_step
+                            if (e in self.emitted or e in self.boxed_outs) and e.startswith(prefix)
+                        ),
                         config=(
                             _leaf_config(
                                 leaf_records[name], self.leaf_scoring.get(name, ((), {}))[0]
@@ -5894,6 +5987,11 @@ def schema() -> dict[str, Any]:
                             },
                             "observed": names,
                             "external": names,
+                            "black_box": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {"ins": names, "outs": names},
+                            },
                         },
                     },
                     "clamps": {"type": "object", "additionalProperties": {"$ref": "#/$defs/clamp"}},

@@ -3,13 +3,14 @@ while keeping its energy up.
 
 The rover (``survey_model``) infers its state, plans a velocity command by gradient descent from
 several warm starts, acts, and learns the terrain field by counting each terrain it sees into the
-cells it was in. The true world (``survey_world``) is a System of its own, coupled to the rover with
-``couple``: the rover's velocity action node drives the world's control node ``v``, and the world's
-emissions (the fix, the image and the gauge) feed the rover's modalities. With ``--level 2`` the
-rover and a survey scheduler (``survey_scheduler``) are first merged into one agent: the scheduler's
-option action node drives the rover's option control node (an ``Identify``), the field is one
-parameter variable (an ``Identify``), and the scheduler's cell modality observes an emission of the
-rover, its position belief through the cell indicator realised by ``mode`` (the ``Link`` sugar).
+cells it was in. The true world (``survey_world``) is a black box, declared by its ports alone and
+coupled to the rover with ``couple``: the rover's velocity action node drives the world's in-port
+``v``, and the world's out-ports (the fix, the image and the gauge) feed the rover's modalities.
+With ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are first merged into
+one agent: the scheduler's option action node drives the rover's option control node (an
+``Identify``), the field is one parameter variable (an ``Identify``), and the scheduler's cell
+modality observes an emission of the rover, its position belief through the cell indicator
+realised by ``mode`` (the ``Link`` sugar).
 The agent is coupled to the world as one component, and one ``run`` call over the closed System
 steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics kept in the
 carry's trace), the rover by a custom step (it learns the field, decodes the image for the page and
@@ -863,8 +864,8 @@ def assemble(out_dir, camera_report, decoder):
     """Merge the part files into the bundle and write the report. The bundle's model records
     (``graph``, ``mdl``, ``description``) are of the model the page shows: at level 2 the agent's
     joint planner (the scheduler and the rover planned as one model), not the coupled System that
-    ``run`` steps, which adds the world, whose hand-written step makes its tables placeholders that
-    only type its ports; at level 1 the rover's System."""
+    ``run`` steps, which adds the world, a black box declared by its ports alone (its description
+    length unscored); at level 1 the rover's System."""
     runs, settings = {}, {}
     for path in sorted(out_dir.glob("part_*.json")):
         part = json.loads(path.read_text())
@@ -886,7 +887,7 @@ def assemble(out_dir, camera_report, decoder):
     if tiered:
         #  the page's graph, description length and document are of the agent's joint planner
         #  (each tier's option read as one decision), not of the coupled System that run steps:
-        #  the page shows the agent's model, and the world's tables only type its ports
+        #  the page shows the agent's model, and the world is a black box, its ports alone
         model = joint_planner(*agent_system(decoder, settings[0])[0])
     else:
         model = sm.rover(decoder, image_preference=True, grid_shape=n_grid)[:2]

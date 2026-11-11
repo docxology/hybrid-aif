@@ -1700,6 +1700,26 @@
                 "type": "string",
                 "minLength": 1
               }
+            },
+            "black_box": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "ins": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "outs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
             }
           }
         },

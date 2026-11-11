@@ -121,7 +121,7 @@ from hybrid_aif.composition.merge import (
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical, ConditionalDirichlet, Dirichlet
 from hybrid_aif.planning.base import Planner
-from hybrid_aif.reads import EMIT_TAG
+from hybrid_aif.reads import BLACK_BOX, EMIT_TAG
 from hybrid_aif.system import System, SystemParams
 
 __all__ = ["Step", "Trace", "Trajectory", "plan", "run", "sample"]
@@ -392,7 +392,9 @@ class Trajectory(NamedTuple):
     - ``carries`` and ``carry``: a stepped node's carry after each round (``ticks + 1`` entries,
       the first after the reset call) when ``record_carries`` asked for them, else ``None``, and
       its carry after the last round; for a node that is not itself stepped, a mapping from each
-      stepped node beneath it, by relative name;
+      stepped node beneath it, by relative name. Each entry is the object the step returned, kept
+      as it is and not copied, so a step whose carries are recorded returns a new carry each round
+      rather than mutating the one it was handed;
     - ``decided``: a bool per round, whether the node stepped (``False`` on a round a node that
       declares durations spent inside its option; ``True`` every round of any other node). On such
       a round ``received`` holds what the node's in-ports held, ``intended`` its held action and
@@ -563,6 +565,13 @@ def _structure(system: System, params: SystemParams, steps: Mapping[str, Callabl
     names = system._names()
     action_of = dict(zip(names.controls, names.actions, strict=True))
     orphans = [u for u, a in action_of.items() if a is None and u not in observes]
+    boxed = [u for u in orphans if u in dict(system.black_box)]
+    if boxed:
+        raise ValueError(
+            f"run: {boxed[0]!r} is an in-port of a black box and no variable drives it, so its "
+            "step would get no value; identify an action node (or emission) of another component "
+            f"with it, Identify(<out-port>, {boxed[0]!r})"
+        )
     if orphans:
         raise ValueError(
             f"run: control node {orphans[0]!r} has no action node and no variable drives it, so no "
@@ -608,6 +617,40 @@ def _structure(system: System, params: SystemParams, steps: Mapping[str, Callabl
             )
         )
     return nodes
+
+
+def _check_black_boxes(system: System, nodes: list[_Node]) -> None:
+    """Refuse a step that needs the inside of a black box: ``plan()`` or ``sample()`` on one, a
+    step marked ``sliced`` (its view would be cut at a driven level), and a node planned jointly
+    with a black box beneath it."""
+    boxes = system._black_boxes
+    for node in nodes:
+        held = [b for b in boxes if b == node.name or b.startswith(f"{node.name}{SEPARATOR}")]
+        if not held:
+            continue
+        if node.joint:
+            raise ValueError(
+                f"run: steps names {node.name!r}, planned as one mind, and the black box "
+                f"{held[0]!r} lies beneath it, whose inside a joint planner would need as part of "
+                f"its model; step {held[0]!r} on its own with a custom step, and the other leaves "
+                f"of {node.name!r} with theirs"
+            )
+        if isinstance(node.step, _Plan | _Sample):
+            kind = "plan()" if isinstance(node.step, _Plan) else "sample()"
+            raise ValueError(
+                f"run: steps[{node.name!r}] is {kind}, and {node.name!r} is a black box, declared "
+                f"by its ports alone: {kind} would {'plan with' if kind == 'plan()' else 'sample'} "
+                "a model it does not state. Give it a custom step(system, key, obs, carry, "
+                "params) that returns its out-ports (env_step for a positional environment), or "
+                "declare the process as a System of factors and kernels (a world run forward as "
+                "a model, stepped by sample())"
+            )
+        if getattr(node.step, "sliced", False):
+            raise ValueError(
+                f"run: steps[{node.name!r}] is marked sliced, and {node.name!r} is a black box: "
+                "a sliced view cuts a driven node out of the tables that read it, and a black box "
+                "states none; drop the mark, and the step reads its in-ports from obs"
+            )
 
 
 def _check_timing(
@@ -747,7 +790,12 @@ class _Held(NamedTuple):
     action: Mapping[str, Array]
 
 
-def _check_clocks(clocks: Mapping[str, float] | None, names: set[str], clocked: set[str]):
+def _check_clocks(
+    clocks: Mapping[str, float] | None,
+    names: set[str],
+    clocked: set[str],
+    boxes: Sequence[str] = (),
+):
     """The unit conversion of each clock, a positive finite number of rounds per unit of
     duration, defaulting to 1.0 for a node that declares durations; a key that is no stepped node
     or a node that declares no durations is refused."""
@@ -764,6 +812,13 @@ def _check_clocks(clocks: Mapping[str, float] | None, names: set[str], clocked: 
             f"{sorted(names)}"
         )
     idle = sorted(set(clocks) - clocked)
+    boxed = [n for n in idle if n in boxes]
+    if boxed:
+        raise ValueError(
+            f"run: clocks names {boxed}, a black box, which declares no durations and so holds no "
+            "option to convert; a black box paces itself: hold its out-ports in its own step "
+            "(return the standing values from its carry), and drop the entry"
+        )
     if idle:
         raise ValueError(
             f"run: clocks names {idle}, whose params declare no durations, so there is no option "
@@ -813,6 +868,7 @@ def _run(
             f"are {sorted(names)}"
         )
     second, derive = _check_timing(nodes)
+    _check_black_boxes(system, nodes)
     for node in nodes:
         if getattr(node.step, "sliced", False):
             floats = [s for s in node.driven if _kind(system, params, s) == FLOAT]
@@ -832,7 +888,7 @@ def _run(
     views = _Views(system, steps)
     declared_by = {n.name: _declared_durations(params, n.name) for n in nodes}
     clocked = {name for name, declared in declared_by.items() if declared}
-    scales = _check_clocks(clocks, names, clocked)
+    scales = _check_clocks(clocks, names, clocked, system._black_boxes)
     for node in nodes:
         if node.name in clocked:
             declared = next(iter(declared_by[node.name]))
@@ -1281,6 +1337,9 @@ def _check_out(
     checked = {}
     for k, value in out.items():
         kind, size = types[k]
+        if k in node.emissions and dict(system.emissions)[k].kernel == BLACK_BOX:
+            checked[k] = _box_value(node.name, k, value, kind, size)
+            continue
         level = jnp.asarray(value)
         if k in node.emissions:
             soft = dict(system.emissions)[k].realise == "stats"
@@ -1329,6 +1388,38 @@ def _check_out(
             )
         checked[k] = level.astype(jnp.int32)
     return checked
+
+
+def _box_value(name: str, port: str, value, kind: str, size: int) -> Array:
+    """A black box's out-port value checked against the port's declared type on the host and
+    stored in one dtype: a level port takes one integer level in range (any integer type, stored
+    as int32), a float port a vector of its width (an integer one converted, a scalar taken for
+    width 1, stored in the library's float dtype). Anything else is refused naming the port."""
+    arr = np.asarray(value)
+    got = f"{arr.dtype} of shape {tuple(arr.shape)}"
+    if kind == LEVEL:
+        ok = arr.shape == () and np.issubdtype(arr.dtype, np.integer)
+        if not ok:
+            raise ValueError(
+                f"run: the step of {name!r} returned {port!r} as {got}; the port is a black box's "
+                f"out-port of {size} levels, so return one integer level in [0, {size})"
+            )
+        if not 0 <= int(arr) < size:
+            raise ValueError(
+                f"run: the step of {name!r} returned {port!r} = {int(arr)}; the port is a black "
+                f"box's out-port of {size} levels, so return one integer level in [0, {size})"
+            )
+        return jnp.asarray(int(arr), jnp.int32)
+    numeric = np.issubdtype(arr.dtype, np.integer) or np.issubdtype(arr.dtype, np.floating)
+    if numeric and arr.shape == () and size == 1:
+        arr = arr.reshape(1)
+    if not numeric or arr.shape != (size,):
+        raise ValueError(
+            f"run: the step of {name!r} returned {port!r} as {got}; the port is a black box's "
+            f"float out-port of width {size}, so return a vector of shape ({size},) of numbers"
+            + (" (or one number)" if size == 1 else "")
+        )
+    return jnp.asarray(arr, jnp.result_type(float))
 
 
 # ----------------------------------------------------------------------- the trajectory
@@ -1492,7 +1583,10 @@ def run(
     of identifications of action nodes with control nodes; ``clocks`` or ``carries`` naming no
     stepped node, or ``clocks`` naming a node that declares no durations; a duration whose
     product with its clock is under one round or not a whole number of rounds; an action node
-    of a node with durations under a non-identity actuator.
+    of a node with durations under a non-identity actuator. A black box
+    (:func:`~hybrid_aif.composition.black_box.black_box`) is stepped by a custom step; ``plan()``
+    or ``sample()`` on one, a step marked ``sliced`` on one, a node planned jointly with one
+    beneath it and an in-port of one that nothing drives are refused.
     """
     return _run(system, params, ticks, key, steps, clocks, tick_order, carries, record_carries)
 

@@ -1140,6 +1140,34 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
     join on it); a chain of same-step `Link`s through a driven node, which `merge` collapsed onto
     the first driver, is refused the same way.
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
+- **Black boxes (unreleased)**: `black_box(ins={...}, outs={...})` (`hybrid_aif.composition`)
+  declares an external process, an environment or a hand-written world, by its ports and their
+  types alone (`(LEVEL, levels)` or `(FLOAT, width)`): a `System` with one control node per in-port
+  (no action node, no reader), one emission per out-port (no parents, the static kernel
+  `"black_box"`) and the types in `System.black_box`, with no factor and no table. `couple` binds
+  its ports with `Identify` as any component's (types checked, an undriven in-port leaves the
+  coupling open, a `Clamp` on one refused); `run` steps it with a custom step, which may be
+  arbitrary host Python (hardware, I/O, any Python object as its carry, NumPy or Python numbers
+  returned, checked against the port types and stored in one dtype: an integer level on a level
+  port, a vector of the width, or one number for width 1, on a float port; never traced or
+  compiled), and
+  `env_step(env, params=None, *, actions=None)` is that step for a positional environment (bitwise
+  the environment `GenerativeEnv.wrap` steps on the same keys). Every face that needs the inside
+  refuses a System that is or holds one, with a sentence: `plan()` and `sample()` as its step, a
+  sliced step or view, a joint node over it, `mirror`, `with_mirror`, `as_env`, `sample_initial`,
+  `sample_step`, `emit` and the inference, planning and learning faces. `describe` writes it under
+  the new `relations.black_box` (`{"ins": [...], "outs": [...]}`), the step not being part of the
+  document, and `build` rebuilds it exactly; a reader of 0.19.0 refuses a document holding one,
+  and every other document is written and read as before. `description_length` prices its ports
+  as declared structure (each out-port an emission of the graph code with its size code, an
+  undriven in-port a control node) and lists its inside under `black_box:<component>`, every link
+  unscored, outside `structure`, `parameters` and `total`, and `exact` `False`; a System of black
+  boxes alone totals its ports' codes (`design/description-length.md` D3, notes of 2026-11-10). The survey world
+  (`examples/survey_world.world_system`) is one: its placeholder tables are gone, `world_step` is as
+  it was, and the runs are bitwise. Upgrading: a world declared as a System only to type its ports
+  is `black_box(ins=..., outs=...)`; a positional environment coupled through
+  `GenerativeEnv.wrap(env, system)` as a process of the wired form is `black_box(...)` stepped by
+  `env_step(env, params)`. `composing-systems.md`, "External processes: a black box".
 - **Shipped to robots**: the downstream coverage agent (EFE-driven coverage
   at tuned-heuristic parity with the hand-tuned coefficients removed;
   stage-2 learns localization noise online).
