@@ -664,16 +664,3 @@ def test_the_graph_code_counts_the_emissions_prefix_free():
     one = description_length(emitter, 200.0, params=params).per_address["graph"].graph
     many = description_length(three, 200.0, params=tparams).per_address["graph"].graph
     assert many - one == pytest.approx(_log_star(4) - _log_star(2))
-
-
-def test_couple_realises_action_nodes_only_and_refuses_a_link_from_an_emission():
-    from hybrid_aif.composition import couple
-
-    emitter, eparams = world()
-    agent, aparams = tmaze_system()
-    step = lambda *a: None  # noqa: E731
-    minds = {"W": (emitter, eparams, step), "A": (agent, aparams, step)}
-    with pytest.raises(ValueError, match="'W.fix' is an emission of mind 'W'.*action nodes only"):
-        couple(minds=minds, links=[Link("W.fix", "A.cue")])
-    with pytest.raises(ValueError, match=r"link one of its action nodes \['a_v'\]"):
-        couple(minds=minds, links=[Link("W.gauge", "A.cue")])

@@ -33,10 +33,10 @@ from hybrid_aif.factors import LinearGaussianTransition, Parameter
 from hybrid_aif.system import PartParams
 from hybrid_aif.system.mirror import mirror
 from tests.test_clock_parity import FIXTURE, _replay, _robots, states
-from tests.test_driver import _arena
 from tests.test_merge import OBSERVATION_BINDINGS
-from tests.test_particle import SAME_STEP, _shared, merged
 from tests.test_run import idle
+from tests.test_run_both_ways import _arena
+from tests.test_run_nested import SAME_STEP, _shared, merged
 from tests.test_run_parity import cm
 
 KEY = jax.random.PRNGKey(0)

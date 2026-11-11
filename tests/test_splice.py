@@ -312,7 +312,9 @@ def test_an_identified_port_pair_is_refused_unless_it_joins_an_out_port_to_an_in
         couple(parts, [Identify("world.reward", "world.u_location")])
     with pytest.raises(ValueError, match="already observes a variable"):
         couple(parts, [ACT, Identify("agent.a_location", "world.u_location")])
-    with pytest.raises(ValueError, match="port types must be equal"):
+    with pytest.raises(
+        ValueError, match=r"port is 5 levels \(level\), but the slot takes 3 levels \(level\)"
+    ):
         couple(parts, [Identify("world.location_obs", "agent.cue")])
 
 
@@ -386,8 +388,6 @@ def test_couple_refuses_a_structural_link_a_read_sugar_and_a_parameter_identific
         couple(parts, [Link("agent.location", "world.u_location")])
     with pytest.raises(ValueError, match="Identify or a Clamp.*merge"):
         couple(parts, [Link("world.location", "agent.cue", realise="mode")])
-    with pytest.raises(TypeError, match="not both"):
-        couple(parts, minds={"a": 1})
 
 
 def test_couple_holds_a_control_node_at_a_level_with_fixed():

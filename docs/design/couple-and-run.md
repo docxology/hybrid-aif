@@ -583,7 +583,9 @@ that covers the same rule (one added where none existed: an unknown component or
 listing the candidates, B6 review, item 4). *Note, 2026-11-10:* the survey moved onto `couple`
 and `run` over a closed System in C1 (the world a System with a hand-written step, the agent's
 merge a component, bitwise to these runs under the old key layout), so no example calls these
-symbols any more; their test callers remain until the deletions.
+symbols any more; their test callers remain until the deletions. *Note, 2026-11-10:* the
+deletions landed in C2 (`driver.py` removed, its helpers that `run` uses moved into `runner.py`;
+`Subsystem.identified` kept, since the keyed-face refusals and the nested merge read it).
 
 **The alias refusal.** *Ruled under Alex's delegation, 2026-11-10, consistent with the one
 decision variable:* a driven control node and its driver's action node are one variable named by

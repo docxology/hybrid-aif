@@ -88,9 +88,10 @@ C13.
 
 import dataclasses
 import fnmatch
-import inspect
+import math
+import numbers
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -98,15 +99,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from hybrid_aif.composition import driver as _driver
-from hybrid_aif.composition.driver import (
-    MindCarry,
-    TickOrder,
-    _actuate,
-    _check_legal,
-    _check_parameters_only,
-    _is_identity,
-)
 from hybrid_aif.composition.joint import joint_planner
 from hybrid_aif.composition.merge import (
     SEPARATOR,
@@ -120,9 +112,10 @@ from hybrid_aif.composition.merge import (
 )
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.distributions import Categorical, ConditionalDirichlet, Dirichlet
+from hybrid_aif.envs.generative import ACTUATOR_TAG
 from hybrid_aif.planning.base import Planner
 from hybrid_aif.reads import BLACK_BOX, EMIT_TAG
-from hybrid_aif.system import System, SystemParams
+from hybrid_aif.system import Belief, LearnState, System, SystemParams
 
 __all__ = ["Step", "Trace", "Trajectory", "plan", "run", "sample"]
 
@@ -131,6 +124,30 @@ Step = Callable[
     [System, Array, "Mapping[str, Array | None] | None", Any, SystemParams],
     tuple[Mapping[str, Array], Any, SystemParams],
 ]
+
+TickOrder = Literal["simultaneous", "sequential", "async"]
+
+
+class MindCarry(NamedTuple):
+    """One planning mind's internal state between rounds, the only place its beliefs live: the
+    carry of :func:`plan`.
+
+    ``beliefs`` is ``None`` before the first round (use the declared initial priors): the empirical
+    prior the next round filters from, the last posterior pushed through its transition under the
+    chosen action. ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
+    ``previous`` is the posterior of the last round and ``action`` the action it chose, the pair
+    ``System.learn`` takes as ``prev_beliefs`` and ``action`` (``None`` before the first round);
+    ``trace`` holds the last round's :class:`Trace` under ``plan(trace=True)``. Carries are never
+    merged, so two minds share no leaf.
+
+    Design: nesting-and-coupling.md N1.
+    """
+
+    beliefs: Mapping[str, Belief] | None = None
+    learn_state: LearnState | None = None
+    previous: Mapping[str, Belief] | None = None
+    action: Mapping[str, Array] | None = None
+    trace: object | None = None
 
 
 class Trace(NamedTuple):
@@ -312,7 +329,7 @@ def plan(
     through the transition under the action as the next prior; realise every emission of the view
     from the posterior (the step's key folded with ``EMIT_TAG``). It returns the action nodes and
     the emissions, and the params it was given, or the learned ones. The carry is a
-    :class:`~hybrid_aif.composition.driver.MindCarry`, ``None`` meaning a fresh one; the step's
+    :class:`MindCarry`, ``None`` meaning a fresh one; the step's
     first call (``obs is None``) returns nothing and leaves the declared initial priors as the
     first round's prior.
 
@@ -824,7 +841,7 @@ def _check_clocks(
             f"run: clocks names {idle}, whose params declare no durations, so there is no option "
             "to convert; declare durations for the node's control node, or drop the entry"
         )
-    return {n: _driver._rounds_per_unit(clocks.get(n, 1.0), f"run: clocks[{n!r}]") for n in clocked}
+    return {n: _rounds_per_unit(clocks.get(n, 1.0), f"run: clocks[{n!r}]") for n in clocked}
 
 
 def _chosen_duration(view: System, vparams: SystemParams, chosen: Mapping[str, Array]) -> float:
@@ -999,10 +1016,10 @@ def _run(
         chosen = {a: out[a] for a in node.chosen}
         intended[node.name].append(chosen)
         if node.name in clocked:
-            rounds = _driver._option_rounds(
+            rounds = _option_rounds(
                 _chosen_duration(view, vparams, chosen),
                 scales[node.name],
-                f"run: the duration of control node {_driver._durations_node(view, vparams)!r} "
+                f"run: the duration of control node {_durations_node(view, vparams)!r} "
                 f"of {node.name!r}",
                 f"its clock of {scales[node.name]} rounds per unit",
             )
@@ -1591,5 +1608,137 @@ def run(
     return _run(system, params, ticks, key, steps, clocks, tick_order, carries, record_carries)
 
 
-#  the dispatcher every caller reaches shows the signature of the closed-System form
-_driver.run.__signature__ = inspect.signature(run)
+# ----------------------------------------------------------------------- shared checks
+
+
+def _check_legal(system: System, params: SystemParams, legal, who: str) -> None:
+    """Refuse a ``legal`` mask that masks every level, on the concrete mask: inside the compiled
+    tick the mask is traced and cannot be refused there."""
+    if system._control_layout(system._params_in(params, who)) is None and not isinstance(
+        legal, jax.core.Tracer
+    ):
+        system._legal_logits(system._params_in(params, who), legal, system.policies(params), who)
+
+
+def _is_identity(kernel) -> bool:
+    """Whether an action kernel is the identity table (square, equal to the identity)."""
+    table = np.asarray(kernel)
+    return (
+        table.ndim == 2
+        and table.shape[0] == table.shape[1]
+        and bool(np.allclose(table, np.eye(table.shape[0])))
+    )
+
+
+def _actuate(k: Array, n: int, draws: list[tuple[int, Array, Array]]) -> dict[int, Array]:
+    """The actuator's draws at the node: for each ``(i, kernel, intended)``, a level drawn from
+    the kernel's column at the intended level with key ``i`` of
+    ``split(fold_in(k, ACTUATOR_TAG), n)``, keyed by ``i``. No draw, no key."""
+    if not draws:
+        return {}
+    keys = jax.random.split(jax.random.fold_in(k, ACTUATOR_TAG), n)
+    out = {}
+    for i, kernel, level in draws:
+        log_p = jnp.log(jnp.asarray(kernel, jnp.float32))
+        column = jnp.moveaxis(jnp.take(log_p, jnp.asarray(level, jnp.int32), axis=-1), 0, -1)
+        out[i] = jax.random.categorical(keys[i], column).astype(jnp.int32)
+    return out
+
+
+def _own_fields(system: System, view_params: SystemParams) -> dict[str, object]:
+    """The fields of positional view params that no parameter variable fills, by name (a
+    transition by its factor, a likelihood by its modality): everything but ``parameters``,
+    ``references`` and the reader positions the references refill."""
+    refilled = {(slot, i) for slot, i, _ in view_params.references}
+    named = {"transition": system._table.state_names, "likelihood": system.modality_names}
+    out: dict[str, object] = {}
+    for field in dataclasses.fields(view_params):
+        name = field.name
+        value = getattr(view_params, name)
+        if name in ("parameters", "references"):
+            continue
+        if name in named:
+            for i, entry in enumerate(value):
+                if (name, i) not in refilled:
+                    out[f"{name}[{named[name][i]!r}]"] = entry
+        else:
+            out[name] = value
+    return out
+
+
+def _check_parameters_only(
+    system: System, name: str, given: SystemParams, learned: SystemParams
+) -> None:
+    """Refuse learned params that differ from the given ones outside the parameter variables.
+    Leaves are compared by identity first and by value only where the identity changed."""
+    before = _own_fields(system, system._params_in(given, "run"))
+    after = _own_fields(system, system._params_in(learned, "run"))
+    differ = [] if before.keys() == after.keys() else ["the set of fields"]
+    for field in before.keys() & after.keys():
+        la, ta = jax.tree_util.tree_flatten(before[field])
+        lb, tb = jax.tree_util.tree_flatten(after[field])
+        if ta != tb or len(la) != len(lb):
+            differ.append(field)
+            continue
+        for x, y in zip(la, lb, strict=True):
+            if x is y:
+                continue
+            try:
+                same = bool(jnp.array_equal(x, y, equal_nan=True))
+            except TypeError:
+                same = x == y
+            if not same:
+                differ.append(field)
+                break
+    if differ:
+        raise ValueError(
+            f"the step of component {name!r} returned params that differ from the ones it was "
+            f"given in {sorted(differ)}; on a composite only declared parameter variables are "
+            "written back to the home, so a table that is learned must be declared as a "
+            "Parameter variable"
+        )
+
+
+def _rounds_per_unit(value, what: str) -> float:
+    """``value`` as the rounds one unit of duration lasts: a positive finite real number or a
+    scalar array, or a refusal naming ``what``."""
+    scalar = isinstance(value, numbers.Real) or (
+        isinstance(value, np.ndarray | Array) and value.ndim == 0
+    )
+    if isinstance(value, bool | np.bool_) or not scalar:
+        raise ValueError(
+            f"{what}={value!r} is not a number; pass a positive real "
+            "number or a scalar array, the rounds one unit of duration lasts"
+        )
+    value = float(value)
+    if not value > 0 or not math.isfinite(value):
+        raise ValueError(
+            f"{what}={value!r} is not positive and finite; pass the "
+            "number of rounds one unit of duration lasts"
+        )
+    return value
+
+
+def _option_rounds(unit: float, scale: float, what: str, clock: str) -> int:
+    """The rounds an option of duration ``unit`` lasts at ``scale`` rounds per unit, which must be
+    a whole number of at least one; ``what`` names the duration and ``clock`` the scale in the
+    refusals."""
+    value = unit * scale
+    rounds = round(value)
+    if value < 1 - 1e-5:
+        raise ValueError(
+            f"{what} at the chosen level is {unit:g}, which times {clock} is shorter than one round"
+        )
+    if abs(value - rounds) > 1e-5 * max(1.0, abs(value)):
+        raise ValueError(
+            f"{what} at the chosen level is {unit:g}, which times {clock} is not a whole number "
+            "of rounds"
+        )
+    return rounds
+
+
+def _durations_node(system: System, params: SystemParams) -> str:
+    """The control node that carries ``params.durations``."""
+    declared = system._durations(system._params_in(params, "run"), "run")
+    ((node, _),) = declared.items()
+    return node

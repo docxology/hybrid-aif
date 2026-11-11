@@ -66,9 +66,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   is declared, `sample` (a draw; `replay` takes its key from the tick's, a hand call supplies the
   draw itself), `mode` (the argmax, or the mean of a continuous belief) or `stats` (a categorical
   belief's probability vector, a soft observation; not built for a Gaussian source); and the
-  source may be a state factor of another component of a merge, whose emission `run`'s composite
-  form supplies as the modality's observation each round (`MindCarry.emitted`), one tick behind,
-  absent on the first. `merge` carries a component's own entries under its prefix,
+  source may be a state factor of another component of a merge, whose emission the source's step
+  realises under `run` and the modality reads as it stands at the reader's turn, absent before
+  the source first steps. `merge` carries a component's own entries under its prefix,
   `Subsystem.reads` records the sibling ones, and a component bound only by such reads and links
   from an action node into a control node is nested (`nested`). The faces take the datum as any
   observation, keyed by the emission's or action node's name (`System.observes`, section
@@ -413,12 +413,12 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   and **async** (Gauss-Seidel sweeps in declaration or random order, each
   component's factors stepping at its turn — the statistically faithful mode
   for equilibrium/Ising-like composites; `nesting-systems.md`, tick
-  semantics and its 2026-10-14 amendment). `run` is synchronous: every round every step
-  responds. A slow tier is a step wrapped in `composition.hold`, which returns its stored action
-  until the last action's `elapsed` duration has passed (below, v0.19.0); there is no second
-  clock (`design/nesting-and-coupling.md` N4). `couple` joins separate particles into a `Wiring` that `run` takes, and what
-  crosses a wire is action or sensation (`design/nesting-and-coupling.md` N1, N2); a merged
-  composite joins a coupling as one mind through `composition.particle`.
+  semantics and its 2026-10-14 amendment). A slow tier is a node whose view declares
+  `params.durations`: `run` holds it for its option, `clocks=` converting a duration into rounds,
+  and there is no second clock (`design/nesting-and-coupling.md` N4). `couple` joins components
+  into one closed System that `run` steps, and what crosses an identification is action or
+  sensation (`design/nesting-and-coupling.md` N1, N2); a merge is a component of a coupling like
+  any other, each of its leaves stepped by name.
 - Dynamic action sets: the hard constraint is **`legal=`** (v0.8, below);
   `policy_prior = −inf` masking remains valid (leaf-swap, no re-jit — the
   mission executor's task-selection pattern) and E is the soft prior alone.
@@ -990,17 +990,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   a whole number of rounds is refused. A System with no `params.durations`, or with a non-identity
   actuator kernel in `params.actuator`, is refused at construction. In the composite form the
   held System must own no world process (documented, not checked); the wired form has no such
-  restriction. `hold` is built and is the clock of a slow tier under a merge: wrap the slow
-  component's respond in `hold` and the fast component runs every round, with the slow
-  component's option reaching it through a `Link` from its action node. The slow component reads the
-  fast one by a belief read (a `Link` with a `realise`), and `composition.particle(composite,
-  params, minds)` makes the merged composite one mind for `couple`: each round it supplies the
-  reads from the carries, hands each `ViewRespond` mind (`fn(key, obs, carry, params)`) its view
-  from the parameter home at the levels the other components last chose, writes a learner's
-  params back (a view that learns outside its declared parameter variables is refused) and
-  emits the composite's action nodes, so an `Identify` needs no bookkeeping by the caller
-  (`design/nesting-and-coupling.md` N3, N4, N9; `composing-systems.md`, "One particle as one
-  mind"). `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
+  restriction. `System.elapsed` is legal under `jit` and `lax.cond`: the positivity check of
   `params.durations` reads concrete values and skips traced ones. Nothing changes for a model
   that does not call `hold`. Design: `design/step-durations.md` T9.
   `examples/demo.ipynb` re-executes clean under this release.
@@ -1014,10 +1004,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   `read_datum`, the `previous=` and `read_key=` arguments of the faces and
   `MindCarry.posterior` are gone, and the datum reaches inference like any observation, keyed by
   the variable: from the caller for a hand `infer_states` and `learn`, from the emissions `replay`
-  realises after each tick and records (`Replay.emitted`), and in the composite `run` from the
-  emission the source's step carries (`MindCarry.emitted`, filled by `agent_step`). A slot the
-  map names is no in-port (`ports`), one datum feeds every slot observing a variable, and the
-  description records an `observes` entry on the likelihood and the static kernel on the
+  realises after each tick and records (`Replay.emitted`), and under `run` from the emission the
+  source's step realises. A slot the map names is no in-port (`ports`), one datum feeds every
+  slot observing a variable, and the description records an `observes` entry on the likelihood and the static kernel on the
   emission. `mirror` drops an emission only its own System observes, so `as_env` is unchanged.
   Upgrading: a sampled read draws from `fold_in(step key, EMIT_TAG)` rather than the retired
   `read_key`, so a seeded run that sampled a read draws differently; a read of a categorical
@@ -1051,28 +1040,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   control node). Upgrading: a merge composes none of its leaves' habit, precision and
   durations, accepts leaves that differ and a leaf that declares scoring, and leaves the driven
   node of a same-step `Link` in its component: pass the merge to `joint_planner(composite,
-  params)` wherever it is planned as one mind (`run`, `particle`, `agent_step`, the faces).
+  params)` wherever it is planned as one mind (the faces; `run` calls it for a step given to a
+  non-leaf node).
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
-- **Params flow through the runner (unreleased)**: one participant shape,
-  `MindStep = step(key, obs, carry, params) -> (action, carry', params')`, for
-  every mind of the composite and wired forms of `run`.
-  `agent_step(system, planner=None, **act_kwargs)`,
-  `ancestral_step(system)` and `hold(step, ticks_per_unit=1)` replace the
-  closed-over `agent_respond`, `ancestral_respond` and `hold(system, params,
-  respond, ...)`; `hold` reads the option's duration through `step.system`
-  (set by the first two, or `system=` for a hand-written step). A step is handed
-  its params each round and returns them, the same object when it did not learn;
-  the wired `run` records the last in `MindRecord.params`, and the composite
-  form hands each component its view of the composite's params, writes learning
-  back and records the result in `CompositeTrajectory.params`. `ViewRespond`,
-  `view_respond` and `particle_params` are gone; `particle` takes plain steps.
-  Upgrading: a composite in which a view reads a control node another
-  component chooses now runs that view at the chooser's level rather than the
-  uniform prior the caller built, so its results change even without learning;
-  such a reader with no uniform view is refused up front except under
-  `"sequential"` with the chooser listed first, as is a non-identity action
-  kernel on the node it reads (`design/engine-consolidation.md` step 1;
-  `composing-systems.md`, "The composite form of `run`").
 - **`run` over a closed System (unreleased)**: `run(system, params, ticks, key, steps, clocks=None,
   tick_order="simultaneous", carries=None, record_carries=False)` steps a **closed System** (a merge
   or a coupling whose every modality is fed by an identification) and returns a `Trajectory`, a
@@ -1093,16 +1063,15 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   `plan(learn=...)` that reach it, at the boundary otherwise; live under
   `"sequential"` and `"async"`). The first call of every step has `obs=None` and
   is its reset. `with_mirror(system, params)` couples a System to its own mirror and so closes it.
-  The wired and composite forms, `particle`, `hold`, `agent_step` and `ancestral_step` are
-  unchanged; the composite form returns a `CompositeTrajectory`. A modality may observe another
+  A modality may observe another
   component's action node, which the view leaves an ordinary observation. `System.sample_step`
   takes the value of a driven control node under its control node's name. **Clocks**: a stepped
   node whose view declares `params.durations` decides once per option; `clocks={node: rounds per
   unit}` converts the duration of the chosen level (`view.elapsed`) into rounds (1.0 by default; a
-  product under one round or not a whole number is refused, as `hold` refuses it), the node's step,
+  product under one round or not a whole number is refused), the node's step,
   view, write-back and realisation are skipped on held rounds with its out-ports and the variables
   it drives standing, the first round always decides, and `Trajectory.decided` records which rounds
-  decided; `hold` is the same clock in the composite and wired forms. **The mirror per
+  decided. **The mirror per
   component**: `mirror(system, params, per_component=True)` and `with_mirror(...,
   per_component=True)` mirror a merged or coupled System as the merge of one leaf per component
   (no durations). A foreign state parent of a transition becomes a driven control node of the
@@ -1112,9 +1081,18 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   (known limitation: per-use driven nodes are on the roadmap); a control node driven inside the
   System follows its driver when the mirror is sampled alone. Upgrading: a perceiver of another
   node's action node sees it as absent (`None`, handled through `present=`) in round 0 under `run`,
-  where the wired form handed it level 0. **Migration guide** (the 0.18 form -> the form under
+  where the wired form handed it level 0. **One engine**: `run` over a closed System is the only
+  form of `run`, and `couple` takes components and bindings only. Removed, with no alias: the
+  composite form (`run(composite, params, minds, ...)`) and the wired form (`run(wiring, ...)`) of
+  `run`, `couple`'s keywords `minds=`, `processes=` and `links=` and its `fixed=` on a process
+  input, `Wiring`, `MindRecord`, `ProcessRecord`, the composite form's record (`Trajectory` in
+  0.19.0), `hold` and `HoldCarry`, `agent_respond` and `ancestral_respond` (and their successors
+  of this cycle, `agent_step`, `ancestral_step` and the step shape `MindStep`), `particle` and
+  `ParticleCarry`, and `MindCarry.emitted` (a `plan()` step returns its emissions).
+  **Migration guide** (a 0.19.0 form, or its spelling earlier in this cycle, -> the form under
   `run`; the examples, the survey runner among them, the notebooks and the tests are migrated):
-  - `couple(minds={...}, processes={"w": system.as_env(params)}, links=[Link(a, b), ...])` ->
+  - `couple(minds={...}, processes={"w": system.as_env(params)}, links=[Link(a, b), ...],
+    fixed={...})` (`fixed=` on a process input becoming a `Clamp` on the control node) ->
     `couple({...: (system, params), "w": mirror(system, params, lower=True)}, [Identify(a, b),
     ...])`, the process input named by an action node becoming that action node's control node
     (`world.a_move` -> `world.u_a` in `examples/compose_minds.py`);
@@ -1122,18 +1100,22 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   - `run(composite, params, minds, ...)` -> `run(*with_mirror(composite, params), ticks, key,
     steps)`, the minds keyed `"model.<name>"` and the world `"world"` (`per_component=True` where
     the composite's components step their own factors, the arena);
-  - `agent_step(view, planner, **kw)` -> `plan(planner, **kw)` (`learn=` and `trace=` for what a
-    hand-written step did; `legal` checked on the reset call);
-  - `ancestral_step(view)` -> `sample()` for a world (another key use), or a custom step drawing
-    from `params.policy_prior`;
-  - `hold(step, ticks_per_unit=k)` -> durations in the node's params and `clocks={node: k}`;
+  - `agent_respond(system, params, planner, **kw)` or `agent_step(view, planner, **kw)` ->
+    `plan(planner, **kw)` (`learn=` and `trace=` for what a hand-written step did; `legal`
+    checked on the reset call);
+  - `ancestral_respond(system, params)` or `ancestral_step(view)` -> `sample()` for a world
+    (another key use), or a custom step drawing from `params.policy_prior`;
+  - `hold(system, params, respond, ticks_per_unit=k)` or `hold(step, ticks_per_unit=k)` ->
+    durations in the node's params and `clocks={node: k}` (a count is not resumed through
+    `carries=`);
   - `particle(cs, cp, steps)` inside a wiring -> the merge as a component of the coupling, each of
     its leaves stepped by name (`steps={"agent.rover": ..., "agent.mission": ...}`);
-  - `MindStep` `step(key, obs, carry, params)` -> `step(system, key, obs, carry, params)`, `obs`
-    `None` on the reset call;
-  - `MindRecord`/`ProcessRecord`/`CompositeTrajectory` (`actions`, `realised`, `observations`,
-    `states`) -> `Trajectory` (`intended`, `emitted`, `received` and `present`, the world's state
-    in `carries` under `record_carries=True`);
+  - a `RespondFn` `respond(key, obs, carry)` or a `MindStep` `step(key, obs, carry, params)` ->
+    `step(system, key, obs, carry, params)`, `obs` `None` on the reset call;
+  - `MindRecord`/`ProcessRecord` and the composite form's record (`Trajectory` in 0.19.0,
+    `CompositeTrajectory` earlier in this cycle; `actions`, `realised`, `observations`, `states`)
+    -> `Trajectory` (`intended`, `emitted`, `received` and `present`, the world's state in
+    `carries` under `record_carries=True`);
   - an `Identify` or a `Link` (under `merge`) that names the action node of a driven control node
     is refused in either order of the bindings, naming the driver's action node: a driven node
     and its driver's action node are one variable, so name the driver's action node itself (a

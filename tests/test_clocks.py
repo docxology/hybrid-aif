@@ -1,10 +1,11 @@
 """Clocks under ``run``: a node that declares durations decides once per option.
 
-The patterns of ``test_hold`` (the cadence, the unit conversion, the refusals) reproduced under
-``run``, where holding follows from declared durations and ``clocks=`` is only the conversion of a
-unit of duration into rounds; what a held round does (no step call, no write-back, the out-ports
-and the driven level standing); and a recording step that pins which rounds call a step and with
-which key. ``tests/test_clock_parity.py`` holds the comparison against the previous drivers.
+Holding follows from declared durations and ``clocks=`` is only the conversion of a unit of
+duration into rounds: the cadence of a coupled and of a merged robot, the unit conversion and its
+arithmetic, the refusals; what a held round does (no step call, no write-back, the out-ports and
+the driven level standing); a recording step that pins which rounds call a step and with which
+key; and the duration face ``System.elapsed`` itself. ``tests/test_clock_parity.py`` holds the
+comparison against the runs release 0.19.0 recorded.
 """
 
 import dataclasses
@@ -14,8 +15,17 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from hybrid_aif.composition import Identify, MindCarry, couple, plan, run, runner, sample
-from hybrid_aif.composition.driver import _rounds_per_unit
+from hybrid_aif.composition import (
+    Identify,
+    MindCarry,
+    couple,
+    merge,
+    plan,
+    run,
+    runner,
+    sample,
+    with_mirror,
+)
 from hybrid_aif.system.mirror import mirror
 from tests.test_clock_parity import _bump, _fast_rover, _gauge_step, _robots, cm, scheduler_system
 
@@ -125,13 +135,11 @@ def test_a_clock_that_is_not_positive_and_finite_is_refused(bad):
         run(system, params, 2, KEY, steps_of(plan()), clocks={"a": bad})
 
 
-@pytest.mark.parametrize("bad", [True, "2", [2.0]])
-def test_a_clock_that_is_not_a_number_is_refused_as_hold_refuses_it(bad):
+@pytest.mark.parametrize("bad", [True, "2", [2.0], None])
+def test_a_clock_that_is_not_a_number_is_refused(bad):
     system, params = robots([2.0, 2.0, 2.0])
     with pytest.raises(ValueError, match=r"clocks\['a'\].*is not a number"):
         run(system, params, 2, KEY, steps_of(plan()), clocks={"a": bad})
-    with pytest.raises(ValueError, match="hold: ticks_per_unit"):
-        _rounds_per_unit(bad, "hold: ticks_per_unit")
 
 
 def test_a_scalar_array_is_a_clock():
@@ -285,8 +293,35 @@ def test_a_driven_node_that_declares_durations_on_its_own_node_is_held_under_a_c
     assert [c for c in calls if c == "A"] == ["A"] * 3 and [c for c in calls if c == "C"] == [
         "C"
     ] * 6
-    # C reads the action A decided and holds through the option
+    # C reads the action A decided and holds through the option, and A's emission stands with it
     assert np.asarray(traj["C"].received["u1"][:6]).tolist() == [1, 1, 2, 2, 0, 0]
+    assert np.asarray(traj["A"].emitted["e"]).tolist() == [1, 1, 2, 2, 0, 0]
+
+
+@pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
+def test_a_reader_receives_a_held_nodes_emission_standing_on_its_held_rounds(order):
+    """``A`` is clocked as above and ``C`` reads A's emission ``e``: on A's held rounds the
+    emission keeps its value, and C receives it. C is a source listed first (its node is driven
+    by an emission), so under ``"simultaneous"`` it reads at the boundary and under
+    ``"sequential"`` before A steps: one round behind, zeros (absent) at round 0. Under
+    ``"async"`` C reads before or after A as the round's order fell."""
+    leaf, leaf_params = _leaf()
+    clocked = (leaf, dataclasses.replace(leaf_params, durations={"u2": jnp.full(3, 2.0)}))
+    system, params = couple(
+        {"C": _leaf(), "A": clocked, "S": _leaf()},
+        [Identify("S.a1", "A.u1"), Identify("A.e", "C.u1")],
+    )
+    calls: list = []
+    traj = run(system, params, 6, KEY, {n: _counting(n, calls) for n in "SAC"}, tick_order=order)
+    emitted = np.asarray(traj["A"].emitted["e"]).tolist()
+    assert np.asarray(traj["A"].decided).tolist() == [True, False] * 3
+    assert emitted == [1, 1, 2, 2, 0, 0]
+    received = np.asarray(traj["C"].received["u1"][:6]).tolist()
+    if order == "async":
+        before = [0, *emitted[:-1]]
+        assert all(r in (b, e) for r, b, e in zip(received, before, emitted, strict=True))
+    else:
+        assert received == [0, 1, 1, 2, 2, 0]
 
 
 @pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
@@ -301,3 +336,85 @@ def test_a_source_whose_only_driven_control_node_is_emission_driven_is_clocked(o
     traj = run(system, params, 6, KEY, steps, tick_order=order)
     assert np.asarray(traj["R"].decided).tolist() == [True, False] * 3
     assert bool(traj["P"].decided.all())
+
+
+# --------------------------------------------------- a merged robot, and the arithmetic of a clock
+
+
+def _counted_plan(**kwargs):
+    """``plan(**kwargs)`` counting its calls after the reset."""
+    inner, calls = plan(**kwargs), []
+
+    def step(system, key, obs, carry, params):
+        if obs is not None:
+            calls.append(1)
+        return inner(system, key, obs, carry, params)
+
+    step.sliced = True
+    return step, calls
+
+
+@pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
+def test_a_merged_robot_with_durations_redecides_only_at_option_boundaries(order):
+    """The cadence of the robot with durations in a merge of the two robots, run against the
+    merge's own mirror: the robot's view declares the durations, the world leaf carries none and
+    steps every round, so the positions move once per round under the option standing."""
+    (sa, pa), (sb, pb) = _robots([4.0, 2.0, 4.0])
+    comp, cp = merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(cm.LINKS))
+    system, params = with_mirror(comp, cp)
+    step_a, calls = _counted_plan(selection="stochastic")
+    steps = {"model.a": step_a, "model.b": plan(selection="stochastic"), "world": sample()}
+    traj = run(system, params, TICKS, KEY, steps, tick_order=order)
+    moves = np.asarray(traj["model.a"].emitted["move"])
+    rounds_of = {0: 4, 1: 2, 2: 4}
+    bounds = decisions(moves, rounds_of)
+    for t in bounds:
+        assert (moves[t : t + rounds_of[int(moves[t])]] == moves[t]).all()
+    assert len(calls) == len(bounds) < len(moves)
+    assert bool(traj["world"].decided.all()) and bool(traj["model.b"].decided.all())
+
+
+def test_a_float32_duration_times_a_clock_holds_a_whole_number_of_rounds():
+    """``33.3 * 10`` in float32 is a whole number of rounds within the clock's tolerance."""
+    system, params = robots([33.3, 33.3, 33.3])
+    traj = run(system, params, 3, KEY, steps_of(plan()), clocks={"a": 10})
+    assert np.asarray(traj["a"].decided).tolist() == [True, False, False]
+    #  the option lasts exactly 333 rounds, the float32 product rounded to the whole number
+    assert runner._option_rounds(float(jnp.float32(33.3)), 10.0, "duration", "clock") == 333
+
+
+@pytest.mark.parametrize(
+    "good", [np.int64(2), np.float32(2.0), jnp.asarray(2), np.asarray(2.0), 2, 2.0]
+)
+def test_a_clock_is_any_real_scalar(good):
+    system, params = robots([1.0, 1.0, 1.0])
+    traj = run(system, params, 4, KEY, steps_of(plan()), clocks={"a": good})
+    assert np.asarray(traj["a"].decided).tolist() == [True, False, True, False]
+
+
+def test_elapsed_is_legal_under_jit_and_cond():
+    system, params = _robots([4.0, 2.0, 4.0])[0]
+
+    @jax.jit
+    def f(p, level):
+        return system.elapsed({"move": level}, p)
+
+    assert float(f(params, jnp.asarray(1))) == 2.0
+    assert float(f(params, jnp.asarray(2))) == 4.0
+
+    @jax.jit
+    def g(level):
+        return jax.lax.cond(
+            level > 0, lambda: system.elapsed({"move": level}, params), lambda: jnp.asarray(0.0)
+        )
+
+    assert float(g(jnp.asarray(1))) == 2.0
+
+
+@pytest.mark.parametrize("value", [jnp.asarray([2.0, 0.0, 1.0]), [2.0, -1.0, 1.0]])
+def test_a_non_positive_duration_is_refused_when_concrete(value):
+    system, params = _robots(value)[0]
+    with pytest.raises(ValueError, match="non-positive"):
+        system._durations(system._params_in(params, "t"), "t")
+    with pytest.raises(ValueError, match="non-positive"):
+        system.elapsed({"move": jnp.asarray(1)}, params)

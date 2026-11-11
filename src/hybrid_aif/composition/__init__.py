@@ -1,5 +1,5 @@
-"""Compositional active inference: Systems merged into one particle, Systems coupled as separate
-particles by links, and the clock that runs them.
+"""Compositional active inference: Systems merged into one particle, Systems coupled through their
+ports, and ``run``, which steps the closed System either makes.
 
 - :mod:`~hybrid_aif.composition.merge`: :func:`merge` makes several Systems one particle: a
   namespaced composite whose components share latents through bindings, of three kinds: a
@@ -17,16 +17,14 @@ particles by links, and the clock that runs them.
 - :mod:`~hybrid_aif.composition.couple`: :func:`couple` joins components through their ports
   into one ``(System, SystemParams)``: an :class:`Identify` of an out-port (an action node or an
   emission) with an in-port (a modality or a control node) and a :class:`Clamp`, each component
-  kept as a leaf with its own configuration. The keywords ``minds=``, ``processes=`` and
-  ``links=`` join separate particles through their blankets, a :class:`Link` from an action node
-  to a process input or a mind's modality, or from a process observation to a mind's modality,
-  typed and checked into a :class:`Wiring`.
+  kept as a leaf with its own configuration.
 - :mod:`~hybrid_aif.composition.runner`: :func:`run` steps a closed System (a merge or a coupling
   whose every modality is fed by an identification) for a number of rounds and records a
   :class:`Trajectory`. Each leaf, or a non-leaf node planned jointly, takes a :data:`Step`:
-  :func:`plan` for a planning mind, :func:`sample` for a process, or a function of the same shape.
-  :func:`with_mirror` couples a System to its own mirror, which closes it. A node whose view
-  declares durations decides once per option, ``clocks=`` converting a duration into rounds.
+  :func:`plan` for a planning mind (its carry a :class:`MindCarry`), :func:`sample` for a
+  process, or a function of the same shape. :func:`with_mirror` couples a System to its own
+  mirror, which closes it. A node whose view declares durations decides once per option,
+  ``clocks=`` converting a duration into rounds.
 - :mod:`~hybrid_aif.composition.black_box`: :func:`black_box` declares an external process (an
   environment, a hand-written world) by its ports and their types alone, a component
   :func:`couple` binds like any other and :func:`run` steps with a custom step;
@@ -35,31 +33,13 @@ particles by links, and the clock that runs them.
   ``per_component=True``, the merge of one mirror per component of a merged or coupled System,
   a state factor of another component that a transition or a modality reads fed to the reader by
   an identity emission of its owner.
-- :mod:`~hybrid_aif.composition.driver`: the wired form of :func:`run` (a :class:`Wiring`, one
-  :class:`MindRecord` or :class:`ProcessRecord` per participant) and its composite form (a merged
-  composite, each :data:`MindStep` acting through its own view of the composite's params, which
-  learning is written back to, a :class:`CompositeTrajectory`), with :func:`particle`,
-  :func:`hold`, :func:`agent_step` and :func:`ancestral_step`.
 
-Design: docs/design/nesting-systems.md; nesting-and-coupling.md N1, N2.
+Design: docs/design/nesting-systems.md; docs/design/couple-and-run.md; nesting-and-coupling.md
+N1, N2.
 """
 
 from hybrid_aif.composition.black_box import black_box, env_step, is_black_box
-from hybrid_aif.composition.couple import Wiring, couple, with_mirror
-from hybrid_aif.composition.driver import (
-    CompositeTrajectory,
-    HoldCarry,
-    MindCarry,
-    MindRecord,
-    MindStep,
-    ParticleCarry,
-    ProcessRecord,
-    agent_step,
-    ancestral_step,
-    hold,
-    particle,
-    run,
-)
+from hybrid_aif.composition.couple import couple, with_mirror
 from hybrid_aif.composition.joint import joint_planner
 from hybrid_aif.composition.merge import (
     Clamp,
@@ -74,36 +54,25 @@ from hybrid_aif.composition.merge import (
     subsystem_factors,
     write_back,
 )
-from hybrid_aif.composition.runner import Step, Trace, Trajectory, plan, sample
+from hybrid_aif.composition.runner import MindCarry, Step, Trace, Trajectory, plan, run, sample
 
 __all__ = [
     "Clamp",
-    "CompositeTrajectory",
-    "HoldCarry",
     "Identify",
     "Link",
     "MindCarry",
-    "MindRecord",
-    "MindStep",
-    "ParticleCarry",
-    "ProcessRecord",
     "Step",
     "Trace",
     "Trajectory",
-    "Wiring",
-    "agent_step",
-    "ancestral_step",
     "black_box",
     "couple",
     "driven_nodes",
     "env_step",
-    "hold",
     "is_black_box",
     "joint_planner",
     "merge",
     "namespaced_key",
     "nested",
-    "particle",
     "plan",
     "resolved_epistemic",
     "run",

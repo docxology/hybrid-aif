@@ -256,15 +256,6 @@ def test_stack_traces_refuses_positional_traces_with_the_converter_sentence():
         stack_traces([(keyed_obs, actions, jnp.ones((3, 3), bool))])
 
 
-def test_a_mind_returning_a_misshapen_or_float_level_is_named():
-    from hybrid_aif.composition.driver import _check_action
-
-    with pytest.raises(ValueError, match=r"mind 'a' returned actions\['a_x'\] of shape \(2,\)"):
-        _check_action({"a_x": jnp.zeros(2, jnp.int32)}, ("a_x",), "a")
-    with pytest.raises(ValueError, match=r"mind 'a': actions \['a_x'\] are not integer"):
-        _check_action({"a_x": jnp.asarray(1.0)}, ("a_x",), "a")
-
-
 # ------------------------------------------------------- two continuous controls, out of order
 
 

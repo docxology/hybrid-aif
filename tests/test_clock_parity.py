@@ -1,24 +1,26 @@
-"""``run`` with clocks, and the per-component mirror, against what the previous drivers recorded.
+"""``run`` with clocks, and the per-component mirror, against what release 0.19.0 recorded.
 
 ``tests/data/clock_parity.npz`` holds the trajectories of the previous drivers on four cases,
 replayed here as closed Systems and compared bit for bit:
 
-- ``wired``: two robots of ``compose_minds`` and a corridor process, robot ``a`` held by ``hold``
-  (the wired form), with durations ``[4, 2, 4]`` at one round per unit, and ``[2, 1, 2]`` at two
-  rounds per unit (``hold(step, ticks_per_unit=2)``, ``clocks={"a": 2.0}``). Compared under all
+- ``wired``: two robots of ``compose_minds`` and a corridor process, robot ``a`` held for its
+  option (the wired form), with durations ``[4, 2, 4]`` at one round per unit, and ``[2, 1, 2]``
+  at two rounds per unit (``clocks={"a": 2.0}`` here). Compared under all
   three orders: both robots' intended and realised moves, the corridor's two states, and the
   number of decisions (the step's calls, ``Trajectory.decided``).
 - ``composite``: the same two robots merged, ``a`` held (the composite form), against
   ``with_mirror`` of the merge. Compared under all three orders: both robots' intended and
   realised moves, the positions of the two robots and the number of decisions.
 - ``scheduler``: the survey's two-tier scheduler (``examples/survey_scheduler.py``) held for
-  three rounds by ``hold`` inside a ``particle``, with the rover a fast learner that writes the
+  three rounds inside the merge run as one mind of the wired form, with the rover a fast learner
+  that writes the
   shared parameter variable back every round. Compared under all three orders: the option held
   each round, the shared field as each decision saw it and as the run left it. The recorded side is
   driven by hand with a fixed gauge observation; the closed System has a world leaf with a
   hand-written step that emits the same.
 - ``arena``: two minds whose tokens each read the other's hand through a mindless arena of state
-  relays (``tests/test_driver.py``), a composite run, against ``with_mirror(per_component=True)``.
+  relays (``tests/test_run_both_ways.py``), a composite run, against
+  ``with_mirror(per_component=True)``.
   Under ``"simultaneous"`` and ``"sequential"`` the minds plan (``plan(selection="deterministic")``)
   and both minds' choices and all six world factors are compared. ``run`` derives the sequential
   order (the sources in listing order, each driven world leaf right after its driver), so under
@@ -63,7 +65,7 @@ from hybrid_aif.factors import LinearGaussianTransition
 from hybrid_aif.reads import Emission
 from hybrid_aif.system import System, SystemParams
 from hybrid_aif.system.mirror import mirror
-from tests.test_driver import _arena
+from tests.test_run_both_ways import _arena
 from tests.test_run_parity import _bump, _run_old_keys, cm, idle, states
 
 FIXTURE = np.load(pathlib.Path(__file__).parent / "data" / "clock_parity.npz")
@@ -92,7 +94,7 @@ def _robots(durations):
     return (sa, dataclasses.replace(pa, durations={"u_move": jnp.asarray(durations)})), (sb, pb)
 
 
-# ------------------------------------------------------------------ hold, the wired form
+# ------------------------------------------------------- a held robot, the wired form
 
 
 @pytest.mark.parametrize("order", ORDERS)
@@ -100,7 +102,7 @@ def _robots(durations):
     "tag, durations, unit",
     [("cadence", [4.0, 2.0, 4.0], 1.0), ("unit2", [2.0, 1.0, 2.0], 2.0)],
 )
-def test_a_held_robot_on_a_mirror_world_is_the_wired_run_with_hold_bitwise(
+def test_a_held_robot_on_a_mirror_world_is_the_recorded_wired_run_bitwise(
     order, tag, durations, unit
 ):
     robots = {"a": _robots(durations)[0], "b": cm.robot(2, 2)}
@@ -145,11 +147,11 @@ def test_a_held_robot_on_a_mirror_world_is_the_wired_run_with_hold_bitwise(
     assert not bool(traj["a"].decided.all())
 
 
-# ------------------------------------------------------------------ hold, the composite form
+# --------------------------------------------------- a held robot, the composite form
 
 
 @pytest.mark.parametrize("order", ORDERS)
-def test_a_held_robot_in_a_merge_against_its_mirror_is_the_composite_run_with_hold(order):
+def test_a_held_robot_in_a_merge_against_its_mirror_is_the_recorded_composite_run(order):
     (sa, pa), (sb, pb) = _robots([4.0, 2.0, 4.0])[0], cm.robot(2, 2)
     composite, cp = merge({"a": sa, "b": sb}, {"a": pa, "b": pb}, list(cm.LINKS))
     system, params = with_mirror(composite, cp)
@@ -259,7 +261,7 @@ def _fast_rover():
 
 
 @pytest.mark.parametrize("order", ORDERS)
-def test_a_held_scheduler_with_a_fast_learner_is_the_particle_with_hold_bitwise(order):
+def test_a_held_scheduler_with_a_fast_learner_is_the_recorded_run_bitwise(order):
     system, params, ss = scheduler_system()
     seen = []
     slow = plan(selection="deterministic", replace={"policy_len": 1})
@@ -363,8 +365,8 @@ def test_the_derived_sequential_order_is_the_listing_in_the_cases_of_the_run_par
     against the recorded runs."""
     from tests.test_action_nodes import pusher
     from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world
-    from tests.test_particle import _shared
-    from tests.test_particle import _zoo as same_step_zoo
+    from tests.test_run_nested import _shared
+    from tests.test_run_nested import _zoo as same_step_zoo
     from tests.test_run_parity import _coupled_robots
 
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)
@@ -399,7 +401,7 @@ def test_the_derived_async_order_is_the_phase_structure_in_the_cases_of_the_run_
 
     from tests.test_action_nodes import pusher
     from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world
-    from tests.test_particle import _shared
+    from tests.test_run_nested import _shared
     from tests.test_run_parity import _coupled_robots
 
     (agent, ap), (world, wp) = agent_and_world(policy_len=1)

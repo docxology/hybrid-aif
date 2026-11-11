@@ -37,7 +37,7 @@ from hybrid_aif.system.mirror import mirror
 from tests.test_action_nodes import KERNEL, pusher
 from tests.test_merge import agent_and_world
 from tests.test_merge_gaussian_control import float_composite
-from tests.test_particle import _shared
+from tests.test_run_nested import _shared
 
 KEY = jax.random.PRNGKey(0)
 
@@ -80,6 +80,60 @@ def recorder(log, name, inner=None):
         return inner(system, key, obs, carry, params)
 
     return step
+
+
+# ------------------------------------------------------------------------ the one engine
+
+
+def test_run_is_the_closed_system_form_and_the_other_forms_are_gone_from_the_public_modules():
+    """One engine: ``run`` is the closed-System form with its own signature, ``couple`` takes
+    components and bindings only, and the names of the composite and wired forms exist in no
+    public module."""
+    import importlib
+    import inspect
+
+    import hybrid_aif
+    from hybrid_aif import composition
+    from hybrid_aif.composition import couple as couple_module
+    from hybrid_aif.composition import merge as merge_module
+
+    assert composition.run is runner.run
+    assert list(inspect.signature(run).parameters) == [
+        "system",
+        "params",
+        "ticks",
+        "key",
+        "steps",
+        "clocks",
+        "tick_order",
+        "carries",
+        "record_carries",
+    ]
+    assert list(inspect.signature(couple).parameters) == ["components", "bindings", "fixed"]
+    assert "emitted" not in MindCarry._fields
+    gone = (
+        "particle",
+        "ParticleCarry",
+        "hold",
+        "HoldCarry",
+        "agent_step",
+        "ancestral_step",
+        "MindRecord",
+        "ProcessRecord",
+        "CompositeTrajectory",
+        "MindStep",
+        "Wiring",
+        "Mind",
+        "Process",
+    )
+    for module in (hybrid_aif, composition, runner, couple_module, merge_module):
+        for name in gone:
+            assert not hasattr(module, name), (module.__name__, name)
+            assert name not in getattr(module, "__all__", ()), (module.__name__, name)
+    for name in ("_run_composite", "_run_wired", "_partner_inputs"):
+        assert not hasattr(runner, name) and not hasattr(merge_module, name), name
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("hybrid_aif.composition.driver")
 
 
 # ----------------------------------------------------------------------------- what it refuses

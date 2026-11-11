@@ -1036,10 +1036,10 @@ mirror carries no durations (a world is stepped every round).
 the mirror of the whole, each component of the world a leaf that `run` steps with `sample()`.
 Under `"sequential"` each mind steps and then the world leaf it drives, so the next mind reads the
 world as that move left it this round, which is how a merged System steps its components: the
-arena's minds are bitwise to the composite form under `"simultaneous"` and `"sequential"`. Under
-`"async"` the arena is not comparable to the composite form: that form permuted the minds only
-and stepped the arena's factors at a fixed turn, while `run` permutes every source, the arena's
-leaf included, and places each world leaf after its driver.
+arena's minds are bitwise to the composite form of `run` in release 0.19.0 under
+`"simultaneous"` and `"sequential"`. Under `"async"` the arena is not comparable to that form,
+which permuted the minds only and stepped the arena's factors at a fixed turn, while `run`
+permutes every source, the arena's leaf included, and places each world leaf after its driver.
 
 ```python
 def idle(system, key, obs, carry, params):
@@ -1163,51 +1163,6 @@ it pays.
   sampled, priced or modelled (a gauge as a table, say) as a System of its own, keep the
   hand-written remainder a black box, and couple the two through ports, the box reading the
   opened part's emissions on in-ports of its own.
-
-## The composite form of `run`, the wired form and `particle`
-
-The composite form and the wired form of `run` take a `MindStep` per participant,
-`step(key, obs, carry, params) -> (action, carry', params')`: it is handed its params each round
-and returns them, the very same object when it did not learn (an identity test, no tree
-comparison). `agent_step(system, planner=None, **act_kwargs)` infers, acts and carries the
-empirical prior; `ancestral_step(system)` draws from the declared habit; `hold(step,
-ticks_per_unit=1)` decides once per option (it reads the option's duration through `step.system`,
-which `agent_step` and `ancestral_step` set; a hand-written step sets that attribute, or
-`hold(step, system=...)` names the System). A step that returns params differing from those it was
-given is a learner. Under `couple` a mind is `(System, params, step)`: the params are the starting
-ones, `run` hands each mind its current params every round, and `rec[name].params` is what the
-step last returned (the starting object if it never learned).
-
-`run(composite, params, minds, ...)` over a merged composite (the composite's own model as the
-world) takes one step per component. `params` is the *parameter home*: each round every step is
-handed its component's view taken from the home as it stands, with each control node another
-component chooses that its view reads set to the level that component last intended (uniform
-before any choice). Under `"simultaneous"` those levels are the ones standing when the round
-began; under `"sequential"` and `"async"` they are as they stand at the step's turn. A view whose
-carried targets are conditional on the node has no view before any choice, so it needs the
-chooser to have chosen first in every round: `run` supports it under `"sequential"` with the
-chooser listed first and refuses it up front under the other orders, and a non-identity action
-kernel on a node another component's view reads is refused too (the level handed on is the
-intended one). The views are built once per level with `subsystem` and
-refreshed from the home with `retake`, so one compiled program serves every level. Params a step
-returns other than the ones it was given are written back to the home with `write_back`, the view
-it was given as `before`, so a stale `before` cannot happen and the next component to respond sees
-the learning. Only declared parameter variables are written back: a step whose returned params
-differ outside them is refused, so a learned table must be a `Parameter` variable. The world does
-not learn: it runs the starting `params` forward. This form returns a `CompositeTrajectory`, whose
-`params` is the home after the last round, and every belief read of a minded component is supplied
-from the carries as above.
-
-`particle(composite, params, minds)` is the same per-round body as one step for `couple`: the
-composite's modalities are its in-ports, its action nodes its out-ports, and an outside world
-joins it by wires, so the two-tier rover is
-`couple(minds={"agent": (cs, cp, particle(cs, cp, {"mission": slow, "rover": fast}))},
-processes={"world": ...})` under one `run`. Every component needs a step. The steps run in the
-order of `minds` (a step listed later sees an earlier step's decision of this round, which is how
-a slow tier's option reaches the fast tier in the round it is chosen), a modality the particle
-supplies from a read takes no link, and the home is the params the wiring hands the particle:
-`rec["agent"].params` is the composite's params after the last round, and each inner step's carry
-is `rec["agent"].carry.minds[name]` (`design/nesting-and-coupling.md` N4, N9, A12).
 
 ## The same model as a document
 

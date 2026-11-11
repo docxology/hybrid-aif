@@ -2,8 +2,7 @@
 over a closed System: the merge coupled to its own mirror (``with_mirror``, the merge's leaves
 under ``model.``), each leaf given its step. The parameter home is written back each round a step
 learns and the views are taken again from it; a driving component's realised decision is routed
-into the driven view; a view that declares durations is held for its option. A few tests keep
-``particle``, the one-step wrapper of the composite and wired forms, to its own contract.
+into the driven view; a view that declares durations is held for its option.
 
 Under the rulings of 2026-11-10 a driven view is handed the level its driver realised in the same
 round under every order (design 1.4, 4.4): ``run`` steps a driven node after its driver whatever
@@ -13,7 +12,7 @@ realised this round. The composite form handed the level standing when the round
 listed before its driver; those tests are inverted here. Pins: ``tests/data/run_parity.npz``
 (the learner on the shared parameter variable, the same-step zoo), ``tests/data/clock_parity.npz``
 (the held scheduler with a fast learner) and ``tests/data/migration_particle.npz`` (a held robot
-inside ``particle`` under the wired form).
+inside a merge, one mind of the wired form, as release 0.19.0 recorded it).
 """
 
 import dataclasses
@@ -32,14 +31,9 @@ from hybrid_aif import ConditionalCategorical, ConditionalDirichlet
 from hybrid_aif.composition import (
     Identify,
     Link,
-    MindCarry,
-    ParticleCarry,
-    agent_step,
     couple,
-    hold,
     joint_planner,
     merge,
-    particle,
     plan,
     run,
     sample,
@@ -47,13 +41,13 @@ from hybrid_aif.composition import (
     with_mirror,
     write_back,
 )
-from hybrid_aif.composition.merge import _partner_inputs, retake
+from hybrid_aif.composition.merge import _inputs_of, retake
 from hybrid_aif.system.mirror import mirror
 from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world, merged
 from tests.test_merge_gaussian_control import mission as mission_tier
 from tests.test_merge_gaussian_control import rover as lg_rover
 from tests.test_sibling_read import GRID, READ, SOURCE, _composite, _rover, _scheduler
-from tests.test_subsystem_conditional_target import _conditional_target, _two_tier
+from tests.test_subsystem_conditional_target import _conditional_target
 from tests.test_subsystem_conditional_target import _rover as _target_rover
 
 KEY = jax.random.PRNGKey(0)
@@ -96,18 +90,10 @@ def _zoo():
     return comp, cp, obs
 
 
-def _recording(log):
-    def step(key, obs, carry, params):
-        log.append(params)
-        return {}, carry, params
-
-    return step
-
-
 def test_the_view_that_reads_a_partner_s_node_names_it():
     comp, _, _ = _zoo()
-    assert _partner_inputs(comp, "world") == (ACTION,)
-    assert _partner_inputs(comp, "agent") == ()
+    assert tuple(_inputs_of(comp, "world")) == (ACTION,)
+    assert tuple(_inputs_of(comp, "agent")) == ()
 
 
 def _level_view(comp, cp, level):
@@ -181,8 +167,8 @@ def test_a_driver_listed_first_is_seen_by_the_driven_view_the_same_round(order):
 @pytest.mark.parametrize("order", ["simultaneous", "sequential", "async"])
 def test_a_driven_view_listed_before_its_driver_still_sees_the_level_of_the_same_round(order):
     """``run`` steps a driven node after its driver whatever the listing (the derived order), so
-    the world model listed first is handed the agent's level of this round. ``particle`` and the
-    composite form handed a driven view listed first the level of the round before."""
+    the world model listed first is handed the agent's level of this round. The composite form
+    of release 0.19.0 handed a driven view listed first the level of the round before."""
     system, params = _closed_zoo(world_first=True)
     assert [n for n, _ in system.subsystems][1:3] == [f"{M}world", f"{M}agent"]
     log: list = []
@@ -229,18 +215,6 @@ def _shared():
     comp, cp = _composite(shared=True, bindings=[Identify("rover.field", "mission.field")])
     rover, mission = subsystem(comp, cp, "rover")[0], subsystem(comp, cp, "mission")[0]
     return comp, cp, rover, mission
-
-
-def _learner(view, log=None):
-    inner = agent_step(view)
-
-    def step(key, obs, carry, params):
-        action, carry, _ = inner(key, obs, carry, params)
-        if log is not None:
-            log.append(params)
-        return action, carry, _bump(view, params)
-
-    return step
 
 
 def _closed_shared(listing=("rover", "mission")):
@@ -542,74 +516,6 @@ def test_run_leaves_the_world_on_the_starting_params_and_its_home_is_the_hand_lo
         assert _same(got, world), field
 
 
-def test_run_and_particle_share_one_round_body_on_the_same_learners():
-    """The home a composite run reaches equals the home of the particle's rounds."""
-    comp, cp, rover, mission = _shared()
-    minds = {"rover": _learner(rover), "mission": agent_step(mission)}
-    p = particle(comp, cp, minds)
-    carry, home = ParticleCarry(), cp
-    for _ in range(3):
-        _, carry, home = p(KEY, {"rover.obs": jnp.asarray([1.0, 1.0])}, carry, home)
-    traj = run(comp, cp, minds, ticks=3, key=KEY)
-    assert _same(traj.params, home)
-
-
-# ------------------------------------------------------------------- the wired form
-
-
-def _one_component():
-    sa, pa = cm.robot(2, 2)
-    comp, cp = merge({"a": sa}, {"a": pa}, [])
-    links = [
-        Link("m.a.move", "world.a_move"),
-        Link("world.a_pos", "m.a.me_obs"),
-        Link("world.b_pos", "m.a.other_obs"),
-        Link("world.status", "m.a.status"),
-    ]
-    return comp, cp, links
-
-
-def test_a_one_mind_particle_coupled_to_a_world_equals_the_plain_wired_run_bitwise():
-    comp, cp, links = _one_component()
-    view, vp = subsystem(comp, cp, "a")
-    kwargs = dict(processes={"world": _corridor()}, links=links, fixed={"world.b_move": 0})
-    plain = couple(minds={"m": (view, vp, agent_step(view, selection="stochastic"))}, **kwargs)
-    inner = agent_step(view, selection="stochastic")
-    pooled = couple(minds={"m": (comp, cp, particle(comp, cp, {"a": inner}))}, **kwargs)
-    one, two = run(plain, ticks=12, key=KEY), run(pooled, ticks=12, key=KEY)
-    assert _same(one["m"].actions, two["m"].actions)
-    assert _same(one["m"].observations, two["m"].observations)
-    assert _same(one["world"].states, two["world"].states)
-    assert _same(one["m"].carry.beliefs, two["m"].carry.minds["a"].beliefs)
-    assert two["m"].params is cp and one["m"].params is vp
-
-
-def test_a_modality_the_particle_supplies_needs_no_wire_and_any_other_mind_does():
-    comp, cp = _composite()
-    rs, rp = _rover()
-    world = rs.as_env(rp)
-    links = [Link("w.obs", "m.rover.obs")]
-    rover, mission = subsystem(comp, cp, "rover"), subsystem(comp, cp, "mission")
-    minds = {"rover": agent_step(rover[0]), "mission": agent_step(mission[0])}
-    wiring = couple(
-        minds={"m": (comp, cp, particle(comp, cp, minds))}, processes={"w": world}, links=links
-    )
-    rec = run(wiring, ticks=3, key=KEY)
-    assert set(rec["m"].observations) == {"rover.obs"}
-    # a modality the composite's own emission feeds is no in-port, so no link is asked for it
-    plain = couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=links)
-    assert "mission.cell_obs" not in plain.minds["m"].system.ports(cp).ins
-    with pytest.raises(ValueError, match="fed by no link"):
-        couple(minds={"m": (comp, cp, agent_step(comp))}, processes={"w": world}, links=[])
-
-
-def _corridor():
-    """The corridor of ``compose_minds`` as a process of the wired form (its mirror under
-    ``as_env``), its actuator left to the minds."""
-    env, ep = cm.world_model((2, 2))[0].as_env(cm.world_model((2, 2))[1])
-    return env, dataclasses.replace(ep, actuator={})
-
-
 def _held_robots():
     """The two robots merged, ``a`` declaring durations ``[4, 2, 4]``, coupled as one component
     ``m`` to the corridor: ``(system, params)``."""
@@ -631,11 +537,11 @@ def _held_robots():
     )
 
 
-def _particle_layout():
-    """The keys of ``particle`` as the one mind of the wired form, for the leaves ``m.a``,
-    ``m.b`` and the world: the wired form split a round key in four, stepped the particle with
-    key 0 (its first component with that key, the next with ``fold_in(key, 1)``), realised with
-    key 1 (sequential) or key 3 (simultaneous) and stepped the process with key 3, which it
+def _wired_layout():
+    """The keys of the merge as the one mind of the wired form (release 0.19.0), for the leaves
+    ``m.a``, ``m.b`` and the world: the wired form split a round key in four, stepped the merge
+    with key 0 (its first component with that key, the next with ``fold_in(key, 1)``), realised
+    with key 1 (sequential) or key 3 (simultaneous) and stepped the process with key 3, which it
     reset with the reset key."""
     from tests.test_run_parity import runner
 
@@ -656,8 +562,8 @@ def _particle_layout():
 @pytest.mark.parametrize("order", ["simultaneous", "sequential"])
 def test_a_merged_robot_with_durations_coupled_to_a_world_decides_once_per_option(order):
     """The robots' merge coupled to the corridor, robot ``a`` declaring durations: ``run`` holds
-    ``m.a`` for its option, ``m.b`` and the world step every round. Under the key layout of
-    ``particle`` as the one mind of the wired form (``hold`` on ``a`` inside it), the moves, the
+    ``m.a`` for its option, ``m.b`` and the world step every round. Under the key layout of the
+    merge as the one mind of the wired form, ``a`` held for its option inside it, the moves, the
     corridor and the number of decisions are what that form recorded."""
     from tests.test_run_parity import states
 
@@ -667,7 +573,7 @@ def test_a_merged_robot_with_durations_coupled_to_a_world_decides_once_per_optio
         "m.b": plan(selection="stochastic"),
         "world": sample(),
     }
-    first, second = _particle_layout()
+    first, second = _wired_layout()
     with first, second:
         rec = run(system, params, 20, KEY, steps, tick_order=order, record_carries=True)
     moves = np.asarray(rec["m.a"].emitted["move"])
@@ -687,62 +593,7 @@ def test_a_merged_robot_with_durations_coupled_to_a_world_decides_once_per_optio
     assert decisions == int(fixture[f"{tag}/calls"])
 
 
-def test_a_held_step_returns_the_params_it_was_given_and_calls_nothing():
-    sa, pa = cm.robot(2, 2)
-    pa = dataclasses.replace(pa, durations={"u_move": jnp.asarray([3.0, 3.0, 3.0])})
-    calls: list = []
-
-    def fn(key, obs, carry, params):
-        calls.append(1)
-        return {"move": jnp.asarray(1, jnp.int32)}, carry, dataclasses.replace(params)
-
-    held = hold(fn, system=sa)
-    carry, learned = MindCarry(), []
-    for _ in range(6):
-        action, carry, out = held(KEY, {}, carry, pa)
-        learned.append(out is not pa)
-        assert int(action["move"]) == 1
-    assert learned == [True, False, False, True, False, False]
-    assert len(calls) == 2
-
-
 # ----------------------------------------------------------------------------- refusals
-
-
-def test_a_wire_into_a_modality_the_particle_supplies_is_refused():
-    comp, cp = _composite()
-    rs, rp = _rover()
-    rover, mission = subsystem(comp, cp, "rover"), subsystem(comp, cp, "mission")
-    minds = {"rover": agent_step(rover[0]), "mission": agent_step(mission[0])}
-    links = [Link("w.obs", "m.rover.obs"), Link("src.mission.cell_obs", "m.mission.cell_obs")]
-    with pytest.raises(ValueError, match="m.mission.cell_obs. is not an in-port"):
-        couple(
-            minds={"m": (comp, cp, particle(comp, cp, minds))},
-            processes={"w": rs.as_env(rp), "src": mission[0].as_env(mission[1])},
-            links=links,
-        )
-
-
-def _two_tier_target():
-    return joint_planner(*_two_tier(*_target_rover(_conditional_target(), (("x", ("u_opt",)),))))
-
-
-def _idle_rover(key, obs, carry, params):
-    return {"rover.a_v": jnp.zeros(2, jnp.float32)}, carry, params
-
-
-def _plain(key, obs, carry, params):
-    return {"mission.option": jnp.asarray(1, jnp.int32)}, carry, params
-
-
-def test_a_driver_listed_after_a_view_with_a_conditional_target_is_refused_at_construction():
-    cs, cp = _two_tier_target()
-    rover = _idle_rover
-    with pytest.raises(ValueError, match="list 'mission' before 'rover'"):
-        particle(cs, cp, {"rover": rover, "mission": _plain})
-    p = particle(cs, cp, {"mission": _plain, "rover": rover})
-    action, carry, _ = p(KEY, {}, ParticleCarry(), cp)
-    assert int(action["mission.option"]) == 1 and carry.standing == {"mission.u_option": 1}
 
 
 def _rewriting(field):
@@ -768,8 +619,7 @@ def _rewriting(field):
 
 def test_a_learned_own_table_is_written_back_under_its_name():
     """A table a leaf's view holds of its own (here the rover's likelihood) is written back to
-    the home under its namespaced name (``plan(learn=...)``'s rule). ``particle`` refused any
-    change outside the declared parameter variables."""
+    the home under its namespaced name (``plan(learn=...)``'s rule)."""
     system, params = _closed_shared()
     traj = run(system, params, 1, KEY, _shared_steps(_rewriting("likelihood"), plan()))
     got = traj.params.likelihood[f"{M}rover.obs"].noise
@@ -823,8 +673,8 @@ def _rover_step(seen):
 def test_a_view_with_a_conditional_target_reads_its_chooser_s_level_of_the_round(order, listing):
     """``run`` steps the rover after the scheduler whose option drives it, under every order and
     whatever the listing, so the rover reads the option realised this round. The composite form
-    refused this composite under ``"simultaneous"`` and ``"async"``, and under ``"sequential"``
-    with the scheduler listed second; ``particle`` refused the second listing at construction."""
+    of release 0.19.0 refused this composite under ``"simultaneous"`` and ``"async"``, and under
+    ``"sequential"`` with the scheduler listed second."""
     system, params = _two_tier_closed(listing)
     seen: list = []
     steps = {f"{M}mission": _option_step, f"{M}rover": _rover_step(seen), "world": sample()}
@@ -933,8 +783,8 @@ def test_durations_on_the_systems_own_params_hold_the_node_as_its_view_declares(
 
 def test_a_kernel_on_a_node_another_view_reads_slices_the_view_at_the_realised_level():
     """Design 1.4 and 4.4: a driven view is sliced at the level its driver realised, so an
-    actuator kernel on the driver is allowed; the composite form and ``particle`` refused it,
-    since they handed on the intended level."""
+    actuator kernel on the driver is allowed; the composite form of release 0.19.0 refused it,
+    since it handed on the intended level."""
     kernel = 0.4 * jnp.eye(5) + 0.12
     system, params = _closed_zoo(actuator=kernel)
     log: list = []
@@ -945,16 +795,6 @@ def test_a_kernel_on_a_node_another_view_reads_slices_the_view_at_the_realised_l
     assert realised != intended  # the kernel moved some draw
     for t, level in enumerate(realised):
         assert _same(log[t + 1], _view_at(system, params, level))
-
-
-def test_particle_refuses_a_kernel_on_a_node_another_view_reads():
-    comp, cp, _ = _zoo()
-    kernel = 0.4 * jnp.eye(5) + 0.12
-    noisy = dataclasses.replace(cp, actuator={"agent.a_location": kernel})
-    agent = agent_step(subsystem(comp, cp, "agent")[0])
-    minds = {"agent": agent, "world": _recording([])}
-    with pytest.raises(ValueError, match=r"'world'.*'agent.u_location'.*non-identity"):
-        particle(comp, noisy, minds)
 
 
 def test_plan_refuses_an_all_masked_legal_on_its_first_call():
@@ -969,13 +809,6 @@ def test_a_run_refuses_params_that_differ_outside_the_parameter_variables_and_ow
     system, params = _closed_shared()
     with pytest.raises(ValueError, match=r"'model.rover'.*\['precision'\].*Parameter"):
         run(system, params, 1, KEY, _shared_steps(_rewriting("precision"), plan()))
-
-
-def test_a_component_with_no_mind_is_refused():
-    comp, cp = _composite()
-    rover = subsystem(comp, cp, "rover")
-    with pytest.raises(ValueError, match=r"\['mission'\].*no step"):
-        particle(comp, cp, {"rover": agent_step(rover[0])})
 
 
 # ------------------------------------------------------------- held driver, survey shape
@@ -1003,9 +836,9 @@ def test_a_slow_mind_with_durations_and_a_fast_learner_sharing_a_parameter():
     """N4 without the camera, under ``run``: the scheduler declares durations and is held three
     rounds per option (decisions at rounds 0, 3, 6); the fast rover's write-back is visible in the
     slow view at each decision; the rover's view is handed the option standing, held or fresh;
-    the rover's float action node is emitted as a float. Pinned against ``particle`` with
-    ``hold`` by ``test_clock_parity::test_a_held_scheduler_with_a_fast_learner_is_the_particle_
-    with_hold_bitwise``."""
+    the rover's float action node is emitted as a float. Pinned against the run release 0.19.0
+    recorded by ``test_clock_parity::test_a_held_scheduler_with_a_fast_learner_is_the_recorded_
+    run_bitwise``."""
     from tests.test_clock_parity import _fast_rover, _gauge_step, scheduler_system
 
     system, params, ss = scheduler_system()

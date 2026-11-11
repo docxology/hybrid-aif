@@ -2,8 +2,8 @@
 runner.
 
 ``tests/data/survey_run.npz`` holds three short runs of the survey runner as it ran on the wired
-form of ``run``: the agent one mind (a ``particle`` of the merged scheduler and rover, the
-scheduler wrapped in ``hold``), the world a hand-written process. The cases are the two-tier run
+form of ``run`` of release 0.19.0: the agent one mind (the merged scheduler and rover, the
+scheduler held for its option), the world a hand-written process. The cases are the two-tier run
 (``two-level``), the run with the option pinned (``one-level``) and the rover alone (``epi``, the
 first level-1 setting), each with a small untrained camera (``small_camera``), a 4 by 4 field grid
 and a short plan, the two-tier runs with an option two rounds long. Every number of every tick
@@ -114,7 +114,7 @@ def _survey_layout():
 
     The wired form split a round key in four (``2M + 2`` for ``M = 1``): the mind stepped with
     key 0, the realisations (no kernel draws here) and the world's step took key 3, and inside the
-    particle the scheduler stepped with the mind's key and the rover with ``fold_in(key, 1)``; the
+    merge the scheduler stepped with the mind's key and the rover with ``fold_in(key, 1)``; the
     world reset with the reset key itself. ``run`` steps node ``j`` with key ``j`` of its own
     ``2N + 1``, realises with key ``N + j`` and resets with ``fold_in(reset key, j)`` after the
     first: the patches hand each node its counterpart's key. The scheduler draws from no key

@@ -51,8 +51,8 @@ from hybrid_aif.system.mirror import mirror
 from tests.test_action_nodes import KERNEL, pusher
 from tests.test_couple import KERNEL5
 from tests.test_merge import OBSERVATION_BINDINGS, agent_and_world
-from tests.test_particle import _shared
-from tests.test_particle import _zoo as _same_step_zoo
+from tests.test_run_nested import _shared
+from tests.test_run_nested import _zoo as _same_step_zoo
 
 FIXTURE = np.load(pathlib.Path(__file__).parent / "data" / "run_parity.npz")
 KEY = jax.random.PRNGKey(0)
@@ -104,8 +104,9 @@ def _run_old_keys(minds: int, *args, **kwargs):
 
 
 def habit_draw(system, key, params):
-    """The action nodes of ``system``'s control nodes drawn from the habit, as ``ancestral_step``
-    of the composite and wired forms drew them with ``key``: the first step of a policy drawn from
+    """The action nodes of ``system``'s control nodes drawn from the habit, as the habit step of
+    the composite and wired forms of release 0.19.0 drew them with ``key``: the first step of a
+    policy drawn from
     ``params.policy_prior`` where one is declared, else one uniform level per node, each from its
     own key of ``split(key, nodes)``."""
     names = system._names()
@@ -133,7 +134,8 @@ def habit_draw(system, key, params):
 
 def ancestral():
     """A step of ``run`` that draws its node's action nodes from the habit with the key use of
-    ``ancestral_step`` (:func:`habit_draw`), so a fixture recorded with it replays bit for bit;
+    the habit step of release 0.19.0 (:func:`habit_draw`), so a fixture recorded with it replays
+    bit for bit;
     ``sample()`` draws a free node with another key use."""
 
     def step(system, key, obs, carry, params):

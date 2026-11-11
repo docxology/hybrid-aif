@@ -34,8 +34,8 @@ action node is read at the same step, a state of another component at the previo
 one-tick relay). A composite may be merged again (``"outer.inner.x"``).
 
 :func:`subsystem` goes the other way: one mind's bona-fide System, its own factors plus boundary
-stubs for the neighbours it must model. The driver that interleaves the views is
-:mod:`hybrid_aif.composition.driver`.
+stubs for the neighbours it must model. :func:`~hybrid_aif.composition.runner.run` steps the
+views of a closed System.
 
 Design: docs/design/nesting-systems.md; docs/design/control-states.md C12;
 nesting-and-coupling.md N2, N3.
@@ -129,13 +129,13 @@ class Link(NamedTuple):
       (``{"mission.cell_obs": "rover.cell_obs"}``). A second read of the same source with the same
       kernel and realisation under the same name reuses the emission (one out-port, many
       in-ports); a name that is already another variable of the composite is refused. The
-      modality's datum each round is the emission
-      realised from the source's posterior of the previous round (``"sample"``, ``"mode"`` or
-      ``"stats"``; see :class:`~hybrid_aif.reads.Emission`), which a belief read must give.
-      :func:`subsystem` leaves the modality an ordinary observation of the reading component's
-      view, and :func:`~hybrid_aif.composition.driver.run` supplies it each round from the source
-      component's carry. The source and the modality lie in different components (a read inside
-      one is an emission and ``System.observes``). A level count that is not the source's under
+      modality's datum each round is the emission realised from the source's posterior
+      (``"sample"``, ``"mode"`` or ``"stats"``; see :class:`~hybrid_aif.reads.Emission`), which a
+      belief read must give. :func:`subsystem` leaves the modality an ordinary observation of the
+      reading component's view, and :func:`~hybrid_aif.composition.runner.run` supplies it each
+      round from the emission the source component's step realised, as it stands at the reader's
+      turn. The source and the modality lie in different components (a read inside one is an
+      emission and ``System.observes``). A level count that is not the source's under
       the identity kernel, nor the grid's cell count under an indicator, a categorical modality
       reading a continuous source with no grid and ``"stats"`` of a Gaussian source are refused;
     - **from state factors to ``"terminal:<factor>"``** (``Link(("a.x", "b.y"), "terminal:a.z")``,
@@ -2474,13 +2474,6 @@ def _inputs_of(composite: System, name: str) -> dict[str, list[int]]:
     return out
 
 
-def _partner_inputs(composite: System, name: str) -> tuple[str, ...]:
-    """The variables a view of component ``name`` takes a level of: keys :func:`subsystem`
-    accepts in ``inputs``. A driver's decision reaches the driven view through these
-    (``particle`` routes it). Design: nesting-and-coupling.md N4."""
-    return tuple(_inputs_of(composite, name))
-
-
 def retake(
     composite: System,
     view: System,
@@ -2554,9 +2547,9 @@ def subsystem(
     A view is one component's side of one particle: the neighbours it models are stubs, not other
     minds' beliefs. A modality that observes an emission or an action node of this component
     (``System.observes``) keeps its entry; one that observes another component's (a belief
-    :class:`Link`) is left an
-    ordinary observation, which :func:`~hybrid_aif.composition.driver.run` supplies each round
-    from the source component's carry (``Subsystem.reads``).
+    :class:`Link`) is left an ordinary observation, which
+    :func:`~hybrid_aif.composition.runner.run` supplies each round from the emission the source
+    component's step realised.
 
     Design: docs/design/nesting-systems.md (architecture sketch; partner modeling);
     nesting-and-coupling.md N1, N2.

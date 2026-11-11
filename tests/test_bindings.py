@@ -345,15 +345,6 @@ def test_an_unknown_binding_is_refused_naming_the_three_kinds():
         merged(bindings=[("agent.location", "world.u_location")])
 
 
-def test_a_link_between_participants_is_one_port_to_one_port():
-    from hybrid_aif.composition import couple
-
-    emitter, eparams = emitting_world()
-    with pytest.raises(TypeError, match="pass Link"):
-        couple(minds={}, processes={}, links=[("a.b", "c.d")])
-    assert Emission  # a link's source may name an emission once couple takes systems (chunk B)
-
-
 def test_terminal_is_a_key_kind_of_links_only_and_no_epistemic_selector():
     from tests.test_system import tmaze_system
 

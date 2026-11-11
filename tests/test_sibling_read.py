@@ -661,14 +661,6 @@ def test_a_sibling_read_inside_an_inner_composite_is_supplied_when_it_is_one_min
         )
 
 
-def test_a_held_mind_s_emissions_are_read_through_its_wrapper():
-    from hybrid_aif.composition import HoldCarry
-    from hybrid_aif.composition.driver import _emitted
-
-    assert _emitted(HoldCarry(MindCarry(emitted={"x": 1}), 2, {})) == {"x": 1}
-    assert _emitted(MindCarry()) is None
-
-
 def test_the_compiled_face_takes_the_supplied_datum():
     from hybrid_aif import Emission as _Emission
     from tests.test_structure_learning import _own_read_system
