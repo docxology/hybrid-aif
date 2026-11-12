@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 data = ["h5py>=3"]
 demo = ["matplotlib>=3.8", "notebook>=7", "ipykernel", "nbconvert"]
+docs = ["sphinx>=7", "sphinx-book-theme>=1.1", "myst-parser>=2"]
 dev = [
     "pytest>=8",
     "pytest-xdist>=3",
