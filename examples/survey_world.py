@@ -1,21 +1,27 @@
 """The true world of the survey rover showcase, a black box coupled to the rover's mind.
 
 A single rover drives over a walled field of smooth hills (the position is clipped to the field
-and a rover that hits a wall stops). It holds the rover's position, heading and forward speed, the
-terrain class under it (firm, rough or ice, a function of position), its energy (a rover with an
-empty band cannot drive, though it still charges in the light), and the readings the rover
-receives: a satellite position fix whose noise grows where the terrain closes the sky, a camera
-image and a noisy gauge of the energy band (the option of a slow tier never reaches the world).
-The field's height map, sky openness, sunlight, slope and fix noise are tabulated at import.
+and a rover that hits a wall stops). It holds the rover's state (position, heading, forward speed
+and the battery's energy level), the terrain class under it (firm, rough or ice, a function of
+position), and the readings the rover receives: a satellite position fix whose noise grows where
+the terrain closes the sky, a camera image, a gauge reading of the energy level and the energy
+band a coarse meter shows (the slow tier reads the band; the option of a slow tier never reaches
+the world). The field's height map, sky openness, sunlight, solar yield, slope and fix noise are
+tabulated at import.
 
-The rover is a wheeled vehicle with a heading of its own (``VehicleStep``): its state is the
-position, the heading as a unit vector and the forward speed; the command is a target speed, as a
-share of the top speed ``TOP_SPEED`` (the rover drives forward only, and turns in place), and a
-turn rate (at most ``TURN_MAX`` a tick). The speed closes the share ``1 - KEEP`` of its gap to the
-target each tick, so a held command reaches its speed within a few ticks, and the top speed stays
-under one map cell per tick. The camera is mounted forward and looks along the heading; it renders
-the scene from the field's geometry: the ground along each pixel's ray, ray-marched over the height
-map, lit by the sun, textured in world coordinates, under a sky; see ``render``.
+The rover is a wheeled vehicle with a heading of its own and a solar battery (``VehicleStep``):
+its state is the position, the heading as a unit vector, the forward speed and the energy level;
+the command is a target speed, as a share of the top speed ``TOP_SPEED`` (the rover drives forward
+only, and turns in place), and a turn rate (at most ``TURN_MAX`` a tick). The speed closes the
+share ``1 - KEEP`` of its gap to the target each tick, so a held command reaches its speed within a
+few ticks, and the top speed stays under one map cell per tick. Driving drains the battery (more
+at speed and on slopes); sunlight charges it, mainly while the rover is parked, and far more on
+sun-facing ground than in shade. As the level nears empty the drive fails: the speed and turn the
+command can reach fall smoothly to zero (the stall), so an empty rover stands where it is and
+charges only as fast as the light there allows. The camera is mounted forward and looks along the
+heading; it renders the scene from the field's geometry: the ground along each pixel's ray,
+ray-marched over the height map, lit by the sun, textured in world coordinates, under a sky; see
+``render``.
 
     python examples/survey_world.py
 """
@@ -42,7 +48,9 @@ GAIN = (1.0 - KEEP) * TOP_SPEED  # forward speed added per tick per unit of the 
 COMMAND_LOW = (0.0, -1.0)  # the command (drive, turn): drive from stop to full, turn either way
 COMMAND_HIGH = (1.0, 1.0)
 TURN_MAX = np.deg2rad(20.0)  # the heading turns at most this far per tick (in place too)
-STATE_SD = np.asarray([0.005, 0.005, 0.01, 0.01, 0.004])  # process sd per state coordinate
+#  process sd per state coordinate: position, heading pair, speed, energy level
+STATE_SD = np.asarray([0.005, 0.005, 0.01, 0.01, 0.004, 0.004])
+STATE_NAMES = ("x", "y", "cos heading", "sin heading", "forward speed", "energy level")
 ICE_PATCH = ((1.4, 2.1), 0.9)  # (centre, radius) in the low basin
 ROUGH_PATCHES = (((3.6, 0.2), 0.8), ((-0.2, 2.6), 0.6))
 
@@ -53,23 +61,30 @@ HORIZON_RANGE = 4.0
 HORIZON_STEP = 0.1
 AMBIENT = 0.1
 
-ENERGY_MAX = 3.99
+ENERGY_MAX = 4.0  # a full battery; the bands empty, low, medium and full are a unit each
+#  the stall: the share of the command the drive can deliver, a logistic in the energy level,
+#  one half at STALL_LEVEL, near one above STALL_LEVEL + 4 STALL_WIDTH and near zero below
+#  STALL_LEVEL - 4 STALL_WIDTH
+STALL_LEVEL = 0.4
+STALL_WIDTH = 0.08
+#  the energy per tick: a drain at rest, a drain per unit of speed that grows with the slope, and
+#  a solar charge in proportion to the yield of the ground the rover stands on, nearly all of it
+#  while parked (at speed only the share MOVING_CHARGE)
+BASE_DRAIN = 0.01  # energy per tick at rest
+MOVE_DRAIN = 0.045  # energy per tick per unit of speed on flat ground
+SLOPE_DRAIN = 1.5 * MOVE_DRAIN  # extra per tick per unit of slope and of speed
+CHARGE_RATE = 0.07  # energy per tick parked on ground of full solar yield
+MOVING_CHARGE = 0.1  # the share of the parked charge collected at speed
+PARK_SPEED = 0.05  # the charge falls from parked to moving over about this speed
+#  the solar yield of the ground: the sunlight there over the field's brightest, to this power,
+#  so that sun-facing slopes yield several times what level ground does and shaded ground almost
+#  nothing
+SUN_POWER = 4.0
+CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls this sharp
 #  the rover's typical forward speed, the median over the closed-loop runs of both settings (see
-#  the build record); the energy table and the scheduler's tables are built at it
+#  the build record); the scheduler's tables are built at it
 CRUISE_SPEED = 0.17
-#  the energy per tick: a drain at rest, a drain per unit of speed that grows with the slope and
-#  on rough ground, and a charge in proportion to the sunlight, moving or not. A tick of driving
-#  at ENERGY_SPEED (the top speed) on flat firm ground drains DRIVE_TICK, so that at mean light the
-#  charge about balances the fastest driving on flat firm ground; at that speed a steep climb or
-#  rough ground drains a band in about eight ticks. The model does not know the world's stall (an
-#  empty band cannot drive), so the energy is set so that it does not empty in a run
-ENERGY_SPEED = TOP_SPEED
-DRIVE_TICK = 0.1288
-BASE_DRAIN = 0.02  # energy per tick at rest
-MOVE_DRAIN = (DRIVE_TICK - BASE_DRAIN) / ENERGY_SPEED  # energy per tick per unit of speed
-SLOPE_DRAIN = 1.4706 * MOVE_DRAIN  # extra per tick per unit of slope and of speed
-ROUGH_DRAIN = 1.1765 * MOVE_DRAIN  # extra per tick per unit of speed on rough ground
-CHARGE_RATE = 0.23  # energy per tick per unit of sunlight
+GAUGE_SD = 0.05  # the gauge's noise on the energy level
 GAUGE_ACC = 0.88
 ZONE_SPLIT = (2.0, 1.0)  # the field's quadrants split at these x and y
 ZONES = 4
@@ -174,6 +189,7 @@ _SUN = np.asarray(
 _LAMBERT = np.maximum(0.0, (-_HX * _SUN[0] - _HY * _SUN[1] + _SUN[2]) / _NORM)
 LIGHT = AMBIENT + (1 - AMBIENT) * _LAMBERT * OPEN**1.5
 SD_FIX = np.clip(0.04 + 1.5 * (1 - OPEN), 0.04, 0.6)
+SUN = (LIGHT / LIGHT.max()) ** SUN_POWER
 
 
 def _terrain_grid():
@@ -204,6 +220,7 @@ height = _lookup(HEIGHT)
 openness = _lookup(OPEN)
 light = _lookup(LIGHT)
 slope = _lookup(SLOPE)
+sun = _lookup(SUN)
 sd_fix = _lookup(SD_FIX)
 
 
@@ -230,8 +247,8 @@ def smooth_height(points):
 
 def maps():
     """The tabulated field maps, each indexed ``[ix, iy]``:
-    ``(xs, ys, height, openness, light, slope, sd_fix, terrain)``."""
-    return XS, YS, HEIGHT, OPEN, LIGHT, SLOPE, SD_FIX, TERRAIN_GRID
+    ``(xs, ys, height, openness, light, slope, sd_fix, terrain, sun)``."""
+    return XS, YS, HEIGHT, OPEN, LIGHT, SLOPE, SD_FIX, TERRAIN_GRID, SUN
 
 
 def terrain_of(xy):
@@ -243,37 +260,76 @@ def terrain_of(xy):
     return jnp.where(jnp.linalg.norm(xy - jnp.asarray(centre)) <= radius, 2, t).astype(jnp.int32)
 
 
-class VehicleStep(eqx.Module):
-    """The rover's motion, a wheeled vehicle with a heading of its own: the mean of the next state
-    ``(x, y, cos theta, sin theta, s)`` (position, the heading as a unit vector, the forward speed)
-    from the state and the command ``(drive, turn)``, drive in ``[0, 1]`` (the target speed as a
-    share of ``TOP_SPEED``) and turn in ``[-1, 1]``::
+def drive_share(level):
+    """The share of the command the drive can deliver at an energy level: a logistic, one half at
+    ``STALL_LEVEL``, near one a few ``STALL_WIDTH`` above it and near zero below (the stall)."""
+    return jax.nn.sigmoid((level - STALL_LEVEL) / STALL_WIDTH)
 
+
+def _soft_clamp(level):
+    """The level held in ``[0, ENERGY_MAX]`` by softplus walls of sharpness ``CLAMP_SHARPNESS``:
+    smooth, the identity well inside the range."""
+    k = CLAMP_SHARPNESS
+    low = jax.nn.softplus(k * level) / k
+    return ENERGY_MAX - jax.nn.softplus(k * (ENERGY_MAX - low)) / k
+
+
+def energy_rates(xy, speed):
+    """``(drain, charge)`` of energy per tick at a position and forward speed: the drain at rest
+    plus a drain per unit of speed that grows with the slope; the charge is the solar yield there
+    (``sun``), all of it parked and the share ``MOVING_CHARGE`` at speed, falling smoothly over
+    ``PARK_SPEED``."""
+    s = jnp.sqrt(speed * speed + 1e-6)
+    drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * slope(xy)) * s
+    parked = jnp.exp(-((speed / PARK_SPEED) ** 2))
+    charge = CHARGE_RATE * sun(xy) * (MOVING_CHARGE + (1.0 - MOVING_CHARGE) * parked)
+    return drain, charge
+
+
+def next_level(xy, speed, level):
+    """The energy level after one tick at a position, speed and level: the level plus the charge
+    less the drain (``energy_rates``), held in ``[0, ENERGY_MAX]`` (``_soft_clamp``)."""
+    drain, charge = energy_rates(xy, speed)
+    return _soft_clamp(level + DT * (charge - drain))
+
+
+class VehicleStep(eqx.Module):
+    """The rover's motion and battery: the mean of the next state ``(x, y, cos theta, sin theta,
+    s, e)`` (position, the heading as a unit vector, the forward speed, the energy level) from the
+    state and the command ``(drive, turn)``, drive in ``[0, 1]`` (the target speed as a share of
+    ``TOP_SPEED``) and turn in ``[-1, 1]``::
+
+        g = drive_share(e)                     (the stall: near one, falling to zero near empty)
         x += DT * s * cos theta,   y += DT * s * sin theta
-        theta += DT * TURN_MAX * turn          (a rotation of the unit vector; in place too)
-        s = KEEP * s + (1 - KEEP) * TOP_SPEED * drive
+        theta += DT * TURN_MAX * g * turn      (a rotation of the unit vector; in place too)
+        s = KEEP * s + (1 - KEEP) * TOP_SPEED * g * drive
+        e = next_level((x, y), s, e)           (drain and solar charge, before the tick's move)
 
     The speed moves toward the target, so a constant command holds a constant speed (full speed
-    ahead is ``(1, 0)``, a stop is ``(0, 0)``) and the rover never reverses.
+    ahead is ``(1, 0)``, a stop is ``(0, 0)``) and the rover never reverses. Near empty the drive
+    delivers less and less of the command, so the speed decays toward zero whatever is commanded
+    and the rover stands, charging as fast as the light where it stands allows.
 
     The heading is carried as ``(cos theta, sin theta)``, renormalised before it is used, so
     there is no wrap-around and the rotation is smooth in the state and the command. Called as a
     ``NonlinearGaussianTransition``'s mean map ``f(x, controls)``; the world's ``move`` calls it
-    too, so the model and the world share one declaration of the motion. The same on every
-    terrain."""
+    too, so the model and the world share one declaration of the motion and the battery. The same
+    on every terrain."""
 
     def __call__(self, x, controls):
         a = jnp.clip(controls[0], jnp.asarray(COMMAND_LOW), jnp.asarray(COMMAND_HIGH))
+        g = drive_share(x[5])
         norm = jnp.sqrt(x[2] ** 2 + x[3] ** 2) + 1e-6
         c, s = x[2] / norm, x[3] / norm
-        w = DT * TURN_MAX * a[1]
+        w = DT * TURN_MAX * g * a[1]
         return jnp.stack(
             [
                 x[0] + DT * x[4] * c,
                 x[1] + DT * x[4] * s,
                 c * jnp.cos(w) - s * jnp.sin(w),
                 s * jnp.cos(w) + c * jnp.sin(w),
-                KEEP * x[4] + GAIN * a[0],
+                KEEP * x[4] + GAIN * g * a[0],
+                next_level(x[:2], x[4], x[5]),
             ]
         )
 
@@ -309,16 +365,13 @@ def zone_of(xy):
 
 
 def band_of(energy):
+    """The energy band of a level: 0 empty, 1 low, 2 medium, 3 full, a unit each."""
     return jnp.clip(jnp.floor(energy), 0, 3).astype(jnp.int32)
 
 
-def energy_rates(xy, terrain, speed):
-    """``(drain, charge)`` of energy per tick at a position, terrain class and speed: the drain
-    grows with speed, slope and rough ground; the charge is the sunlight there, moving or not."""
-    drain = (
-        BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * slope(xy) + ROUGH_DRAIN * (terrain == 1)) * speed
-    )
-    return drain, CHARGE_RATE * light(xy)
+def stalled(energy):
+    """Whether the drive delivers under half the command at a level (``drive_share``)."""
+    return energy < STALL_LEVEL
 
 
 def _waves():
@@ -496,66 +549,76 @@ def to_uint8(image):
 
 
 def gauge_table():
-    """The gauge's confusion ``(reading, band)``: the true band with probability ``GAUGE_ACC``,
-    the rest spread over the other bands."""
+    """The band meter's confusion ``(reading, band)``: the true band with probability
+    ``GAUGE_ACC``, the rest spread over the other bands."""
     eye = np.eye(4)
     return GAUGE_ACC * eye + (1 - GAUGE_ACC) / 3 * (1 - eye)
 
 
+def level_of(state):
+    """The energy level of a world state (the last coordinate of its ``x``)."""
+    return state["x"][5]
+
+
 def initial_state(given=None):
-    """The world's state at the start: the rover at ``START``, at rest, facing +y (``x`` is
-    ``(x, y, cos theta, sin theta, s)``), on the terrain there, with a full battery; ``given`` (a
-    partial state keyed by name) overrides entries."""
-    full = {
-        "terrain": terrain_of(jnp.asarray(START, jnp.float32)),
-        "x": jnp.asarray([*START, 0.0, 1.0, 0.0], jnp.float32),
-        "energy": jnp.asarray(ENERGY_MAX, jnp.float32),
-    }
-    full.update({k: jnp.asarray(v, full[k].dtype) for k, v in (given or {}).items()})
+    """The world's state at the start: the rover at ``START``, at rest, facing +y, with a full
+    battery (``x`` is ``(x, y, cos theta, sin theta, s, e)``), on the terrain there; ``given`` (a
+    partial state keyed by name) overrides entries: ``x`` (six coordinates, or five with the
+    level kept) and ``energy`` (the level alone)."""
+    x = jnp.asarray([*START, 0.0, 1.0, 0.0, ENERGY_MAX], jnp.float32)
+    given = dict(given or {})
+    if "x" in given:
+        v = jnp.asarray(given.pop("x"), jnp.float32)
+        x = x.at[: v.shape[0]].set(v)
+    if "energy" in given:
+        x = x.at[5].set(jnp.asarray(given.pop("energy"), jnp.float32))
+    full = {"terrain": terrain_of(x[:2]), "x": x}
+    full.update({k: jnp.asarray(v, full[k].dtype) for k, v in given.items()})
     return full
 
 
 def observe(key, state, fixed=False):
-    """The readings at a state: the gauge (the band, right with ``GAUGE_ACC``), the position fix
-    (noise ``sd_fix`` at the position) and the camera image: the render along the rover's heading
-    (the camera is mounted forward), or along ``CAMERA_HEADING`` with ``fixed`` (a comparison
-    camera that does not turn with the rover), plus pixel noise."""
-    k_gauge, k_fix, k_img = jax.random.split(key, 3)
+    """The readings at a state: the gauge (the energy level, noise ``GAUGE_SD``), the band meter
+    (the level's band, right with ``GAUGE_ACC``), the position fix (noise ``sd_fix`` at the
+    position) and the camera image: the render along the rover's heading (the camera is mounted
+    forward), or along ``CAMERA_HEADING`` with ``fixed`` (a comparison camera that does not turn
+    with the rover), plus pixel noise."""
+    k_gauge, k_band, k_fix, k_img = jax.random.split(key, 4)
     pos = state["x"][:2]
-    band = band_of(state["energy"])
-    gauge_p = jnp.asarray(gauge_table(), jnp.float32)[:, band]  # the readings given the band
+    level = level_of(state)
+    band_p = jnp.asarray(gauge_table(), jnp.float32)[:, band_of(level)]  # readings given the band
     view = CAMERA_HEADING if fixed else heading_of(state["x"])
     image = render(state["x"], state["terrain"], view)
     return {
-        "gauge": jax.random.categorical(k_gauge, jnp.log(gauge_p)).astype(jnp.int32),
+        "gauge": level[None] + GAUGE_SD * jax.random.normal(k_gauge, (1,)),
+        "band": jax.random.categorical(k_band, jnp.log(band_p)).astype(jnp.int32),
         "fix": pos + sd_fix(pos) * jax.random.normal(k_fix, (2,)),
         "img": image + PIXEL_SD * jax.random.normal(k_img, (IMG_PIXELS,)),
     }
 
 
 def move(key, state, command):
-    """One tick of the true dynamics from ``state`` under the ``command`` (drive, turn):
-    the vehicle's step (``VehicleStep``, the model's own mean map) plus noise of sd ``STATE_SD``,
-    the heading renormalised to a unit vector, and where the world differs from the model: an
-    empty band cannot drive or turn (the command is zeroed), and the field has walls (the
-    position is clipped to them and a rover that hits one stops). Then the energy's drain and
-    charge at the old position and speed."""
+    """One tick of the true dynamics from ``state`` under the ``command`` (drive, turn): the
+    vehicle's step (``VehicleStep``, the model's own mean map, with its battery and its stall)
+    plus noise of sd ``STATE_SD``, the heading renormalised to a unit vector, the level held in
+    ``[0, ENERGY_MAX]``, and where the world differs from the model: the field has walls (the
+    position is clipped to them and a rover that hits one stops)."""
     a = jnp.clip(command, jnp.asarray(COMMAND_LOW), jnp.asarray(COMMAND_HIGH))
-    terrain = terrain_of(state["x"][:2])
-    stalled = band_of(state["energy"]) == 0  # an empty rover cannot drive
-    a = jnp.where(stalled, 0.0, a)
-    x = VehicleStep()(state["x"], (a,)) + jnp.asarray(STATE_SD, jnp.float32) * jax.random.normal(
-        key, (5,)
-    )
+    noise = jnp.asarray(STATE_SD, jnp.float32) * jax.random.normal(key, (6,))
+    x = VehicleStep()(state["x"], (a,)) + noise
     norm = jnp.sqrt(x[2] ** 2 + x[3] ** 2)
     lo = jnp.asarray([FIELD[0][0], FIELD[1][0]], jnp.float32)
     hi = jnp.asarray([FIELD[0][1], FIELD[1][1]], jnp.float32)
     hit = jnp.any((x[:2] < lo) | (x[:2] > hi))  # the field has walls: clip, and stop
-    x = jnp.concatenate([jnp.clip(x[:2], lo, hi), x[2:4] / norm, jnp.where(hit, 0.0, x[4:])])
-    speed = jnp.abs(state["x"][4])
-    drain, charge = energy_rates(state["x"][:2], terrain, speed)
-    energy = jnp.clip(state["energy"] - drain + charge, 0.0, ENERGY_MAX)
-    return {"terrain": terrain_of(x[:2]), "x": x, "energy": energy}
+    x = jnp.concatenate(
+        [
+            jnp.clip(x[:2], lo, hi),
+            x[2:4] / norm,
+            jnp.where(hit, 0.0, x[4:5]),
+            jnp.clip(x[5:], 0.0, ENERGY_MAX),
+        ]
+    )
+    return {"terrain": terrain_of(x[:2]), "x": x}
 
 
 def world_system(look=False):
@@ -564,12 +627,17 @@ def world_system(look=False):
 
     The in-port ``v`` is the velocity command, a float vector of width 2 that the rover's action
     node drives once the two are coupled; the out-ports are the readings, ``fix`` (a float vector
-    of width 2, the position fix), ``img`` (a float vector of ``IMG_PIXELS``, the camera image)
-    and ``gauge`` (four levels, the energy band's reading), and with ``look`` the terrain class a
-    recogniser reads off the image (three levels; ``world_stepper``). What lies between them is
-    the hand-written step; the world states no factor and no table, so its description length is
-    reported unscored."""
-    outs = {"fix": (FLOAT, 2), "img": (FLOAT, IMG_PIXELS), "gauge": (LEVEL, 4)}
+    of width 2, the position fix), ``img`` (a float vector of ``IMG_PIXELS``, the camera image),
+    ``gauge`` (a float vector of width 1, the energy level's reading) and ``band`` (four levels,
+    the band meter's reading), and with ``look`` the terrain class a recogniser reads off the
+    image (three levels; ``world_stepper``). What lies between them is the hand-written step; the
+    world states no factor and no table, so its description length is reported unscored."""
+    outs = {
+        "fix": (FLOAT, 2),
+        "img": (FLOAT, IMG_PIXELS),
+        "gauge": (FLOAT, 1),
+        "band": (LEVEL, 4),
+    }
     if look:
         outs["look"] = (LEVEL, len(TERRAIN_NAMES))
     return black_box(ins={"v": (FLOAT, 2)}, outs=outs)
@@ -611,6 +679,7 @@ def world_summary():
         ("height", HEIGHT),
         ("openness", OPEN),
         ("light", LIGHT),
+        ("sun", SUN),
         ("slope", SLOPE),
         ("sd_fix", SD_FIX),
     ):
@@ -619,29 +688,34 @@ def world_summary():
         print(f"{n:9s} {np.mean(TERRAIN_GRID == k):.3f} of the field")
 
 
-def calibration(speed=ENERGY_SPEED):
-    """The energy calibration table: the net energy per tick driving at ``speed`` on flat firm
-    ground at mean light, up a steep slope and on rough ground, and standing in strong sun."""
-    mean_light = float(LIGHT.mean())
-    charge = CHARGE_RATE * mean_light
+def calibration(speed=CRUISE_SPEED):
+    """The energy calibration table: the net energy per tick driving at ``speed`` on flat ground
+    and up a steep slope at the median solar yield, and parked on ground of high, median and low
+    yield."""
+    med = float(np.median(SUN))
+
+    def net(s, slope_, yield_):
+        s_eff = np.sqrt(s * s + 1e-6)
+        drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * slope_) * s_eff
+        parked = np.exp(-((s / PARK_SPEED) ** 2))
+        return CHARGE_RATE * yield_ * (MOVING_CHARGE + (1 - MOVING_CHARGE) * parked) - drain
+
     lines = [
-        f"top forward speed {top_speed():.3f}; speed {speed:.3f}; cruise speed {CRUISE_SPEED}",
-        f"mean light {mean_light:.3f}; median light {np.median(LIGHT):.3f}",
+        f"top forward speed {top_speed():.3f}; speed {speed:.3f}",
+        "solar yield percentiles 10/50/90/99: "
+        + " / ".join(f"{np.percentile(SUN, q):.3f}" for q in (10, 50, 90, 99)),
     ]
-    d = BASE_DRAIN + MOVE_DRAIN * speed
-    lines.append(f"drive, firm, flat, mean light: drain {d:.3f} net {charge - d:+.3f}/tick")
-    s = float(np.percentile(SLOPE, 98))
-    for name, d in (
-        (f"climb, slope {s:.2f} (98th pct)", BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * s) * speed),
-        ("rough, flat", BASE_DRAIN + (MOVE_DRAIN + ROUGH_DRAIN) * speed),
+    steep = float(np.percentile(SLOPE, 98))
+    for name, value in (
+        ("drive, flat, median yield", net(speed, 0.0, med)),
+        (f"drive, slope {steep:.2f} (98th pct), median yield", net(speed, steep, med)),
+        ("drive at the top speed, flat, median yield", net(top_speed(), 0.0, med)),
     ):
-        lines.append(
-            f"{name}, mean light: drain {d:.3f} net {charge - d:+.3f}/tick -> a band in "
-            f"{1 / max(d - charge, 1e-9):.1f} ticks"
-        )
-    lmax = float(np.percentile(LIGHT, 99))
-    g = CHARGE_RATE * lmax - BASE_DRAIN
-    lines.append(f"sun: standing in light {lmax:.2f} (99th pct): net {g:+.3f}/tick")
+        lines.append(f"{name}: net {value:+.4f}/tick, {24 * value:+.3f} per 24 ticks")
+    for q in (99, 90, 50, 10):
+        y = float(np.percentile(SUN, q))
+        value = net(0.0, 0.0, y)
+        lines.append(f"parked, yield {y:.3f} ({q}th pct): net {value:+.4f}/tick")
     return "\n".join(lines)
 
 

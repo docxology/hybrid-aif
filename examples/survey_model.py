@@ -1,38 +1,39 @@
-"""The survey rover's model: a terrain field it learns by driving, an energy it must keep up, and
-a preference for bright images that depends on how much energy it has left.
+"""The survey rover's model: a terrain field it learns by driving, and a vehicle whose battery it
+must keep up.
 
-Four factors in declaration order: ``terrain`` (three classes), which reads the parameter
+Three factors in declaration order: ``terrain`` (three classes), which reads the parameter
 variable ``field`` (one Dirichlet entry per cell of a grid over the position, learned by counting
-the terrain seen, under the rate key ``parameter:field``);
-``x`` (the vehicle's state: position, heading as a unit vector and forward speed, moved by the
-world's own ``VehicleStep`` through a ``NonlinearGaussianTransition``, the same on every terrain;
-the model knows neither the field's wall clip nor the empty band's stall, which the world applies);
-``energy`` (four bands, a known
-table of drain and charge per terrain and cell); and the velocity command ``v``. The modalities:
-a satellite position fix whose noise follows a map over the field, a noisy gauge of the energy
-band, and the camera, in one of two forms: the image itself, through a frozen neural decoder over
-position and terrain (``camera=True``), or the terrain class a frozen recogniser reads off the
-image, through the recogniser's measured confusion table (``look``), which informs the terrain
-and not the position. The
-energy target prefers the full band, shallowly below it (a survey of a far sector must be
-affordable at the full band). The field's walls are a preference over the position fix
-(``wall_target``): flat inside the field and falling off past its edges, so a plan that would
-leave the field is scored down. The image target is a Gaussian over pixels conditional on the
-energy band: a strong preference for bright pictures when the energy is low, almost none when it
-is full, so that mapping is not coloured by a standing taste for light.
+the terrain seen, under the rate key ``parameter:field``); ``x`` (the vehicle's state: position,
+heading as a unit vector, forward speed and the battery's energy level, moved by the world's own
+``VehicleStep`` through a ``NonlinearGaussianTransition``, the same on every terrain: the battery
+drains with driving and on slopes and charges in the sun, mostly while parked, and near empty the
+drive fails, so the model predicts the stall the world applies; the model does not know the
+field's wall clip); and the velocity command ``v``. The modalities: a satellite position fix whose
+noise follows a map over the field, a gauge reading of the energy level (linear-Gaussian), and the
+camera, in one of two forms: the image itself, through a frozen neural decoder over position,
+heading and terrain (``camera=True``), or the terrain class a frozen recogniser reads off the
+image, through the recogniser's measured confusion table (``look``), which informs the terrain and
+not the position. The field's walls are a preference over the position fix (``wall_target``):
+flat inside the field and falling off past its edges, so a plan that would leave the field is
+scored down. The energy preference (``energy_preference``) is a Gaussian over the gauge's reading,
+centred on a full battery.
 
     system, params, grid, centres = rover(decoder)
 
-With ``tiered`` the model has a fifth node, the option control ``u_opt`` (survey sector 1 to 4, or
+With ``tiered`` the model has a fourth node, the option control ``u_opt`` (survey sector 1 to 4, or
 charge) that the scheduler supplies by a ``Link`` from its option action node: the rover plans no
-decision for it, and its factors read what is supplied as they read any control node. A position
-target sits at the sector's centre (no pull under charge) and the image preference is conditional on
-the energy band and the option (under charge the strongest scale at every band).
+decision for it, and its factors read what is supplied as they read any control node. A target over
+the vehicle's state is conditional on the option: under a survey option a broad Gaussian at the
+sector's centre, under charge a narrow one at the charging place (``charge_site``, the grid cell of
+highest solar yield) with the speed at rest.
 
 The objective has no uncertainty term on the position: the fix's information gain is the rover's
 localisation drive, and the field's novelty its mapping drive.
 """
 
+import dataclasses
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -43,6 +44,7 @@ from hybrid_aif import (
     ConditionalCategorical,
     ConditionalDirichlet,
     ConditionalGaussian,
+    Gaussian,
     Grid,
     LinearGaussianObservation,
     Parameter,
@@ -53,15 +55,21 @@ from hybrid_aif.factors import GridNoiseMap, NonlinearGaussianTransition
 from hybrid_aif.system import System, SystemParams
 
 N_TERRAIN = 3
-N_BANDS = 4
+N_BANDS = 4  # the energy bands the slow tier reads: empty, low, medium, full
 N_SURVEY = 4  # survey options: one per sector
 N_OPTIONS = N_SURVEY + 1  # and charge
+CHARGE = N_SURVEY  # the charge option's level
+STATE_DIM = 6  # position, heading pair, speed, energy level
 SECTOR_SD = 1.5  # position sd of the survey target: half the width of a sector (a quadrant)
-CHARGE_SD = 100.0  # the survey target's sd under charge: no effective pull
+SITE_SD = 0.25  # position sd of the charge target: within a map cell of the charging place
+REST_SD = 0.05  # speed sd of the charge target: parked
+FREE_SD = 100.0  # the sd of a coordinate a target leaves free (no effective pull)
 GRID_SHAPE = 16  # field cells per axis
 NOISE_NODES = 25  # fix-noise map nodes per axis
 POLICY_LEN = 12  # ticks the rover plans ahead: 9.6 map cells at the top speed of 0.3
-START_SD = (0.3, 0.3, 0.05, 0.05, 0.02)  # the initial belief's sd: position, heading pair, speed
+#  the initial belief's sd: position, heading pair, speed, energy level (a full battery is
+#  expected, but loosely: the first gauge reading sets the level)
+START_SD = (0.3, 0.3, 0.05, 0.05, 0.02, 1.0)
 PROPAGATION = "first_order"  # how a belief is pushed through the vehicle's motion
 WALL_SPACING = 0.4  # the wall preference's component grid, field units
 WALL_SD = 0.2  # each component's sd: the preference falls off over this distance past a wall
@@ -69,12 +77,15 @@ FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the uniform field prior
 MIXTURE_K = 1  # one component: the motion does not switch, the camera conditions one Gaussian
 # the posterior chain does not reach a mixture-carried factor, so "posterior" would change nothing
 PLANNING_BELIEF = "prior"
-# log-preference per band, full is best; the ladder is shallow below full because a survey of a
-# far sector must be affordable at the full band (a steep ladder, (-12, -6, -2, 0), priced every
-# survey above its novelty and left the scheduler charging)
-ENERGY_TARGET = (-12.0, -4.0, -0.3, 0.0)
-IMAGE_SCALES = (0.3, 0.5, 2.0, 40.0)  # target pixel sd per energy band (empty .. full)
-BRIGHT = 0.8  # the preferred pixel value
+#  the rover's preference over its energy level: a Gaussian over the gauge's reading, (centre,
+#  sd), centred on a full battery
+ENERGY_PREFERENCE = (wd.ENERGY_MAX, 1.0)
+#  the scheduler's log-preference per energy band, full is best. The empty band is the stall, a
+#  dead end whose cost lies mostly beyond the scheduler's two-option view (the novelty of every
+#  option a stalled rover forfeits, several nats each), so it is priced at several options'
+#  novelty, and the low band, one survey from it, at about one option's; the medium band costs a
+#  nat, so that a trip to sunny ground is taken before the low band rather than in it
+ENERGY_TARGET = (-40.0, -12.0, -1.0, 0.0)
 TERRAIN_NAMES = list(wd.TERRAIN_NAMES)
 ENERGY_NAMES = ["empty", "low", "medium", "full"]
 
@@ -105,36 +116,6 @@ def fix_noise_map():
     return GridNoiseMap(jnp.asarray(values), low, high, axes=(0, 1))
 
 
-def _band_table(d):
-    """The band transition ``(next, band, ...)`` for an expected change per tick ``d`` (any
-    shape): the band moves up with probability ``clip(d, 0, 0.5)`` when ``d > 0`` and down with
-    ``clip(-d, 0, 0.5)`` when ``d < 0``; the empty and full bands absorb at the ends."""
-    up = np.clip(d, 0.0, 0.5)
-    down = np.clip(-d, 0.0, 0.5)
-    table = np.zeros((N_BANDS, N_BANDS, *d.shape), np.float32)
-    for b in range(N_BANDS):
-        go_up = up if b < N_BANDS - 1 else np.zeros_like(up)
-        go_down = down if b > 0 else np.zeros_like(down)
-        table[b, b] = 1.0 - go_up - go_down
-        if b < N_BANDS - 1:
-            table[b + 1, b] = go_up
-        if b > 0:
-            table[b - 1, b] = go_down
-    return table
-
-
-def energy_table(centres):
-    """The band transition ``(next, band, terrain, cell)`` from the world's own energy rates at
-    the cell's centre and a terrain, driving at the cruise speed (``CRUISE_SPEED``): the expected
-    change per tick ``d = charge - drain`` (``_band_table``)."""
-    cells = jnp.asarray(centres)
-    d = np.zeros((N_TERRAIN, centres.shape[0]))
-    for m in range(N_TERRAIN):
-        drain, charge = jax.vmap(lambda xy, m=m: wd.energy_rates(xy, m, wd.CRUISE_SPEED))(cells)
-        d[m] = np.asarray(charge - drain)
-    return _band_table(d)
-
-
 def wall_target():
     """The wall preference over the position fix: an equal-weight mixture of Gaussians of sd
     ``WALL_SD`` on a grid of spacing ``WALL_SPACING`` filling the field (the first centre half a
@@ -162,25 +143,44 @@ def gauge_table():
     return acc * np.eye(N_BANDS) + (1 - acc) / (N_BANDS - 1) * (1 - np.eye(N_BANDS))
 
 
-def image_target(tiered=False):
-    """The image preference: one Gaussian per energy band over the pixels, the same bright
-    reference picture with a pixel sd per band. The covariance is diagonal, stored as the
-    per-pixel standard deviation ``(4, p)``. With ``tiered`` the Gaussian is also indexed by the
-    option, ``(4, 5, p)``: a survey option keeps the per-band scales, charge uses the strongest
-    scale at every band."""
-    p = wd.IMG_PIXELS
-    scales = jnp.asarray(IMAGE_SCALES, jnp.float32)
-    if not tiered:
-        loc = jnp.full((N_BANDS, p), BRIGHT, jnp.float32)
-        sd = jnp.broadcast_to(scales[:, None], (N_BANDS, p))
-        return ConditionalGaussian(loc=loc, chol=sd, parent_ndims=1)
-    per_option = jnp.concatenate(
-        [jnp.broadcast_to(scales[:, None], (N_BANDS, N_SURVEY)), jnp.full((N_BANDS, 1), scales[0])],
+def with_level_input(decoder):
+    """The camera's decoder over the six-coordinate state: a decoder trained on ``(x, y, cos
+    theta, sin theta, s)`` and the terrain gains an input for the energy level with zero weight in
+    its first layer, so its picture and noise are those of the trained decoder at every level;
+    ``None`` and a decoder that already reads six coordinates come back as given."""
+    if decoder is None or decoder.parent_dims[0] == STATE_DIM:
+        return decoder
+    first = decoder.layers[0]
+    n = decoder.parent_dims[0]
+    weight = jnp.concatenate(
+        [
+            first.weight[:, :n],
+            jnp.zeros((first.weight.shape[0], 1), first.weight.dtype),
+            first.weight[:, n:],
+        ],
         axis=1,
     )
-    loc = jnp.full((N_BANDS, N_OPTIONS, p), BRIGHT, jnp.float32)
-    sd = jnp.broadcast_to(per_option[:, :, None], (N_BANDS, N_OPTIONS, p))
-    return ConditionalGaussian(loc=loc, chol=sd, parent_ndims=2)
+    wide = eqx.nn.Linear(first.in_features + 1, first.out_features, key=jax.random.PRNGKey(0))
+    wide = eqx.tree_at(lambda m: (m.weight, m.bias), wide, (weight, first.bias))
+    return dataclasses.replace(
+        decoder,
+        layers=(wide, *decoder.layers[1:]),
+        parent_dims=(n + 1, *decoder.parent_dims[1:]),
+    )
+
+
+def charge_site(shape=None):
+    """The charging place: the centre of the grid cell whose mean solar yield (``SUN`` over the
+    world's tabulated points in the cell) is highest, ``(2,)``."""
+    shape = shape or GRID_SHAPE
+    (x0, x1), (y0, y1) = wd.FIELD
+    ix = np.clip(((wd._GX - x0) / (x1 - x0) * shape).astype(int), 0, shape - 1)
+    iy = np.clip(((wd._GY - y0) / (y1 - y0) * shape).astype(int), 0, shape - 1)
+    cell = (ix * shape + iy).ravel()
+    total = np.bincount(cell, wd.SUN.ravel(), shape * shape)
+    count = np.bincount(cell, None, shape * shape)
+    _, centres = field_grid(shape)
+    return centres[int(np.argmax(total / count))]
 
 
 def sector_centres():
@@ -193,26 +193,36 @@ def sector_centres():
 
 
 def option_position_target():
-    """The target over the vehicle's state conditional on the option, ``(5, 5)`` locations and
-    ``(5, 5, 5)`` factors: a Gaussian at the survey sector's centre (position sd ``SECTOR_SD``,
-    heading pair and speed sd 2) under a survey option, and a very wide one (no effective pull)
-    under charge."""
-    loc = np.zeros((N_OPTIONS, 5), np.float32)
+    """The target over the vehicle's state conditional on the option, ``(5, 6)`` locations and
+    ``(5, 6, 6)`` factors: under a survey option a Gaussian at the sector's centre (position sd
+    ``SECTOR_SD``, heading pair and speed sd 2); under charge a Gaussian at the charging place
+    (``charge_site``, position sd ``SITE_SD``) with the speed at rest (sd ``REST_SD``). The
+    energy level is left free (sd ``FREE_SD``): the energy preference is over the gauge."""
+    loc = np.zeros((N_OPTIONS, STATE_DIM), np.float32)
     loc[:N_SURVEY, :2] = sector_centres()
-    chol = np.zeros((N_OPTIONS, 5, 5), np.float32)
+    loc[CHARGE, :2] = charge_site()
+    chol = np.zeros((N_OPTIONS, STATE_DIM, STATE_DIM), np.float32)
     for k in range(N_OPTIONS):
-        sd = [SECTOR_SD, SECTOR_SD, 2.0, 2.0, 2.0] if k < N_SURVEY else [CHARGE_SD] * 5
+        if k < N_SURVEY:
+            sd = [SECTOR_SD, SECTOR_SD, 2.0, 2.0, 2.0, FREE_SD]
+        else:
+            sd = [SITE_SD, SITE_SD, 2.0, 2.0, REST_SD, FREE_SD]
         chol[k] = np.diag(sd)
     return ConditionalGaussian(loc=jnp.asarray(loc), chol=jnp.asarray(chol), parent_ndims=1)
+
+
+def energy_target(preference=ENERGY_PREFERENCE):
+    """The energy preference over the gauge's reading: a Gaussian ``(centre, sd)``."""
+    centre, sd = preference
+    return Gaussian(loc=jnp.asarray([centre], jnp.float32), chol=jnp.asarray([[sd]], jnp.float32))
 
 
 def rover(
     decoder,
     grid_shape=GRID_SHAPE,
-    energy_target=ENERGY_TARGET,
+    energy_preference=ENERGY_PREFERENCE,
     field_strength=FIELD_STRENGTH,
     epistemic=("transition:terrain", "obs:fix"),
-    image_preference=True,
     policy_len=POLICY_LEN,
     camera=True,
     planning_belief=PLANNING_BELIEF,
@@ -222,38 +232,33 @@ def rover(
     propagation=PROPAGATION,
 ):
     """``(System, SystemParams, Grid, centres)`` for the survey rover. ``decoder`` is the
-    camera's likelihood; ``epistemic`` names the information-gain terms the planner scores (the
-    field's novelty and the fix by default; ``False`` for none); ``image_preference=False``
-    leaves the image target out; ``camera=False`` leaves the image out of the model;
-    ``planning_belief`` is the System's setting of that name; ``tiered`` adds the option control
-    node ``u_opt`` that the scheduler supplies by a ``Link`` from its option action node (the
-    rover plans no decision for it, and its factors read what is supplied as they read any
-    control node), with the position target and the image preference conditional on it;
+    camera's likelihood (over five state coordinates or six; ``with_level_input``);
+    ``epistemic`` names the information-gain terms the planner scores (the field's novelty and the
+    fix by default; ``False`` for none); ``energy_preference`` is the Gaussian ``(centre, sd)``
+    over the gauge's reading (``energy_target``), ``None`` for none; ``camera=False`` leaves the
+    image out of the model; ``planning_belief`` is the System's setting of that name; ``tiered``
+    adds the option control node ``u_opt`` that the scheduler supplies by a ``Link`` from its
+    option action node (the rover plans no decision for it, and its factors read what is supplied
+    as they read any control node), with the target over the vehicle's state conditional on it;
     ``wall=False`` leaves the wall preference (``wall_target``) out; ``look`` (a confusion table
     ``[reading, terrain]``) adds the modality ``look``, the recogniser's reading of the terrain,
     with that table as its likelihood."""
     grid, centres = field_grid(grid_shape)
     n_cells = grid.n_cells
-    # factors: terrain 0, x 1, energy 2, v 3 (float control), u_opt 4 (the option, tiered only)
+    # factors: terrain 0, x 1, v 2 (float control), u_opt 3 (the option, tiered only)
     modalities = ["fix"] + (["img"] if camera else []) + (["look"] if look is not None else [])
     modalities += ["gauge"]
     A_deps = [(1,)] + ([(1, 0)] if camera else []) + ([(0,)] if look is not None else [])
-    A_deps += [(2,)]
-    conditional = camera and image_preference
-    c_deps = {}
-    if tiered:
-        c_deps["x"] = ("u_opt",)
-    if conditional:
-        c_deps["img"] = ("energy", "u_opt") if tiered else ("energy",)
+    A_deps += [(1,)]
     system = System(
         A_deps=tuple(A_deps),
-        B_deps=((1,), (3,), (2, 0, 1), ()) + (((),) if tiered else ()),
-        controls=(3, 4) if tiered else (3,),
+        B_deps=((1,), (2,), ()) + (((),) if tiered else ()),
+        controls=(2, 3) if tiered else (2,),
         action_names=("a_v", "a_opt") if tiered else ("a_v",),
-        factor_names=("terrain", "x", "energy", "v") + (("u_opt",) if tiered else ()),
+        factor_names=("terrain", "x", "v") + (("u_opt",) if tiered else ()),
         modality_names=tuple(modalities),
         cells={"x": grid},
-        C_deps=c_deps or (),
+        C_deps={"x": ("u_opt",)} if tiered else (),
         policy_len=policy_len,
         mixture_k=MIXTURE_K,
         mixture_schedule="mode_aligned",
@@ -261,31 +266,28 @@ def rover(
         epistemic=tuple(epistemic) if epistemic else False,
         terms=(),  # no uncertainty term: the fix's information gain is the localisation drive
     )
-    #  a mixture: the camera's likelihood switches with the terrain, so the belief over x splits
-    #  by the terrain it is conditioned on (``mixture_schedule`` keeps one component per mode)
+    start = jnp.asarray([*wd.START, 0.0, 1.0, 0.0, wd.ENERGY_MAX], jnp.float32)
     x0 = MixtureGaussian(
         log_weights=jnp.log(jnp.ones(MIXTURE_K) / MIXTURE_K),
-        means=jnp.broadcast_to(
-            jnp.asarray([*wd.START, 0.0, 1.0, 0.0], jnp.float32), (MIXTURE_K, 5)
-        ),
-        chols=jnp.broadcast_to(jnp.diag(jnp.asarray(START_SD)), (MIXTURE_K, 5, 5)),
+        means=jnp.broadcast_to(start, (MIXTURE_K, STATE_DIM)),
+        chols=jnp.broadcast_to(jnp.diag(jnp.asarray(START_SD)), (MIXTURE_K, STATE_DIM, STATE_DIM)),
     )
     uniform = jnp.full((N_TERRAIN, n_cells), 1.0 / N_TERRAIN)
+    eye = jnp.eye(STATE_DIM)
     likelihood = {
-        "fix": LinearGaussianObservation(H=jnp.eye(5)[:2], c=jnp.zeros(2), noise=fix_noise_map()),
-        "gauge": ConditionalCategorical(
-            log_table=jnp.log(jnp.asarray(gauge_table(), jnp.float32)), parent_ndims=1
+        "fix": LinearGaussianObservation(H=eye[:2], c=jnp.zeros(2), noise=fix_noise_map()),
+        "gauge": LinearGaussianObservation(
+            H=eye[5:6], c=jnp.zeros(1), noise=jnp.asarray([[wd.GAUGE_SD]], jnp.float32)
         ),
     }
     if camera:
-        likelihood["img"] = decoder
+        likelihood["img"] = with_level_input(decoder)
     if look is not None:
         table = np.clip(np.asarray(look, np.float64), 1e-4, None)  # no reading impossible
         table = table / table.sum(axis=0, keepdims=True)
         likelihood["look"] = ConditionalCategorical(
             log_table=jnp.log(jnp.asarray(table, jnp.float32)), parent_ndims=1
         )
-    energy0 = jnp.log(jnp.asarray([1e-6, 1e-6, 1e-6, 1.0]))
     params = SystemParams(
         parameters={"field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength)},
         likelihood=likelihood,
@@ -294,30 +296,22 @@ def rover(
             "x": NonlinearGaussianTransition(
                 f=wd.VehicleStep(),
                 innovations=ConditionalGaussian(
-                    loc=jnp.zeros((1, 5), jnp.float32),
+                    loc=jnp.zeros((1, STATE_DIM), jnp.float32),
                     chol=jnp.diag(jnp.asarray(wd.STATE_SD, jnp.float32))[None],
                     parent_ndims=1,
                 ),
                 propagation=propagation,
             ),
-            "energy": ConditionalCategorical(
-                log_table=jnp.log(jnp.clip(jnp.asarray(energy_table(centres)), 1e-6)),
-                parent_ndims=3,
-            ),
         },
         initial_state_prior={
             "terrain": Categorical(logits=jnp.zeros(N_TERRAIN)),
             "x": x0,
-            "energy": Categorical(logits=energy0),
         },
         control={"v": Box(jnp.asarray(wd.COMMAND_LOW), jnp.asarray(wd.COMMAND_HIGH))},
-        state_targets={
-            "energy": Categorical(logits=jnp.asarray(energy_target, jnp.float32)),
-            **({"x": option_position_target()} if tiered else {}),
-        },
+        state_targets={"x": option_position_target()} if tiered else {},
         obs_targets={
             **({"fix": wall_target()} if wall else {}),
-            **({"img": image_target(tiered)} if conditional else {}),
+            **({"gauge": energy_target(energy_preference)} if energy_preference else {}),
         },
     )
     return system, params, grid, centres

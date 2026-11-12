@@ -74,11 +74,14 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   extent `[[x0, x1], [y0, y1]]`; `meta.start` the start position.
 - `meta.world`: 61 x 61 maps over the field (`xs`, `ys`), each indexed `[ix][iy]`, x first:
   `height`, `light` (illumination), `openness`, `sd_fix` (the satellite fix's noise sd, larger
-  where terrain blocks the sky), `slope`, `terrain` (class index per `meta.names.terrain`).
+  where terrain blocks the sky), `slope`, `terrain` (class index per `meta.names.terrain`) and,
+  in bundles with a solar battery, `sun` (the solar yield, where parking charges; the viewer's
+  illumination layer shows it when present).
 - `meta.names`: `terrain` (firm, rough, ice) and `energy` (empty, low, medium, full).
 - `meta.tiers`: `slow_ticks` (24), `options` (survey sector 1 to 4, charge), `zones`,
   `zone_split` (the field's quadrants are split at these x and y), `sector_centres`,
-  `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
+  `charge_site` (the charging place the charge option drives to and parks at; the viewer marks
+  it), `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
   one-level run is the rover alone, with no scheduler and no option). Bundles whose one-level run
   pinned an option carry `pinned_option` instead; the viewer reads either.
 - `meta.image`: `side` (32), `layout` (row 0 is the top of the picture), `view` (what the camera
@@ -99,9 +102,13 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   speed, and turn from -1 to 1), `state_sd`, `state`, `top_speed`, `cruise_speed` (the measured
   typical speed the energy tables are built at), `terrain_names` and `rule`, a sentence giving the
   vehicle's integration rule (position along the heading at the speed, a turn of at most
-  `turn_max_degrees`, in place too, the speed moving toward the target). The page rolls each plan
-  of (drive, turn) forward with it from the believed heading and speed, and while playing moves
-  the rover between ticks (unless the reader asks for reduced motion).
+  `turn_max_degrees`, in place too, the speed moving toward the target). Bundles with a solar
+  battery also carry `stall` (`level`, `width`: the drive delivers the share 1 / (1 + exp(-(level
+  - stall.level) / stall.width)) of the command) and `energy` (the drain and charge constants and
+  their `rule`); the energy level is the state's last coordinate. The page rolls each plan of
+  (drive, turn) forward with it from the believed heading and speed (and, with a stall, the drive
+  share at the believed level, held over the plan), and while playing moves the rover between
+  ticks (unless the reader asks for reduced motion).
 - `meta.sign_convention`: every leaf is added to G with its sign applied, so an epistemic leaf
   appears negative.
 - `graph`: `tiers` (factors, modalities, controls per tier), `edges` (`from`, `to`, `kind`:
@@ -111,9 +118,13 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
 - Per tick of a run: `t`, `v`, `true_x` (position and velocity), `true_heading`, `true_terrain`,
   `recogniser` (the frozen recogniser's class probabilities for the image), `look` (the class it
   reported, when the rover observes it: `--camera look`; such a run has no `recon`),
-  `true_energy` (`band`, `level`), `stalled`, `fix`, `gauge`, `img` and `recon` (32 x 32 uint8,
+  `true_energy` (`band`, `level`), `stalled` (with a solar battery: the level below
+  `meta.dynamics.stall.level`; else the empty band), `drive_share` (the share of the command the
+  drive delivers), `fix`, `gauge` (the gauge's reading: of the level, a number, with a solar
+  battery; of the band, an index, before), `img` and `recon` (32 x 32 uint8,
   observed and the decoder's prediction at the belief), `belief` (`components` with `w`, `mu`,
-  `cov`; `terrain`; `energy`; `velocity`; `mean`; `heading` and `heading_sd`, the believed heading
+  `cov`; `terrain`; `energy` (band probabilities; with a solar battery from the Gaussian belief
+  over the level, whose mean and sd are `energy_level` and `energy_sd`); `velocity`; `mean`; `heading` and `heading_sd`, the believed heading
   and its sd; `speed` and `speed_sd`), `true_speed`, `camera` (`log_evidence`, `scale_mean`, the
   decoder's noise at the belief), `policies` (the rover tier's four warm
   starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,

@@ -6,6 +6,9 @@ several warm starts, acts, and learns the terrain field by counting each terrain
 cells it was in. The true world (``survey_world``) is a black box, declared by its ports alone and
 coupled to the rover with ``couple``: the rover's velocity action node drives the world's in-port
 ``v``, and the world's out-ports (the fix, the image and the gauge) feed the rover's modalities.
+The rover's battery is a coordinate of its vehicle state: driving drains it, the sun charges it
+where the rover parks, and near empty the drive stalls, in the world and in the rover's model
+alike.
 With ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are first merged into
 one agent: the scheduler's option action node drives the rover's option control node (an
 ``Identify``), the field is one parameter variable (an ``Identify``), and the scheduler's cell
@@ -35,6 +38,7 @@ import argparse
 import dataclasses
 import functools
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -67,10 +71,10 @@ FIELD_LR = 1.0  # weight of one tick's terrain counts in the field's Dirichlet (
 FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the field's uniform prior
 COVERED_MAX = 0.6  # a cell counts as mapped when its field's top probability exceeds this
 SEEN_COUNTS = 1.0  # a cell counts as seen once it has absorbed this many counts
+CELL_SIDE = (wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE  # a map cell's side
 MDL_RESOLUTION = 100.0
 MARKS = (50, 100, 200)  # the ticks REPORT.md gives coverage at
 MAP_SIDE = 61  # the world maps are published at this many samples per axis
-IMAGE_PREFERENCE = True  # whether the default settings declare the image target
 EPI = ("transition:terrain", "obs:fix")
 #  how the rover sees through its camera (``camera_mode``): "image", the forward camera's picture
 #  through the decoder (the showcase); "fixed" and "look" are the comparison experiments B and A
@@ -79,29 +83,26 @@ NAMES = {"terrain": sm.TERRAIN_NAMES, "energy": sm.ENERGY_NAMES}
 
 
 def settings_grid():
-    """The four settings, each one seed: epistemic terms on (the default), off, the field's
-    novelty alone (these three with the image preference set by ``IMAGE_PREFERENCE``), and
-    epistemic terms on with no image preference."""
+    """The three settings, each one seed: epistemic terms on (the default), off, and the field's
+    novelty alone."""
 
-    def setting(sid, label, epistemic, image_preference):
+    def setting(sid, label, epistemic):
         return dict(
             id=sid,
             label=label,
             epistemic=list(epistemic),
-            image_preference=image_preference,
             field_lr=FIELD_LR,
             field_strength=FIELD_STRENGTH,
-            energy_logits=list(sm.ENERGY_TARGET),
+            energy_preference=list(sm.ENERGY_PREFERENCE),
             planning_belief=sm.PLANNING_BELIEF,
             grid=sm.GRID_SHAPE,
             seed=0,
         )
 
     return [
-        setting("epi", "Novelty and fix information gain", EPI, IMAGE_PREFERENCE),
-        setting("pragmatic", "No epistemic terms", (), IMAGE_PREFERENCE),
-        setting("novelty-only", "Field novelty only", EPI[:1], IMAGE_PREFERENCE),
-        setting("no-image-preference", "Epistemic terms on, no image preference", EPI, False),
+        setting("epi", "Novelty and fix information gain", EPI),
+        setting("pragmatic", "No epistemic terms", ()),
+        setting("novelty-only", "Field novelty only", EPI[:1]),
     ]
 
 
@@ -184,10 +185,13 @@ def position_belief(beliefs, pre=""):
     heading_sd = float(np.sqrt(max(jac @ cov[2:4, 2:4] @ jac, 0.0)))
     heading = float(np.arctan2(s, c))
     speed = float(mean[4])
+    level, level_sd = float(mean[5]), float(np.sqrt(max(cov[5, 5], 1e-12)))
     return dict(
         components=comps,
         terrain=[float(p) for p in np.asarray(beliefs[pre + "terrain"].probs)],
-        energy=[float(p) for p in np.asarray(beliefs[pre + "energy"].probs)],
+        energy=band_probabilities(level, level_sd),
+        energy_level=level,
+        energy_sd=level_sd,
         velocity=[speed * float(np.cos(heading)), speed * float(np.sin(heading))],
         heading=heading,
         heading_sd=heading_sd,
@@ -195,6 +199,15 @@ def position_belief(beliefs, pre=""):
         speed_sd=float(np.sqrt(max(cov[4, 4], 0.0))),
         mean=[float(mean[0]), float(mean[1])],
     )
+
+
+def band_probabilities(level, sd):
+    """The probability of each energy band (a unit each, the top band open above) under a Gaussian
+    belief over the level, its mass below the first boundary counted in the empty band."""
+    edges = np.arange(1, sm.N_BANDS, dtype=float)
+    cdf = 0.5 * (1.0 + np.vectorize(math.erf)((edges - level) / (sd * np.sqrt(2.0))))
+    cuts = np.concatenate([[0.0], cdf, [1.0]])
+    return [float(p) for p in np.diff(cuts)]
 
 
 def image_rows(flat):
@@ -273,21 +286,41 @@ def toward(position, heading, target, horizon):
     return plan
 
 
+def park_at(position, heading, speed, target, horizon):
+    """A plan that turns toward ``target``, drives at it and stops on it: ``toward``, with the
+    drive cut once the rest of the way is within the distance the speed coasts to a stop (the
+    speed keeps ``KEEP`` of itself a tick with no drive), rolled forward from ``speed``."""
+    plan = toward(position, heading, target, horizon)
+    left = float(np.linalg.norm(np.asarray(target) - np.asarray(position)))
+    for k in range(horizon):
+        coast = speed * wd.KEEP / (1.0 - wd.KEEP)
+        if left - speed <= coast:
+            plan[k:, 0] = 0.0
+            break
+        left -= speed
+        speed = wd.KEEP * speed + wd.GAIN * plan[k, 0]
+    return plan
+
+
 def warm_starts(previous, belief, counts, centres, horizon, starts, target=None):
     """The planner's warm starts, ``(starts, horizon, 2)``: the plan acted on in the round before,
     shifted one tick on (zeros in the first round); a plan toward the nearest cell the field has
     not yet seen (fewer than ``SEEN_COUNTS`` counts, by the rover's own field), so a rover whose
     neighbourhood is mapped still has a start that reaches new ground; full speed ahead; and
     standing still. ``target`` (the position target's centre and sd per axis, the sector under a
-    survey option) keeps the unseen cells to those within two sd of it, when there are any. The
-    descent then moves each by the objective's gradient, and the best final plan is acted on."""
+    survey option) keeps the unseen cells to those within two sd of it, when there are any; a
+    target narrower than a map cell (the charging place under charge) has, in place of the start
+    toward an unseen cell, one that drives to the target and parks there (``park_at``). The descent
+    then moves each by the objective's gradient, and the best final plan is acted on."""
     position, heading = np.asarray(belief["mean"]), belief["heading"]
     unseen = np.flatnonzero(np.asarray(counts) < SEEN_COUNTS)
     if target is not None:
         loc, sd = target
         near = unseen[np.all(np.abs(centres[unseen] - loc) <= 2 * sd, axis=1)]
         unseen = near if len(near) else unseen
-    if len(unseen):
+    if target is not None and np.all(target[1] < CELL_SIDE):
+        explore = park_at(position, heading, max(belief["speed"], 0.0), target[0], horizon)
+    elif len(unseen):
         near = unseen[np.argmin(np.linalg.norm(centres[unseen] - position, axis=1))]
         explore = toward(position, heading, centres[near], horizon)
     else:
@@ -305,7 +338,7 @@ def warm_starts(previous, belief, counts, centres, horizon, starts, target=None)
 def position_target(params, pre):
     """The rover's position target in its view, ``(centre, sd)`` over ``(x, y)``, or ``None``:
     the two-tier rover's view is sliced at the option in force, so its target on ``x`` is that
-    option's Gaussian (the sector's under a survey, a very wide one under charge)."""
+    option's Gaussian (the sector's under a survey, the charging place's under charge)."""
     target = params.state_targets.get(pre + "x")
     if target is None or np.ndim(target.loc) != 1:
         return None
@@ -440,7 +473,7 @@ def tick_rows(rec, rover, ticks, extra=None, recognise=None):
     rows = []
     for t in range(ticks):
         state = world.carries[t]
-        energy = float(state["energy"])
+        energy = float(wd.level_of(state))
         if "img" in mind.received:
             image = mind.received["img"][t]
         else:  # the world's emission the round before (its start for round 0)
@@ -456,9 +489,10 @@ def tick_rows(rec, rover, ticks, extra=None, recognise=None):
             true_speed=float(state["x"][4]),
             true_terrain=int(state["terrain"]),
             true_energy=dict(band=int(wd.band_of(jnp.asarray(energy))), level=energy),
-            stalled=bool(wd.band_of(jnp.asarray(energy)) == 0),
+            stalled=bool(wd.stalled(energy)),
+            drive_share=float(wd.drive_share(jnp.asarray(energy))),
             fix=[float(c) for c in mind.received["fix"][t]],
-            gauge=int(mind.received["gauge"][t]),
+            gauge=float(mind.received["gauge"][t][0]),
             img=image_rows(image),
             **mind.carries[t + 1].record,
         )
@@ -515,6 +549,12 @@ def sensors(mode, encoder):
     return wd.world_stepper(lambda image: jnp.argmax(readout(image))), readout
 
 
+def energy_preference(setting):
+    """A setting's energy preference over the rover's gauge, ``(centre, sd)``, or ``None``."""
+    pref = setting.get("energy_preference")
+    return tuple(pref) if pref else None
+
+
 def run_setting(
     setting,
     ticks,
@@ -539,8 +579,8 @@ def run_setting(
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
         planning_belief=setting["planning_belief"],
-        energy_target=tuple(setting["energy_logits"]),
-        image_preference=setting["image_preference"],
+        energy_preference=energy_preference(setting),
+        policy_len=setting.get("policy_len", sm.POLICY_LEN),
     )
     system, params = couple(
         {"rover": (rs, rp), "world": wd.world_system(look=mode == "look")},
@@ -566,19 +606,14 @@ def run_setting(
 
 
 SLOW_TICKS = ss.SURVEY_TICKS  # fast ticks per slow step
-#  the two-tier comparison leaves the image preference out: over a camera that looks along the
-#  heading, a preference for bright pictures rewards turning toward bright views (the sky), and the
-#  rover hunted for views instead of driving (measured with the velocity-heading camera); the light
-#  it needs is in its energy table
-IMAGE_PREFERENCE_L2 = False
 READINGS_AVAILABLE = "readings" in {f.name for f in dataclasses.fields(ss.System)}
 
 
 def settings_grid_l2():
     """The settings of the two-tier comparison: the scheduler over the rover (two levels), and
     the rover alone (one level), the fast tier with its own novelty term and no scheduler, free to
-    go where it likes. Both share the rover's epistemic terms and field, and neither declares the
-    image preference (``IMAGE_PREFERENCE_L2``)."""
+    go where it likes. Both share the rover's epistemic terms, its energy preference and its
+    field; the scheduler's ladder over the energy bands is ``energy_logits``."""
 
     def setting(sid, label, tiers):
         return dict(
@@ -586,9 +621,9 @@ def settings_grid_l2():
             label=label,
             tiers=tiers,
             epistemic=list(EPI),
-            image_preference=IMAGE_PREFERENCE_L2,
             field_lr=FIELD_LR,
             field_strength=FIELD_STRENGTH,
+            energy_preference=list(sm.ENERGY_PREFERENCE),
             energy_logits=list(sm.ENERGY_TARGET),
             planning_belief=sm.PLANNING_BELIEF,
             grid=sm.GRID_SHAPE,
@@ -618,8 +653,8 @@ def agent_system(decoder, setting, confusion=None):
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
         planning_belief=setting["planning_belief"],
-        energy_target=tuple(setting["energy_logits"]),
-        image_preference=setting["image_preference"],
+        energy_preference=energy_preference(setting),
+        policy_len=setting.get("policy_len", sm.POLICY_LEN),
         tiered=True,
     )
     ms, mp = ss.scheduler(
@@ -645,12 +680,12 @@ def agent_system(decoder, setting, confusion=None):
 
 def survey_system(decoder, setting, confusion=None):
     """The closed System of a two-tier run: the agent (``agent_system``) coupled to the world, the
-    gauge feeding both tiers. Returns ``(System, SystemParams)``."""
+    gauge reading the rover and the band meter the scheduler. Returns ``(System, SystemParams)``."""
     agent, _ = agent_system(decoder, setting, confusion)
     mode = camera_mode(setting)
     return couple(
         {"agent": agent, "world": wd.world_system(look=mode == "look")},
-        [*world_bindings("agent.rover", mode), Identify("world.gauge", "agent.mission.gauge")],
+        [*world_bindings("agent.rover", mode), Identify("world.band", "agent.mission.gauge")],
     )
 
 
@@ -729,6 +764,7 @@ def run_tiered(
     system, params = survey_system(decoder, setting, confusion)
     world_step, readout = sensors(camera_mode(setting), encoder)
     every = setting["slow_ticks"]
+    start = setting.get("start_energy")
     seconds = []
     mission = timed(
         plan(trace=True, selection="deterministic", replace={"policy_len": 2}),
@@ -745,6 +781,7 @@ def run_tiered(
         steps={"agent.mission": mission, "agent.rover": rover, "world": world_step},
         clocks={"agent.mission": every / ss.SURVEY_TICKS},
         tick_order="sequential",
+        carries=None if start is None else {"world": {"energy": start}},
         record_carries=True,
     )
     scheduler = rec["agent.mission"]
@@ -766,7 +803,7 @@ def run_tiered(
 
 
 def downsampled_maps():
-    xs, ys, height, openness, light, slope, sd_fix, terrain = wd.maps()
+    xs, ys, height, openness, light, slope, sd_fix, terrain, sun = wd.maps()
     step = (len(xs) - 1) // (MAP_SIDE - 1)
 
     def thin(a, digits=3):
@@ -781,13 +818,14 @@ def downsampled_maps():
         openness=thin(openness),
         sd_fix=thin(sd_fix),
         slope=thin(slope),
+        sun=thin(sun),
         terrain=np.asarray(terrain)[::step, ::step].astype(int).tolist(),
     )
 
 
 def dynamics_record():
-    """The vehicle's motion, the rule a plan of (drive, turn) commands integrates under, the same
-    on every terrain."""
+    """The vehicle's motion and battery, the rule a plan of (drive, turn) commands integrates
+    under, the same on every terrain."""
     return dict(
         kind="vehicle",
         dt=float(wd.DT),
@@ -797,36 +835,71 @@ def dynamics_record():
         command_low=[float(v) for v in wd.COMMAND_LOW],
         command_high=[float(v) for v in wd.COMMAND_HIGH],
         state_sd=[float(v) for v in wd.STATE_SD],
-        state=["x", "y", "cos heading", "sin heading", "forward speed"],
+        state=list(wd.STATE_NAMES),
         top_speed=wd.top_speed(),
         cruise_speed=float(wd.CRUISE_SPEED),
         terrain_names=list(wd.TERRAIN_NAMES),
+        stall=dict(level=float(wd.STALL_LEVEL), width=float(wd.STALL_WIDTH)),
+        energy=dict(
+            max=float(wd.ENERGY_MAX),
+            base_drain=float(wd.BASE_DRAIN),
+            move_drain=float(wd.MOVE_DRAIN),
+            slope_drain=float(wd.SLOPE_DRAIN),
+            charge_rate=float(wd.CHARGE_RATE),
+            moving_charge=float(wd.MOVING_CHARGE),
+            park_speed=float(wd.PARK_SPEED),
+            sun_power=float(wd.SUN_POWER),
+            gauge_sd=float(wd.GAUGE_SD),
+            rule=(
+                "per tick, before the move: level += charge - drain, drain = base_drain + "
+                "(move_drain + slope_drain * slope) * speed, charge = charge_rate * sun * "
+                "(moving_charge + (1 - moving_charge) * exp(-(speed / park_speed)^2)), sun the "
+                "map world.sun (the sunlight over its maximum, to sun_power); held in [0, max]"
+            ),
+        ),
         rule=(
             "per tick, the command (drive, turn), drive in [0, 1] (the target speed as a share of "
-            "the top speed) and turn in [-1, 1]: position += dt * speed * (cos heading, sin "
-            "heading) (the heading and speed before the tick), heading += dt * turn_max * turn (in "
-            "place too), speed = keep * speed + gain * drive (the speed moves toward top_speed * "
-            "drive; the rover drives forward only), with noise of sd state_sd; then the position "
-            "is clipped to the field and a rover that hits a wall stops, and an empty energy band "
-            "zeroes the command (the model knows neither). The top speed is gain / (1 - keep)"
+            "the top speed) and turn in [-1, 1], scaled by the drive share g = 1 / (1 + "
+            "exp(-(level - stall.level) / stall.width)), near one above the stall and near zero "
+            "near empty: position += dt * speed * (cos heading, sin heading) (the heading and "
+            "speed before the tick), heading += dt * turn_max * g * turn (in place too), speed = "
+            "keep * speed + gain * g * drive (the speed moves toward top_speed * g * drive; the "
+            "rover drives forward only), the level by the energy rule, with noise of sd "
+            "state_sd; then the position is clipped to the field and a rover that hits a wall "
+            "stops (the model does not know the walls; it knows the stall). The top speed is "
+            "gain / (1 - keep)"
         ),
     )
 
 
 def plan_path(tick, policy):
     """The positions a rover plan passes through, as the page draws it: from the plan's start,
-    the believed heading and speed, rolled forward by the vehicle's rule without noise
-    (``survey_world.VehicleStep``, ``dynamics_record``), one position per plan step after the
-    start."""
-    theta, speed = tick["belief"]["heading"], tick["belief"]["speed"]
-    x = np.asarray(policy["start"], float)
-    out = []
-    for a in np.clip(np.asarray(policy["v_plan"], float), wd.COMMAND_LOW, wd.COMMAND_HIGH):
-        x = x + wd.DT * speed * np.asarray([np.cos(theta), np.sin(theta)])
-        theta = theta + wd.DT * wd.TURN_MAX * a[1]
-        speed = wd.KEEP * speed + wd.GAIN * a[0]
-        out.append(x)
-    return np.asarray(out)
+    the believed heading, speed and energy level, rolled forward by the vehicle's rule without
+    noise (``survey_world.VehicleStep``, ``dynamics_record``), one position per plan step after
+    the start."""
+    b = tick["belief"]
+    x = np.asarray(
+        [
+            *policy["start"],
+            np.cos(b["heading"]),
+            np.sin(b["heading"]),
+            b["speed"],
+            b.get("energy_level", wd.ENERGY_MAX),
+        ],
+        np.float32,
+    )
+    return np.asarray(_roll(jnp.asarray(x), jnp.asarray(policy["v_plan"], jnp.float32)))
+
+
+@jax.jit
+def _roll(x, plan):
+    """The positions the vehicle's noiseless rule passes through from ``x`` under ``plan``."""
+
+    def tick(state, a):
+        state = wd.VehicleStep()(state, (a,))
+        return state, state[:2]
+
+    return jax.lax.scan(tick, x, plan)[1]
 
 
 def excursion(points):
@@ -1043,10 +1116,7 @@ def run_summary(run_, marks=MARKS):
 
 
 def report_text(settings, runs, marks=MARKS, mdl=None):
-    on = ", ".join(s["id"] for s in settings if s["image_preference"]) or "none"
-    off = ", ".join(s["id"] for s in settings if not s["image_preference"]) or "none"
     lines = ["# Survey rover runs", ""]
-    lines += [f"Image preference on: {on}; off: {off}.", ""]
     summaries = {s["id"]: run_summary(runs[s["id"]], marks) for s in settings}
     if len(settings) > 1 and all("tiers" in s for s in settings):
         head = "".join(f" tick {k} |" for k in marks)
@@ -1290,7 +1360,7 @@ def assemble(out_dir, camera_report, decoder):
         confusion = camera_report.get("recogniser_confusion")
         model = joint_planner(*agent_system(decoder, settings[0], confusion)[0])
     else:
-        model = sm.rover(decoder, image_preference=True, grid_shape=n_grid)[:2]
+        model = sm.rover(decoder, grid_shape=n_grid)[:2]
     n = ticks.pop()
     meta = meta_record(n, camera_report, grid, camera_mode(settings[0]))
     if tiered:
@@ -1300,12 +1370,13 @@ def assemble(out_dir, camera_report, decoder):
             zones=ss.SECTOR_NAMES,
             zone_split=list(wd.ZONE_SPLIT),
             sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
+            charge_site=[float(c) for c in sm.charge_site()],
             survey_readings=ss.SURVEY_READINGS,
             one_level=(
                 "the one-level setting is the rover alone: the fast tier with its own objective "
-                "(the field's novelty, the fix's information gain, the energy target and the wall "
-                "preference), no scheduler, no option and no sector target, free to go where it "
-                "likes; its ticks have no option and no slow record"
+                "(the field's novelty, the fix's information gain, the energy preference and the "
+                "wall preference), no scheduler, no option and no sector or charging target, free "
+                "to go where it likes; its ticks have no option and no slow record"
             ),
         )
     bundle = dict(meta=meta, graph=graph_record(*model), settings=settings, runs=runs)
@@ -1317,7 +1388,7 @@ def assemble(out_dir, camera_report, decoder):
         print(f"mdl skipped: {type(exc).__name__}: {exc}")
     text = json.dumps(bundle)
     (out_dir / "bundle.json").write_text(text)
-    marks = (tuple(k for k in (100, 200, 300, 400) if k <= n) or (n,)) if tiered else MARKS
+    marks = (tuple(range(100, n + 1, 100)) or (n,)) if tiered else MARKS
     (out_dir / "REPORT.md").write_text(report_text(settings, runs, marks, bundle.get("mdl")))
     print(f"bundle: {len(runs)} runs, {len(text) / 1e6:.1f} MB")
 
@@ -1332,7 +1403,8 @@ def main():
     ap.add_argument("--starts", type=int, default=PLANNER_STARTS, help="warm starts per plan")
     ap.add_argument("--field-lr", type=float, default=FIELD_LR, help="weight of the counts")
     ap.add_argument("--field-strength", type=float, default=FIELD_STRENGTH, help="prior counts")
-    ap.add_argument("--energy-logits", default=None, help="four log-preferences, empty..full")
+    ap.add_argument("--energy-logits", default=None, help="the scheduler's band ladder")
+    ap.add_argument("--energy-preference", default=None, help="the rover's centre,sd or none")
     ap.add_argument("--planning-belief", default=sm.PLANNING_BELIEF, choices=("prior", "posterior"))
     ap.add_argument("--start-energy", type=float, default=None, help="the world's initial energy")
     ap.add_argument("--grid", type=int, default=sm.GRID_SHAPE, help="field cells per axis")
@@ -1379,6 +1451,9 @@ def main():
             s["start_energy"] = args.start_energy
         if args.energy_logits:
             s["energy_logits"] = [float(v) for v in args.energy_logits.split(",")]
+        if args.energy_preference:
+            pref = args.energy_preference
+            s["energy_preference"] = None if pref == "none" else [float(v) for v in pref.split(",")]
         t0 = time.time()
         s["camera"] = args.camera
         result = run_setting(

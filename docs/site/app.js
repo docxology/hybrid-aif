@@ -237,8 +237,9 @@
     var f = B.meta.field, step = W.xs[1] - W.xs[0], stepy = W.ys[1] - W.ys[0];
     var rgb = [0, 1, 2].map(function (c) { return hexrgb(terrBg(c)); });
     var lmin = Infinity, lmax = -Infinity, smin = Infinity, smax = -Infinity;
+    var LT = W.sun || W.light;  // the illumination layer shows the solar yield where the bundle has it
     for (var i = 0; i < nx; i++) for (var j = 0; j < ny; j++) {
-      lmin = Math.min(lmin, W.light[i][j]); lmax = Math.max(lmax, W.light[i][j]);
+      lmin = Math.min(lmin, LT[i][j]); lmax = Math.max(lmax, LT[i][j]);
       smin = Math.min(smin, W.sd_fix[i][j]); smax = Math.max(smax, W.sd_fix[i][j]);
     }
     var wash = hexrgb(css("--washfix").slice(0, 7));
@@ -248,7 +249,7 @@
       g.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
       g.fillRect(x0, y0, x1 - x0 + 0.6, y1 - y0 + 0.6);
       if (S.layer === "light") {
-        var n = (W.light[i][j] - lmin) / (lmax - lmin);
+        var n = (LT[i][j] - lmin) / (lmax - lmin);
         g.fillStyle = "rgba(0,0,0," + (0.55 * (1 - n)).toFixed(3) + ")"; g.fillRect(x0, y0, x1 - x0 + 0.6, y1 - y0 + 0.6);
         g.fillStyle = "rgba(255,236,150," + (0.5 * n).toFixed(3) + ")"; g.fillRect(x0, y0, x1 - x0 + 0.6, y1 - y0 + 0.6);
       } else if (S.layer === "fix") {
@@ -298,6 +299,14 @@
     g.strokeStyle = css("--fg"); g.globalAlpha = 0.7; g.lineWidth = 1.4; g.setLineDash([6, 4]); g.beginPath();
     g.moveTo(m.X(sp[0]), m.Y(f[1][0])); g.lineTo(m.X(sp[0]), m.Y(f[1][1]));
     g.moveTo(m.X(f[0][0]), m.Y(sp[1])); g.lineTo(m.X(f[0][1]), m.Y(sp[1])); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+    var cs = B.meta.tiers.charge_site;  // the charging place, where the charge option parks
+    if (cs) {
+      var cx = m.X(cs[0]), cyy = m.Y(cs[1]), on = hasOpt(t) && sectorOf(t.option) < 0;
+      g.strokeStyle = on ? optColor(t.option) : css("--fg"); g.lineWidth = on ? 2.5 : 1.4; g.globalAlpha = on ? 1 : 0.7;
+      g.beginPath(); g.arc(cx, cyy, 7, 0, 2 * Math.PI); g.stroke();
+      for (var a = 0; a < 8; a++) { var an = a * Math.PI / 4; g.beginPath(); g.moveTo(cx + 9 * Math.cos(an), cyy + 9 * Math.sin(an)); g.lineTo(cx + 13 * Math.cos(an), cyy + 13 * Math.sin(an)); g.stroke(); }
+      g.globalAlpha = 1;
+    }
     g.font = "600 12px system-ui, sans-serif"; g.textAlign = "left";
     for (var z = 0; z < 4; z++) {
       var rx = xr[z % 2][0], ry = yr[Math.floor(z / 2)][1];
@@ -322,9 +331,13 @@
       var th = t.belief.heading, sp = t.belief.speed || 0, turn = dy.turn_max_degrees * Math.PI / 180;
       var lo = dy.command_low || [-1, -1], hi = dy.command_high || [1, 1];
       var px = p.start[0], py = p.start[1], path = [[px, py]];
+      // near empty the drive delivers a share of the command (the bundle's stall); the share at
+      // the believed level is held over the plan (bundles with no stall: one)
+      var st = dy.stall, lv = t.belief.energy_level;
+      var share = st && lv != null ? 1 / (1 + Math.exp(-(lv - st.level) / st.width)) : 1;
       p.v_plan.forEach(function (a) {
         px += dt * sp * Math.cos(th); py += dt * sp * Math.sin(th);
-        th += dt * turn * clamp(a[1], lo[1], hi[1]); sp = keep * sp + gain * clamp(a[0], lo[0], hi[0]);
+        th += dt * turn * share * clamp(a[1], lo[1], hi[1]); sp = keep * sp + gain * share * clamp(a[0], lo[0], hi[0]);
         path.push([px, py]);
       });
       return path;
@@ -412,7 +425,7 @@
     $("hud").innerHTML =
       "<div><span class='hl'>tick</span><b>" + t.t + "</b></div>" +
       "<div><span class='hl'>option in force</span><b>" + esc(opt) + "</b></div>" +
-      "<div><span class='hl'>energy</span>" + bar + " <b>" + esc(nm("energy", band)) + "</b> " + e.level.toFixed(2) + (t.stalled ? " <span class='approx'>stalled</span>" : "") + "</div>" +
+      "<div><span class='hl'>energy</span>" + bar + " <b>" + esc(nm("energy", band)) + "</b> " + e.level.toFixed(2) + (t.belief.energy_level != null ? ", believed " + t.belief.energy_level.toFixed(2) + " &plusmn; " + (2 * t.belief.energy_sd).toFixed(2) : "") + (t.stalled ? " <span class='approx'>stalled</span>" : "") + "</div>" +
       "<div><span class='hl'>terrain under the rover</span>true <b>" + esc(nm("terrain", t.true_terrain)) + "</b>, believed " + esc(nm("terrain", best)) + " " + terr[best].toFixed(2) + "</div>" +
       "<div><span class='hl'>coverage</span><b>" + t.coverage.toFixed(2) + "</b> of cells mapped, <b>" + t.seen.toFixed(2) + "</b> seen</div>";
     var sw = function (c) { return "<i style='background:" + c + "'></i>"; };
@@ -420,7 +433,7 @@
       "<span>learned map: " + [0, 1, 2].map(function (c) { return sw(terrColor(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>true ground: " + [0, 1, 2].map(function (c) { return sw(terrBg(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
-      (S.layer === "light" ? "<span>brighter: more sunlight</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
+      (S.layer === "light" ? "<span>" + (B.meta.world.sun ? "brighter: more solar yield (where parking charges)" : "brighter: more sunlight") + "</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
   }
 
   // ---- the camera ----
