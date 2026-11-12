@@ -368,7 +368,13 @@ def rover_step(setting, steps, starts, pre, decoder):
         if faces.get("system") is not system:
             faces.update(system=system, compiled=system.compiled())
         compiled = faces["compiled"]
-        beliefs, detail = compiled.infer_states(params, obs, priors=carry.beliefs, detail=True)
+        absent = {}
+        if not setting.get("fix", True):  # the fix ablation: the reading arrives and is not read
+            obs = {**obs, pre + "fix": jnp.zeros_like(obs[pre + "fix"])}
+            absent = {pre + "fix": False}
+        beliefs, detail = compiled.infer_states(
+            params, obs, priors=carry.beliefs, detail=True, present=absent or None
+        )
         jax.block_until_ready(beliefs)
         t_infer = time.time()
         if carry.previous is not None:
@@ -549,6 +555,16 @@ def sensors(mode, encoder):
     return wd.world_stepper(lambda image: jnp.argmax(readout(image))), readout
 
 
+def epistemic_terms(setting):
+    """A setting's epistemic terms for the rover: its ``epistemic`` list, less the fix's
+    information gain when the setting observes no fix (``fix`` false: the fix ablation, in which
+    the world's fix reaches the rover's step and is marked absent every round, so the camera is the
+    only reading of position; the fix modality stays in the model as the carrier of the wall
+    preference, a predicted reading the plans are scored on, and is never observed)."""
+    terms = tuple(setting["epistemic"])
+    return terms if setting.get("fix", True) else tuple(t for t in terms if t != "obs:fix")
+
+
 def energy_preference(setting):
     """A setting's energy preference over the rover's gauge, ``(centre, sd)``, or ``None``."""
     pref = setting.get("energy_preference")
@@ -575,7 +591,7 @@ def run_setting(
         decoder,
         camera=sees_image(mode),
         look=confusion if mode == "look" else None,
-        epistemic=tuple(setting["epistemic"]),
+        epistemic=epistemic_terms(setting),
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
         planning_belief=setting["planning_belief"],
@@ -649,7 +665,7 @@ def agent_system(decoder, setting, confusion=None):
         decoder,
         camera=sees_image(mode),
         look=confusion if mode == "look" else None,
-        epistemic=tuple(setting["epistemic"]),
+        epistemic=epistemic_terms(setting),
         field_strength=setting["field_strength"],
         grid_shape=setting["grid"],
         planning_belief=setting["planning_belief"],
@@ -685,7 +701,10 @@ def survey_system(decoder, setting, confusion=None):
     mode = camera_mode(setting)
     return couple(
         {"agent": agent, "world": wd.world_system(look=mode == "look")},
-        [*world_bindings("agent.rover", mode), Identify("world.band", "agent.mission.gauge")],
+        [
+            *world_bindings("agent.rover", mode),
+            Identify("world.band", "agent.mission.gauge"),
+        ],
     )
 
 
@@ -1421,6 +1440,12 @@ def main():
     ap.add_argument(
         "--camera", default=CAMERA, choices=("image", "fixed", "look", "none"), help="camera_mode"
     )
+    ap.add_argument(
+        "--fix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="observe the position fix (--no-fix: the fix ablation, vision-only localisation)",
+    )
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
     out_dir = Path(args.out)
@@ -1456,6 +1481,8 @@ def main():
             s["energy_preference"] = None if pref == "none" else [float(v) for v in pref.split(",")]
         t0 = time.time()
         s["camera"] = args.camera
+        if not args.fix:
+            s["fix"] = False
         result = run_setting(
             s, args.ticks, decoder, args.steps, args.starts, encoder=encoder, confusion=confusion
         )
