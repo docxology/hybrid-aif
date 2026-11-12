@@ -9,7 +9,7 @@ The loss, with ``rho`` from :func:`hybrid_aif.reference.raif.revise.pref_labels`
 The CRSPP is a declared System with no decoder and no action parent. Its posterior
 conditions on ``("deter", "external:embed")``, the agent's encoder output handed over as a
 vector (:func:`crspp_recognize`), and the resulting beliefs reach the scoring row as
-``aux_beliefs["cosine_sim_to_pref_rollout"]``, keyed by the CRSPP's factor names.
+``aux_beliefs["cosine_sim_to_pref_rollout"]``, keyed by the CRSPP's state factor names.
 
 Design: ``docs/design/amortization-p0-addendum.md`` §4.
 """

@@ -124,14 +124,24 @@ def _check_growth(growth: Array | None) -> None:
 
 
 class Dirichlet(ExponentialFamily):
-    """``growth`` is the growth propensity ``α`` of a growable factor (structure-learning.md
-    S3): the pseudo-count the prior gives a level not yet live. A level with zero concentration
-    is absent from the family whatever ``growth`` says; ``growth`` is what lets such a level be
-    woken, and without it the level stays absent."""
+    """A Dirichlet distribution over the ``num_levels`` simplex, batched over leading axes.
 
-    concentration: Array  # (..., num_levels)
-    alpha0: Array | None = None  # decay anchor (D7): the prior, a scalar (uniform), or absent
-    growth: Array | None = None  # the growth propensity α (S3): a scalar, or absent
+    The learnable form of a categorical prior (a point :class:`Categorical`'s conjugate):
+    :meth:`point` gives the expected categorical, :meth:`stats` and :meth:`absorb` are the count
+    update, :meth:`novelty` the novelty of the counts. Design: docs/design/parameter-learning.md
+    D7; docs/design/structure-learning.md S3.
+    """
+
+    #: Positive counts, ``(..., num_levels)``.
+    concentration: Array
+    #: The decay anchor a ``decay < 1`` update relaxes toward: the prior's own concentration, a
+    #: scalar (uniform), or ``None``.
+    alpha0: Array | None = None
+    #: The growth propensity ``α`` of a growable state factor, a scalar or ``None``: the
+    #: pseudo-count the prior gives a level not yet live. A level with zero concentration is absent
+    #: from the family whatever ``growth`` says; ``growth`` is what lets such a level be woken, and
+    #: without it the level stays absent.
+    growth: Array | None = None
 
     def __check_init__(self) -> None:
         _check_anchor(self.alpha0, self.concentration)

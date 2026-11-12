@@ -27,9 +27,13 @@ class MatrixNormal(eqx.Module):
     by the consumer, and is not stored.
     """
 
-    M: Array  # (..., d_obs, p) posterior mean head
-    V_inv: Array  # (..., p, p) column precision
-    M0: Array | None = None  # decay anchors (D7); required iff decay < 1
+    #: The posterior mean head, ``(..., d_obs, p)``.
+    M: Array
+    #: The column precision, ``(..., p, p)``.
+    V_inv: Array
+    #: The decay anchor for ``M`` (design D7); required iff ``decay < 1``.
+    M0: Array | None = None
+    #: The decay anchor for ``V_inv`` (design D7); required iff ``decay < 1``.
     V_inv0: Array | None = None
 
     def __check_init__(self) -> None:

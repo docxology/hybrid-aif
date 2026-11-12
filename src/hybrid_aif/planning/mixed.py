@@ -67,28 +67,31 @@ from hybrid_aif.planning.gradient import (
 
 
 class MixedResult(NamedTuple):
-    """One mixed plan: ``q_pi`` the posterior over the ``P`` discrete policies, ``tree`` their
-    term trees at the optimised plans (``None`` under ``metrics=False``), ``discrete`` the
-    discrete policies ``(P, policy_len, K_discrete)``, ``plan`` their optimised continuous
-    controls ``(P, policy_len, action_dim)`` (the continuous nodes' blocks concatenated in node
-    order), ``G`` the expected free energy of each clamped plan, ``(P,)``, ``trace`` ``(P,
-    steps)`` the scored ``G`` before each step, ``gradient_trace`` ``(P, steps)`` the root mean
-    square of the gradient before each step and ``best_step`` ``(P,)`` the iterate returned, as
-    in :class:`~hybrid_aif.planning.gradient.GradientResult`. With several starts, ``plan``
-    is the best start's for each discrete policy and ``trace``, ``gradient_trace`` and
-    ``best_step`` are that start's; ``start_scores`` ``(P, starts)`` is every start's final
-    score and ``start_plans`` ``(P, starts, policy_len, action_dim)`` its plan (``starts`` is 1
-    for a single start)."""
+    """One mixed plan, over ``P`` discrete policies, each with optimised continuous controls.
+    With several starts, ``plan`` is the best start's for each discrete policy and ``trace``,
+    ``gradient_trace`` and ``best_step`` are that start's (``starts`` is 1 for a single start)."""
 
+    #: The posterior over the ``P`` discrete policies.
     q_pi: Categorical
+    #: Their term trees at the optimised plans (``None`` under ``metrics=False``).
     tree: TermTree | None
+    #: The discrete policies, ``(P, policy_len, K_discrete)``.
     discrete: Array
+    #: Their optimised continuous controls, ``(P, policy_len, action_dim)`` (the continuous
+    #: nodes' blocks concatenated in node order).
     plan: Array
+    #: The expected free energy of each clamped plan, ``(P,)``.
     G: Interval
+    #: The scored ``G`` before each step, ``(P, steps)``.
     trace: Array
+    #: The root mean square of the gradient before each step, ``(P, steps)``.
     gradient_trace: Array
+    #: The iterate returned, ``(P,)``, as in
+    #: :class:`~hybrid_aif.planning.gradient.GradientResult`.
     best_step: Array
+    #: Every start's final score, ``(P, starts)``.
     start_scores: Array
+    #: Every start's plan, ``(P, starts, policy_len, action_dim)``.
     start_plans: Array
 
 

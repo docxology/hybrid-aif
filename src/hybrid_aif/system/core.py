@@ -234,82 +234,70 @@ UNSET = _Unset()
 class PartParams(eqx.Module):
     """One leaf's own planner parameters inside a composite, ``SystemParams.parts[leaf]``.
 
-    ``policy_prior`` is the leaf's habit over its own policy set, ``precision`` its policy
-    precision, ``durations`` its durations (keyed by its control node, namespaced) and ``scoring``
-    the parameters of its scoring estimators (keyed by name). A leaf's view takes them from here,
-    so two leaves' critics never answer to one name and each keeps its own clock.
+    A leaf's view takes them from here, so two leaves' critics never answer to one name and each
+    keeps its own clock.
     """
 
+    #: The leaf's habit: the prior over its own policy set (as ``SystemParams.policy_prior``).
     policy_prior: Array | Categorical | object | None = eqx.field(default=None, converter=_strong)
+    #: The leaf's policy precision (as ``SystemParams.precision``).
     precision: Array | None = eqx.field(default=None, converter=_precision_in)
+    #: The leaf's durations, keyed by its control node's namespaced name (as
+    #: ``SystemParams.durations``).
     durations: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
+    #: The parameters of the leaf's scoring estimators, keyed by term name (as
+    #: ``SystemParams.scoring``).
     scoring: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
 
 
 class SystemParams(eqx.Module):
-    """All numeric state of a System: generative tensors, designations and loop factors.
+    """All numeric state of a System: generative tensors, designations and the closed-loop factors.
 
-    Declaration types carry the family: tabular declarations give the discrete System; LG
-    declarations (:mod:`hybrid_aif.factors`) and Gaussian/mixture priors give the hybrid one. A
-    ``likelihood`` / ``transition`` / ``initial_state_prior`` entry is a point declaration, a
-    distribution over its parameters (``ConditionalDirichlet``, ``Dirichlet``) — learnable by
-    :meth:`System.learn` and samplable by ``as_env(param_key=...)`` — or a parametrized function
-    (:class:`~hybrid_aif.distributions.MLPConditional`), learnable by gradient.
+    A :class:`System` holds the static structure; its ``SystemParams`` holds every array, as a
+    pytree passed to each *face* (a method of :class:`System` that takes the params, such as
+    ``infer_states``, ``act`` or ``learn``) and returned by those that update it.
 
-    ``recognition`` holds the amortized inference modules, keyed by the variable each infers
-    (structure on ``System.recognition``); ``scoring`` holds the parameters of the
-    estimator-registry rows that carry their own, keyed by row name (structure on ``System.terms`` /
-    ``System.scoring``). Both join the slot-qualified key space (``recognition:stoch``,
-    ``scoring:g_tail``) and namespace under ``merge()``.
+    **Keying.** ``likelihood`` is keyed by modality name, ``transition`` and
+    ``initial_state_prior`` by state factor name (``params.likelihood["position"]``); every face
+    takes and returns them so, and a positional (tuple) container raises, naming
+    ``System.from_positional("params", params)``. Inside, the System reads a positional view
+    (tuples in node order), built by name lookup. ``recognition`` and ``scoring`` join the
+    slot-qualified key space (``recognition:stoch``, ``scoring:g_tail``) and namespace under
+    ``merge()``.
 
-    ``control`` holds the box of each continuous control node, keyed by the node's name
-    (``params.control["u_x"]``): a :class:`~hybrid_aif.controls.Box` of per-dimension bounds,
-    the node's support. A control node with an entry is continuous.
+    **Families.** Declaration types carry the family: tabular declarations give a discrete System;
+    linear-Gaussian declarations (:mod:`hybrid_aif.factors`) and Gaussian or mixture priors give a
+    continuous or mixed one. A ``likelihood``, ``transition`` or ``initial_state_prior`` entry is a
+    point declaration, a distribution over its parameters (``ConditionalDirichlet``,
+    ``Dirichlet``), learnable by :meth:`System.learn` and samplable by ``as_env(param_key=...)``,
+    or a parametrized function (:class:`~hybrid_aif.distributions.MLPConditional`), learnable by
+    gradient.
 
-    ``actuator`` holds the kernel ``P(a | u)`` of each action node that is not a delta, keyed
-    by the action node's name (``params.actuator["a_x"]``): a ``(levels, levels)`` probability
-    table whose column ``u`` is the realised action's distribution given the decision ``u``.
+    **Groups.** The fields fall in three groups, plus the per-leaf record of a composite:
 
-    ``emission`` holds the kernel of each emission, an output of the System drawn from its state
-    factors (:attr:`System.emissions`): any likelihood family, keyed by the emission's name. No
-    inference, planning or learning face reads it.
+    - the declared model: ``transition``, ``likelihood``, ``initial_state_prior``, ``control``,
+      ``actuator``, ``durations``, ``parameters``, ``references``, ``readings``, ``emission``;
+    - the closed-loop factors (the two factors of the loop that return the distribution the loop
+      acts on): ``recognition`` and ``policy_prior``;
+    - scoring material: ``obs_targets``, ``state_targets``, ``terminal_targets``, ``scoring``
+      and ``precision``;
+    - ``parts``, each leaf's own planner parameters when the System is a splice of leaves.
 
-    ``durations`` holds a round's duration per level of one discrete control node, keyed by the
-    node's name (``params.durations["u_option"]``): a positive float ``(levels,)`` array, or a
-    scalar for every level, in the unit the model's preferences are per. A round steps every
-    factor once, so a round has one duration and at most one node carries it; the engine checks
-    positivity only. The objective never reads it; :meth:`System.elapsed` returns the realised
-    action's duration for an outer loop's clock (1 when none is declared).
-    Design: docs/design/step-durations.md T1, T4, T8.
-
-    ``parts`` holds each leaf's own planner parameters when the System is a splice of leaves
-    (:class:`PartParams`: habit, precision, durations and scoring parameters, by leaf name).
-
-    ``parameters`` holds named parameter variables, keyed by name: a tabular declaration (a table,
-    or a Dirichlet over one) that several factors or modalities may read. A ``transition`` entry
-    or a ``likelihood`` entry that is ``Parameter(name)`` reads the table held under ``name``;
-    an entry that is itself a table is the factor's own variable. :meth:`System.learn` sums the
-    readers' count statistics and updates the named table once, under the rate key
-    ``parameter:<name>``. The faces return the references, never copies of the table.
-
-    ``likelihood`` is keyed by modality name, ``transition`` and ``initial_state_prior`` by factor
-    name (``params.likelihood["position"]``); every face takes and returns them so, and a
-    positional (tuple) container raises, naming ``System.from_positional("params", params)``.
-    Inside, the System reads a positional view (tuples in node order), built by name lookup.
-
-    ``precision`` is the policy precision γ, an optional scalar array: when present the planners
-    read it in place of ``System.gamma`` (the default, a static field), and because it is a
-    parameter leaf it flows traced through every face, so changing its value recompiles nothing.
-
-    The fields fall in three groups: the declared model (``transition``, ``likelihood``,
-    ``initial_state_prior``), the closed-loop factors (``recognition``, ``policy_prior``), and
-    scoring material (the three target dicts, ``scoring`` and ``precision``).
-    ``tests/test_scoring_slot.py`` asserts the partition.
+    ``tests/test_scoring_slot.py`` asserts the partition. The AIF letters ``A``, ``B``, ``D`` and
+    ``E`` are read-only aliases of ``likelihood``, ``transition``, ``initial_state_prior`` and
+    ``policy_prior``. A table of the fields is in ``docs/composing-systems.md``.
 
     Design: docs/design/system.md (SystemParams groups); docs/design/parameter-learning.md D3;
     docs/design/amortization.md A1 A2 A11 A12.
     """
 
+    #: AIF's B: the transition of each state factor, keyed by state factor name. The trailing
+    #: parent axis is the control (tables), the conditioned innovations (linear-Gaussian), or a
+    #: one-hot or continuous action parent (neural, deterministic). A ``Deterministic`` entry is a
+    #: *carry* node (its own previous value is the map's carry, not a parent); an
+    #: ``MLPCategorical`` entry is a factored-categorical code whose parents are read within the
+    #: step (the two make the neural state-space pair). A ``Parameter(name)`` entry reads the table
+    #: held under ``name`` in ``parameters``.
     transition: Mapping[
         str,
         TabularTransition
@@ -320,97 +308,112 @@ class SystemParams(eqx.Module):
         | MLPCategorical
         | Parameter,
     ] = eqx.field(converter=_strong)
-    #   AIF B, by factor name; trailing parent axis = control (tables) / conditioned
-    #   innovations (LG) / a one-hot-or-continuous action parent (neural, deterministic). A
-    #   Deterministic member is a *carry* node (its own previous value is the map's carry, not
-    #   a parent) and an MLPCategorical member a factored-categorical code whose parents are
-    #   read within the step — the neural state-space pair
+    #: AIF's D: the initial prior of each state factor, keyed by state factor name. A
+    #: ``LearnedVector`` is a carry node's episode-start *value*; a ``DerivedInitial`` says "read
+    #: it off my own transition at t=0".
     initial_state_prior: Mapping[
         str, TabularPrior | Gaussian | MixtureGaussian | LearnedVector | DerivedInitial
     ] = eqx.field(converter=_strong)
-    #   AIF D, by factor name; a LearnedVector is a carry node's episode-start *value*, a
-    #   DerivedInitial says "read it off my own transition at t=0"
+    #: AIF's A: the likelihood of each modality, keyed by modality name. An entry is a child-first
+    #: ``(num_obs, *dep_sizes)`` table (a point table or a Dirichlet over one), a linear-Gaussian
+    #: ``(H, c, R_chol)`` head, a neural conditional, a ``PredictorHead`` (a trunk and a named loss:
+    #: ``symlog_mse``, ``symlog_disc`` or ``binary``), or a ``Parameter(name)`` reading the table
+    #: held under ``name`` in ``parameters``. Default ``{}``: an open-loop model observes nothing.
     likelihood: Mapping[
         str,
         TabularObservation | LinearGaussianObservation | MLPConditional | PredictorHead | Parameter,
     ] = eqx.field(default_factory=dict, converter=_strong)
-    #   AIF A, by modality name; child-first (num_obs, *dep_sizes) tables (point or
-    #   Dirichlet-over-table), LG (H, c, R_chol) heads, a neural conditional, or a
-    #   PredictorHead (trunk + named loss: symlog_mse/symlog_disc/binary); default {}: an
-    #   open-loop model observes nothing
+    #: The amortized inference modules, keyed by the variable each infers, for example
+    #: ``{"stoch": posterior_net, "embed": encoder}``. Their structure (what each module infers and
+    #: conditions on) is :attr:`System.recognition`.
     recognition: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
-    #   ``{"stoch": posterior_net, "embed": encoder}``
-    obs_targets: dict[str, Distribution] = eqx.field(
-        default_factory=dict, converter=_strong
-    )  # standing C designations, keyed by modality: a Categorical over a tabular modality's
-    #   levels, or a Gaussian/MixtureGaussian over an LG modality's observation space
-    #   (covariance as tolerance). A neural modality's raises. A ConditionalCategorical or
-    #   ConditionalGaussian entry is a target conditional on the parents ``System.C_deps``
-    #   names under its key, one distribution per parent configuration
-    state_targets: dict[str, Distribution] = eqx.field(
-        default_factory=dict, converter=_strong
-    )  # standing risk-over-states designations; a conditional entry as in ``obs_targets``, and
-    #   a Categorical under a discrete control node's name its fixed cost per level
+    #: Standing preferences over observations (AIF's C), keyed by modality name: a ``Categorical``
+    #: over a tabular modality's levels, or a ``Gaussian`` or ``MixtureGaussian`` over a
+    #: linear-Gaussian modality's observation space (the covariance is the tolerance). An entry for
+    #: a neural modality raises. A ``ConditionalCategorical`` or ``ConditionalGaussian`` entry is a
+    #: target conditional on the parents :attr:`System.C_deps` names under its key, one
+    #: distribution per parent configuration.
+    obs_targets: dict[str, Distribution] = eqx.field(default_factory=dict, converter=_strong)
+    #: Standing preferences over states, scored as risk, keyed by state factor name. A conditional
+    #: entry is as in ``obs_targets``; a ``Categorical`` under a discrete control node's name is
+    #: that node's fixed cost per level.
+    state_targets: dict[str, Distribution] = eqx.field(default_factory=dict, converter=_strong)
+    #: Terminal preferences, scored at the end of the horizon (the H of Friston et al. 2023 and of
+    #: SPM's ``spm_MDP_VB_XXX``), keyed by state factor name. A ``ConditionalCategorical`` entry is
+    #: a *conditional* terminal target and needs a :attr:`System.H_deps` entry naming its parent
+    #: state factors (see :meth:`System.resolve_terminal_targets`).
     terminal_targets: dict[str, Distribution | ConditionalCategorical] = eqx.field(
         default_factory=dict, converter=_strong
-    )  # H of Friston et al. 2023 and SPM's ``spm_MDP_VB_XXX``, scored at horizon end;
-    #   a ConditionalCategorical entry is a *conditional* terminal target and needs a
-    #   ``System.H_deps`` entry naming its parent
-    #   factor(s) (see :meth:`System.resolve_terminal_targets`)
+    )
+    #: The parameters of the objective terms that carry their own (entries of the estimator
+    #: registry), keyed by term name, for example ``{"g_tail": (critic, slow),
+    #: "ensemble_disagreement": (m0, m1, m2, m3)}``; a term that owns a declared model holds that
+    #: model's params. The structure is :attr:`System.terms` and :attr:`System.scoring`.
     scoring: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
-    #   ``{"g_tail": (critic, slow), "ensemble_disagreement": (m0..m3)}``; a row that owns a
-    #   declared model holds that model's params
-    # The prior over policies (AIF's E): a log-space array or Categorical over an enumerated
-    # policy set, or a policy module (beliefs -> action distribution) that the "habit" planner
-    # acts from. q_pi ~ softmax(-gamma*G + log E), so E is gamma-independent: habits belong
-    # here, costs that must trade against utilities belong in targets (inside G).
+    #: The prior over policies (AIF's E, read-only alias ``E``): a log-space array or a
+    #: ``Categorical`` over an enumerated policy set, or a policy module (beliefs to an action
+    #: distribution) that the ``"habit"`` planner acts from. Since q_pi ~ softmax(-gamma G + log E),
+    #: E does not depend on gamma: habits belong here; costs that must trade against utilities
+    #: belong in the targets (inside G).
     policy_prior: Array | Categorical | object | None = eqx.field(default=None, converter=_strong)
+    #: The box of each continuous control node, keyed by the node's name
+    #: (``params.control["u_x"]``): a :class:`~hybrid_aif.controls.Box` of per-dimension bounds,
+    #: the node's support, which the CEM and gradient planners search inside. A node with an entry
+    #: is continuous (its readers read a float vector of the box's width); a node without one is
+    #: discrete. Design: docs/design/control-states.md C4.
     control: dict[str, Box] = eqx.field(default_factory=dict, converter=_strong)
-    #   the box of each continuous control node, keyed by the node's name: a Box of its
-    #   per-dimension bounds, the node's support. A node with an entry is continuous (its
-    #   readers read a float vector of the box's width); a node without one is discrete.
-    #   Design: docs/design/control-states.md C4
+    #: The kernel P(a | u) of each action node that is not a delta, keyed by the action node's name
+    #: (``params.actuator["a_x"]``): a ``(levels, levels)`` probability table whose column ``u`` is
+    #: the distribution of the realised action given the decision ``u`` (discrete control nodes
+    #: only). An action node without an entry realises its control node's decision exactly. The
+    #: action node is realised once per tick, by a draw from the kernel (``sample``;
+    #: ``System.act``'s ``selection`` gives the other realisation, ``mode``, for the decision
+    #: itself), by ``System.as_env`` when the environment is stepped on its own and by the driver
+    #: under ``run`` and ``couple``; the control node stays clamped to the decision. Design:
+    #: docs/design/control-states.md C12, C13; nesting-and-coupling.md N3, N5.
     actuator: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
-    #   the kernel P(a | u) of each action node that is not a delta, keyed by the action node's
-    #   name: a (levels, levels) probability table, column u the distribution over the realised
-    #   action given the decision u (a discrete control node only). An action node without an
-    #   entry realises its control node's decision exactly. The action node is realised once per
-    #   tick, at the node, by a draw from the kernel (``sample``; ``System.act``'s ``selection``
-    #   gives the other realisation, ``mode``, for the decision itself), by System.as_env when
-    #   the env is stepped on its own and by the driver under ``run`` and ``couple``; the control
-    #   node stays clamped to the decision. Design: docs/design/control-states.md C12, C13;
-    #   nesting-and-coupling.md N3, N5
+    #: A round's duration per level of one discrete control node, keyed by the node's name
+    #: (``params.durations["u_option"]``): a positive float ``(levels,)`` array, or a scalar for
+    #: every level, in the unit the model's preferences are per. A round steps every state factor
+    #: once, so a round has one duration and at most one node carries it; the engine checks
+    #: positivity only. The objective never reads it; :meth:`System.elapsed` returns the realised
+    #: action's duration for an outer loop's clock (1 when none is declared). Design:
+    #: docs/design/step-durations.md T1, T4, T8.
     durations: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
-    #   a round's duration per level of one discrete control node, keyed by the node's name:
-    #   a positive (levels,) array or a scalar for every level. The objective never reads it.
-    #   Design: docs/design/step-durations.md T1
+    #: The policy precision gamma, an optional scalar array: q_pi ~ softmax(-precision G + log E).
+    #: When present the planners read it in place of :attr:`System.gamma` (the static default,
+    #: read when this is ``None``); being a parameter leaf it flows traced through every face, so
+    #: changing its value recompiles nothing. Design: docs/design/recompilation.md R5.
     precision: Array | None = eqx.field(default=None, converter=_precision_in)
-    #   the policy precision gamma as a scalar array, traced through every face: q_pi ~
-    #   softmax(-precision * G + log E). ``None`` reads ``System.gamma``. Design:
-    #   docs/design/recompilation.md R5
+    #: The reading counts of :attr:`System.readings`, keyed by the named state factor or modality:
+    #: one positive count per level of its control node, the number of fast readings one slow
+    #: reading pools under that level. Read only by the novelty term of that table. Design:
+    #: step-durations.md T10.
     readings: dict[str, Array] = eqx.field(default_factory=dict, converter=_strong)
-    #   the reading counts of ``System.readings``, by the named factor or modality: one positive
-    #   count per level of its control node, the fast readings one slow reading pools under that
-    #   level. Read only by the novelty term of that table. Design: step-durations.md T10
+    #: Named parameter variables, keyed by name: a tabular declaration (a table, or a Dirichlet over
+    #: one) that several ``transition`` or ``likelihood`` entries read through ``Parameter(name)``;
+    #: an entry that is itself a table is that state factor's or modality's own variable. Every
+    #: reader of one name reads one table; :meth:`System.learn` sums the readers' count statistics
+    #: and updates the named table once, under the rate key ``parameter:<name>``. The faces return
+    #: the references, never copies of the table. Design: docs/design/shared-parameters.md.
     parameters: dict[str, TabularHome] = eqx.field(default_factory=dict, converter=_strong)
-    #   named parameter variables, by name: a tabular declaration (a table, or a Dirichlet over
-    #   one) that a ``transition`` or ``likelihood`` entry reads through ``Parameter(name)``.
-    #   Every reader of one name reads one table; ``learn`` updates it once from the sum of its
-    #   readers' statistics. Design: docs/design/shared-parameters.md
+    #: The positional view's record of which reader positions hold a resolved reference, as
+    #: ``(slot, index, parameter name)`` triples; empty in the keyed form every face takes and
+    #: returns, where the entries are the ``Parameter`` tokens themselves.
     references: tuple[tuple[str, int, str], ...] = eqx.field(default=(), static=True)
-    #   the positional view's record of which reader positions hold a resolved reference,
-    #   ``(slot, index, parameter name)``; empty in the keyed form every face takes and returns,
-    #   where the entries are the ``Parameter`` tokens themselves
+    #: The kernel of each emission (an output the System draws from its state factors,
+    #: :attr:`System.emissions`), keyed by emission name: a likelihood of any family (a table, a
+    #: linear-Gaussian or neural conditional, a learnable form, or a ``Parameter`` reference to a
+    #: named parameter variable), over the emission's parents in the order
+    #: :attr:`System.emissions` lists them. The emitted port's type is read off the kernel, as a
+    #: modality's is. No inference, planning or learning face reads it. Design:
+    #: nesting-and-coupling.md N5.
     emission: dict[str, object] = eqx.field(default_factory=dict, converter=_strong)
-    #   the kernel of each emission (``System.emissions``), by emission name: a likelihood of any
-    #   family (a table, a linear-Gaussian or neural conditional, a learnable form, or a
-    #   ``Parameter`` reference to a named parameter variable), over the emission's parents in
-    #   the order ``System.emissions`` lists them. Its type is the emitted port's type, read off
-    #   the kernel as a modality's is. Always keyed by name. Design: nesting-and-coupling.md N5
+    #: The leaves' own planner parameters in a composite, keyed by leaf name
+    #: (:class:`~hybrid_aif.system.PartParams`: habit, precision, durations and scoring
+    #: parameters); empty for a System that is not a splice of leaves. A leaf's entry holds its
+    #: own; a composite node holds none. Design: engine-consolidation.md.
     parts: dict[str, PartParams] = eqx.field(default_factory=dict)
-    #   the leaves' own planner parameters of a composite, by leaf name (:class:`PartParams`: habit,
-    #   precision, durations, scoring); empty for a System that is not a splice of leaves. A
-    #   leaf's entry holds its own, a composite node none. Design: engine-consolidation.md
 
     def __init__(self, *args, **kwargs):
         fields = [f for f in dataclasses.fields(self) if f.init]
@@ -467,19 +470,21 @@ class LearnState(eqx.Module):
     Returned by :meth:`System.learn` and the objective-side trainers and handed back on the next
     call; never held in a module attribute. A sibling of :class:`SystemParams`, not a field of it.
 
-    ``opt_states`` is keyed by slot-qualified address (``"transition:x"``, the ``lr_by_slot`` key
-    space), plus ``scoring:<row>`` for each mounted row with a trainer
-    (:attr:`objectives.registry.Estimator.trainer`) and :data:`ACTOR_KEY` for a policy module in
-    ``policy_prior``. ``moments`` holds non-optimizer running statistics (the actor's
-    return-normalization EMAs, the slow critic's update counter), keyed by trainer name. Both are
-    seeded by :meth:`System.init_learn_state`, so the carry's structure is fixed from the first
-    call; each trainer steps its own entries, passes the rest through unchanged, and raises when an
-    entry it owns is missing. Dict keys are static under jit.
+    Both fields are seeded by :meth:`System.init_learn_state`, so the carry's structure is fixed
+    from the first call; each trainer steps its own entries, passes the rest through unchanged,
+    and raises when an entry it owns is missing. Dict keys are static under jit.
 
     Design: docs/design/amortization.md A2 A6 and chunk 2c §(b).
     """
 
+    #: Optimizer states, keyed by slot-qualified address (``"transition:x"``, the ``lr_by_slot``
+    #: key space), plus ``scoring:<term>`` for each mounted term with a trainer
+    #: (:attr:`objectives.registry.Estimator.trainer`) and :data:`ACTOR_KEY` for a policy module
+    #: in ``policy_prior``.
     opt_states: dict[str, object] = eqx.field(default_factory=dict)
+    #: Running statistics that are not optimizer state (the actor's return-normalization moving
+    #: averages, the slow critic's update counter, the model-reduction counter), keyed by trainer
+    #: name.
     moments: dict[str, object] = eqx.field(default_factory=dict)
 
 
@@ -534,57 +539,16 @@ _PLANNER_FIELDS = (
 class Subsystem(NamedTuple):
     """One component's identity inside a merged composite, carried on ``System.subsystems``.
 
-    Built by :func:`hybrid_aif.composition.merge.merge`. Metadata — no face computes from it
-    — recording which edges crossed a boundary, which the flat graph does not show;
+    Built by :func:`hybrid_aif.composition.merge.merge`. Metadata (no face computes from it)
+    recording which edges crossed a boundary, which the flat graph does not show;
     :func:`~hybrid_aif.composition.merge.subsystem` derives a per-mind view from it, and a
     mapping keyed by a node a binding removed is refused with a sentence naming what it became.
-
-    ``factors`` and ``modalities`` are composite state-factor/modality indices in the
-    subsystem's declaration order (its block is contiguous, so local index ``i`` is
-    ``factors[i]``). The control nodes, by composite name, as this merge left them:
-
-    - ``controls``: the control nodes this subsystem still chooses (the composite plans them);
-    - ``actions``: ``(control node, action node)`` for every control node this record names (a
-      driven node's is the one it had before it was driven, which is no action node of the
-      System);
-    - ``relayed``: pairs ``(node, state)``, a control node identified with another subsystem's
-      state, which its reader reads a step later
-      (a ``Link`` from a state);
-    - ``terminated``: control nodes a ``Clamp`` replaced with a prior;
-    - ``identified``: pairs ``(node, driver)``, a driven control node and the control node
-      ``driver`` whose action node drives it (an ``Identify``, or a ``Link`` from the action node,
-      read at the same step); a joint planner makes the two one node, so every factor that read
-      ``node`` reads ``driver``;
-    - ``free_modalities`` / ``bound_modalities``: modalities reading only this subsystem's factors,
-      versus ``(modality, foreign parents)`` for those an observation binding pointed across the
-      boundary;
-    - ``target_emissions``: ``(factor, parents)`` whose ``H_deps`` parents lie outside this
-      subsystem;
-    - ``reads``: ``(modality, source, kernel, realise)``, composite names, for every modality of
-      this subsystem that reads a state factor of another component (a belief ``Link``): the view
-      leaves the modality an ordinary observation, and the driver supplies it each round from
-      the source component's carry;
-    - ``emissions``: the composite names of the component's own emissions, its outputs drawn from
-      its state factors (:attr:`System.emissions`);
-    - ``config``: ``(field, value)`` pairs, the leaf's own planner configuration (``policy_len``,
-      ``planner``, ``gamma``, ``num_iters``, ``decomposition``, ``planning_belief``, ``feedback``,
-      ``mixture_schedule``, ``mixture_k``, ``epistemic``, ``terms`` and ``scoring``, the static
-      declaration), with names qualified as the composite's; empty for a node that is itself a
-      composite, whose leaves each hold their own. The leaf's habit, precision, durations and
-      scoring parameters are ``SystemParams.parts[<leaf>]``;
-    - ``recognition``: the composite names of the amortized recognition variables the leaf owns
-      (``System.recognition``);
-    - ``boundary``: what binds this subsystem to the others: ``"none"`` (no binding crosses
-      its boundary), ``"blanket"`` (every binding across it is a belief read or a ``Link`` from
-      an action node into a control node), or ``"shared"`` (some binding identifies a latent
-      outright: a relay, a structural ``Link``, a terminal ``Link``, an ``Identify``), or
-      ``"coupled"`` (a top-level component of a :func:`~hybrid_aif.composition.couple.couple`,
-      joined to the others by identified ports alone). :attr:`nested` is the ``"blanket"`` case:
-      the subsystem keeps a blanket of its own inside the particle.
+    Indices are composite state factor and modality indices; the control node fields name nodes
+    by composite name, as the merge left them.
 
     A record :func:`~hybrid_aif.description.build` reconstructs from a model description carries
-    only what the document shows: the composite's names, its factors, modalities and the control
-    nodes still present. ``relayed``, ``terminated`` and ``identified`` are empty there and
+    only what the document shows: the composite's names, its state factors, modalities and the
+    control nodes still present. ``relayed``, ``terminated`` and ``identified`` are empty there and
     ``boundary`` is derived from the edges the document shows between components (a parent, a
     parameter variable or a read across them), ``reads`` is the document's own, and ``actions``
     names the present control nodes only, since a node a binding removed is absent from the
@@ -594,20 +558,59 @@ class Subsystem(NamedTuple):
     nesting-and-coupling.md N2, N3.
     """
 
+    #: The composite state factor indices of the subsystem, in its declaration order (its block is
+    #: contiguous, so local index ``i`` is ``factors[i]``).
     factors: tuple[int, ...]
+    #: The composite modality indices of the subsystem, in its declaration order.
     modalities: tuple[int, ...]
+    #: The control nodes this subsystem still chooses (the composite plans them).
     controls: tuple[str, ...] = ()
+    #: ``(control node, action node)`` for every control node this record names (a driven node's
+    #: is the one it had before it was driven, which is no action node of the System).
     actions: tuple[tuple[str, str], ...] = ()
+    #: Pairs ``(node, state)``: a control node identified with another subsystem's state, which
+    #: its reader reads a step later (a ``Link`` from a state).
     relayed: tuple[tuple[str, str], ...] = ()
+    #: Control nodes a ``Clamp`` replaced with a prior.
     terminated: tuple[str, ...] = ()
+    #: Pairs ``(node, driver)``: a driven control node and the control node ``driver`` whose
+    #: action node drives it (an ``Identify``, or a ``Link`` from the action node, read at the
+    #: same step); a joint planner makes the two one node, so every state factor that read
+    #: ``node`` reads ``driver``.
     identified: tuple[tuple[str, str], ...] = ()
+    #: Modalities reading only this subsystem's state factors.
     free_modalities: tuple[int, ...] = ()
+    #: ``(modality, foreign parents)`` for the modalities an observation binding pointed across
+    #: the boundary.
     bound_modalities: tuple[tuple[int, tuple[int, ...]], ...] = ()
+    #: ``(state factor, parents)`` for terminal targets whose ``H_deps`` parents lie outside this
+    #: subsystem.
     target_emissions: tuple[tuple[int, tuple[int, ...]], ...] = ()
+    #: ``(modality, source, kernel, realise)``, composite names, for every modality of this
+    #: subsystem that reads a state factor of another component (a belief ``Link``): the view
+    #: leaves the modality an ordinary observation, and the driver supplies it each round from
+    #: the source component's carry.
     reads: tuple[tuple[str, str, "str | Grid", str], ...] = ()
+    #: What binds this subsystem to the others: ``"none"`` (no binding crosses its boundary),
+    #: ``"blanket"`` (every binding across it is a belief read or a ``Link`` from an action node
+    #: into a control node), ``"shared"`` (some binding identifies a latent outright: a relay, a
+    #: structural ``Link``, a terminal ``Link``, an ``Identify``), or ``"coupled"`` (a top-level
+    #: component of a :func:`~hybrid_aif.composition.couple.couple`, joined to the others by
+    #: identified ports alone). :attr:`nested` is the ``"blanket"`` case: the subsystem keeps a
+    #: blanket of its own inside the particle.
     boundary: str = "none"
+    #: The composite names of the component's own emissions, its outputs drawn from its state
+    #: factors (:attr:`System.emissions`).
     emissions: tuple[str, ...] = ()
+    #: ``(field, value)`` pairs, the leaf's own planner configuration (``policy_len``,
+    #: ``planner``, ``gamma``, ``num_iters``, ``decomposition``, ``planning_belief``,
+    #: ``feedback``, ``mixture_schedule``, ``mixture_k``, ``epistemic``, ``terms`` and
+    #: ``scoring``, the static declaration), with names qualified as the composite's; empty for a
+    #: node that is itself a composite, whose leaves each hold their own. The leaf's habit,
+    #: precision, durations and scoring parameters are ``SystemParams.parts[<leaf>]``.
     config: tuple[tuple[str, object], ...] = ()
+    #: The composite names of the amortized recognition variables the leaf owns
+    #: (``System.recognition``).
     recognition: tuple[str, ...] = ()
 
     @property
@@ -619,254 +622,308 @@ class Subsystem(NamedTuple):
 
 
 class Ports(NamedTuple):
-    """A System's ports and their types (:meth:`System.ports`): ``ins`` and ``outs`` map a port's
-    name to ``(LEVEL, levels)`` or ``(FLOAT, dimension)``."""
+    """A System's ports and their types (:meth:`System.ports`): each maps a port's name to
+    ``(LEVEL, levels)`` or ``(FLOAT, dimension)``."""
 
+    #: The in-ports: each modality and each control node, except the slots ``System.observes``
+    #: names (see :meth:`System.ports`).
     ins: dict[str, tuple[str, int]]
+    #: The out-ports: each action node (typed as its control node) and each emission (typed by
+    #: its kernel).
     outs: dict[str, tuple[str, int]]
 
 
 class System(eqx.Module):
-    """Static structure of a System, discrete or hybrid (see module docstring).
+    """Static structure of a System: discrete, continuous or mixed.
 
-    Every field is static; the field table with defaults and meanings is
-    ``docs/composing-systems.md``. The factor table holds every node: state factors first, then
-    the **control nodes** the System chooses (``controls``, by node index). ``B_deps``,
-    ``factor_names``, ``D_deps`` and ``H_deps`` run over all nodes; ``A_deps`` names state
-    factors. A transition reads its state parents from the previous step and its control parents
-    at the step the control is chosen; a control node's levels are its readers' table axes.
-    ``epistemic`` names variables: naming a state factor mounts the infogain of every modality
-    that observes it, so switching one factor off means naming the others.
+    Every field is static; a table with field defaults and meanings is in
+    ``docs/composing-systems.md``. A System's variables are its *nodes*: the state factors first,
+    then the **control nodes**, which the System sets by decision (``controls`` gives their node
+    indices). ``B_deps``, ``factor_names``, ``D_deps`` and ``H_deps`` have one entry per node;
+    ``A_deps`` has one entry per modality, listing the state factors it observes. A transition
+    reads its state parents from the previous step and its control parents at the step the control
+    is chosen; a control node's levels are its readers' table axes. ``epistemic`` names variables:
+    naming a state factor mounts the infogain of every modality that observes it, so switching one
+    state factor off means naming the others.
 
     The pymdp-style keywords ``controlled`` and ``B_control_deps`` are construction sugar,
-    translated once into control nodes: each controlled factor ``f`` (in factor order) gets a
-    node ``u_<f>``, appended after the declared factors, and the node is the last transition
-    parent of ``f`` (under ``B_control_deps``, of every factor listing ``f``, at the listed
+    translated once into control nodes: each controlled state factor ``f`` (in node order) gets a
+    node ``u_<f>``, appended after the declared state factors, and the node is the last transition
+    parent of ``f`` (under ``B_control_deps``, of every state factor listing ``f``, at the listed
     position), so every table keeps its layout. A System built from the sugar equals the one that
     declares those nodes natively. The sugar is readable back (``controlled``,
     ``B_control_deps``) on a sugar-shaped System. A discrete node's level count is its readers'
     parent axis (:meth:`policies`); a node is continuous when ``SystemParams.control`` holds its
     box, and its readers then read a float vector (a neural transition's input, a linear-Gaussian
     transition's ``G u`` term).
+
+    The fields fall in these groups (each field's entry below gives its meaning):
+
+    - the graph: ``B_deps``, ``A_deps``, ``D_deps``, ``H_deps``, ``C_deps``, ``cells``,
+      ``controls``, ``action_names``, ``emissions``, ``observes``, ``black_box``, and the sugar
+      ``controlled`` and ``B_control_deps``;
+    - names: ``factor_names``, ``modality_names``, ``dims``;
+    - planning and the objective: ``policy_len``, ``planner``, ``gamma``, ``decomposition``,
+      ``epistemic``, ``terms``, ``scoring``, ``branch_on``, ``planning_belief``, ``feedback``;
+    - inference: ``num_iters``, ``mixture_k``, ``mixture_schedule``, ``recognition``,
+      ``external_inputs``;
+    - learning: ``readings``, ``reduction_period``, ``reduction_pairs``;
+    - provenance: ``subsystems``.
+
+    A field written **by name** at construction (a dict) is stored as a tuple of pairs, because
+    static fields must hash; ``dict(system.<field>)`` reads it back.
+
     Design: docs/design/control-states.md C1, C4, C6, C11.
     """
 
+    #: One entry per node: the node indices each state factor's transition conditions on (its
+    #: state parents, read from the previous step, and its control parents). The length fixes the
+    #: node count. A continuous state factor may name only earlier categorical state factors (never
+    #: itself), since state factors are computed within a step in declaration order.
     B_deps: tuple[tuple[int, ...], ...] = eqx.field(static=True)
+    #: One entry per modality: the state factors it observes, by node index; the length fixes the
+    #: modality count. Action node ``k`` is named as ``len(B_deps) + k``.
     A_deps: tuple[tuple[int, ...], ...] = eqx.field(static=True, default=())
+    #: The planner's registry name: ``"enumeration"``, ``"cem"``, ``"gradient"``, ``"mixed"``,
+    #: ``"habit"`` or ``"sophisticated"``. Resolved at call time; a face's ``planner=`` argument
+    #: overrides it.
     planner: str = eqx.field(static=True, default="enumeration")
+    #: The policy precision in q_pi ~ softmax(-gamma G + log E), read when
+    #: ``SystemParams.precision`` is ``None``.
     gamma: float = eqx.field(static=True, default=16.0)
+    #: The number of mean-field fixed-point sweeps in ``infer_states``.
     num_iters: int = eqx.field(static=True, default=16)
+    #: Which decomposition of the expected free energy G the term tree carries:
+    #: ``"utility_infogain"`` or ``"risk_ambiguity"``. The ``epistemic`` selector mounts each one's
+    #: own epistemic leaf (``infogain`` or ``ambiguity``) and never touches risk.
     decomposition: Literal["utility_infogain", "risk_ambiguity"] = eqx.field(
         static=True, default="utility_infogain"
     )
+    #: The per-variable epistemic selector. ``True`` mounts every eligible variable,
+    #: ``False`` or ``()`` none, and a tuple names the variables that carry an epistemic leaf: an
+    #: ``infogain`` leaf under ``utility_infogain``, an ``ambiguity`` leaf under ``risk_ambiguity``
+    #: (risk is never touched by the selector). The grammar, shared with ``learn``'s rate keys
+    #: (:mod:`hybrid_aif.system.selectors`):
+    #:
+    #: .. code-block:: text
+    #:
+    #:    <state>                a state variable, by bare state factor name ("pose_cell")
+    #:    <state>:<dim>          one dimension of a continuous state factor ("pose:b1"),
+    #:                           named by ``dims`` or dim0, dim1, ... by position
+    #:    obs:<modality>         an observation variable ("obs:cue")
+    #:    <slot>:<name>          a declaration's parameter variables as a group, the slot
+    #:                           one of likelihood, transition, initial_state_prior
+    #:    <slot>:<name>:<block>  one independent posterior block ("likelihood:pose:noise")
+    #:
+    #: Any segment may be ``*``, matching that whole segment (no partial globs): ``("*",)`` is
+    #: every state variable, ``("*:*",)`` every parameter variable, ``("obs:*",)`` every
+    #: observation variable, ``("pose:*",)`` every dimension of ``pose`` (the whole state factor).
+    #: A wildcarded first segment ranges over the parameter slots only. Selection is a union. A
+    #: wildcard never validates less than its literal part; only a class empty through its
+    #: wildcarded segment resolves silently to nothing.
+    #:
+    #: A state name mounts every modality that observes it, and a modality's leaf is its
+    #: information about the *selected* parents, the unselected ones marginalised (its ambiguity
+    #: likewise); ``obs:<modality>`` scores the modality over all its parents. Dimension keys on
+    #: one state factor select one sub-block: on a Gaussian-carried state factor each modality's
+    #: leaf is its information about those dimensions, the others marginalised, and under
+    #: ``risk_ambiguity`` its ambiguity is ``E H[y | x_S]``; a sub-block of a mixture-carried state
+    #: factor raises. Selecting every dimension selects the state factor. A continuous state
+    #: factor no modality observes has no information to gain: named literally it raises, and the
+    #: drive toward a sharper belief about it is the ``uncertainty`` term.
     epistemic: bool | tuple[str, ...] = eqx.field(static=True, default=True)
-    #   the per-variable epistemic selector: ``True`` mounts every eligible variable,
-    #   ``False``/``()`` none, a tuple names the variables that carry an epistemic leaf: an
-    #   ``infogain`` leaf under ``utility_infogain``, an ``ambiguity`` leaf under
-    #   ``risk_ambiguity`` (risk is never touched by the selector).
-    #   The grammar, shared with ``learn``'s rate keys (:mod:`hybrid_aif.system.selectors`):
-    #
-    #     <state>                     a state variable, by bare factor name ("pose_cell")
-    #     <state>:<dim>               one dimension of a continuous state factor ("pose:b1"),
-    #                                 named by ``dims`` or ``dim0``, ``dim1``, … by position
-    #     obs:<modality>              an observation variable ("obs:cue")
-    #     <slot>:<name>               a declaration's parameter variables as a group,
-    #                                 slot one of likelihood/transition/initial_state_prior
-    #     <slot>:<name>:<block>       one independent posterior block ("likelihood:pose:noise")
-    #
-    #   Any segment may be ``*``, matching that whole segment (no partial globs): ``("*",)``
-    #   is every state variable, ``("*:*",)`` every parameter variable, ``("obs:*",)`` every
-    #   observation variable, ``("pose:*",)`` every dimension of ``pose`` (the whole factor). A
-    #   wildcarded first segment ranges over the parameter slots only. Selection is a union. A
-    #   wildcard never validates less than its literal part; only a class empty through its
-    #   wildcarded segment resolves silently to nothing.
-    #   A state name mounts every channel that observes it, and a channel's leaf is its
-    #   information about the *selected* parents, the unselected ones marginalised (its
-    #   ambiguity likewise); ``obs:<modality>`` scores the channel over all its parents.
-    #   Dimension keys on one factor select one sub-block: on a Gaussian-carried factor each
-    #   channel's leaf is its information about those dimensions, the others marginalised, and
-    #   under ``risk_ambiguity`` its ambiguity is ``E H[y | x_S]``; a sub-block of a
-    #   mixture-carried factor raises. Selecting every dimension selects the factor. A
-    #   continuous factor no channel observes has no information to gain: named literally it
-    #   raises, and the drive toward a sharper belief about it is the ``uncertainty`` row.
-    mixture_k: int | None = eqx.field(static=True, default=None)  # shared Runnalls budget
+    #: The shared Runnalls budget: the number of components every mixture-carried belief keeps.
+    #: Required as soon as any state factor carries a ``MixtureGaussian``.
+    mixture_k: int | None = eqx.field(static=True, default=None)
+    #: The mixture compression (the reduce half of grow and reduce): ``"runnalls"``, or
+    #: ``"mode_aligned"``, which keeps each component owned by one mode (needed to filter a state
+    #: factor whose transition switches).
     mixture_schedule: Literal["runnalls", "mode_aligned"] = eqx.field(
         static=True, default="runnalls"
-    )  # grow->reduce compression; mode_aligned keeps slots mode-owned (needed to filter)
+    )
+    #: Hierarchical conditional priors: the parent state factors of each state factor's initial
+    #: prior (``None``: all unconditional). Ancestral: parents must be earlier, of tabular
+    #: families.
     D_deps: tuple[tuple[int, ...], ...] | None = eqx.field(static=True, default=None)
-    #   hierarchical conditional priors: parent factors of each factor's initial prior
-    #   (None = all unconditional). Ancestral: parents must be earlier, tabular families.
+    #: The parent state factors of each state factor's ``terminal_targets`` entry (``None``: all
+    #: unconditional; see :meth:`resolve_terminal_targets`). As ``D_deps``, except that parents
+    #: need not be declared earlier and a state factor may not parent its own terminal target.
     H_deps: tuple[tuple[int, ...], ...] | None = eqx.field(static=True, default=None)
-    #   parent factors of each factor's ``terminal_targets`` entry (``None`` = all
-    #   unconditional; see :meth:`resolve_terminal_targets`). As ``D_deps``, except parents
-    #   need not be declared earlier and a factor may not parent its own terminal target.
+    #: The parents of each conditional per-step target, **by name**: ``{"lane": ("u_option",),
+    #: "cue": ("context",)}`` at construction, keyed by the targeted node (a state factor's
+    #: ``state_targets`` entry, a modality's ``obs_targets`` entry), each parent a discrete control
+    #: node or a categorical state factor; stored as ``(key, parents)`` pairs sorted by key. The
+    #: target under a key is a ``ConditionalCategorical`` (child axis first, then one axis per
+    #: parent in this order) or a ``ConditionalGaussian`` (``loc`` ``(*levels, d)``, ``chol``
+    #: ``(*levels, d, d)``; control parents only). At each step of a plan the target is resolved
+    #: under its parents, a clamped control node's level selecting its own distribution and a
+    #: state parent averaging mean-field, then scored as an unconditional target is. Design:
+    #: step-durations.md T5.
     C_deps: tuple[tuple[str, tuple[str, ...]], ...] = eqx.field(static=True, default=())
-    #   the parents of each conditional per-step target, **by name**: ``{"lane": ("u_option",),
-    #   "cue": ("context",)}`` at construction, keyed by the targeted node (a state factor's
-    #   ``state_targets`` entry, a modality's ``obs_targets`` entry), each parent a discrete
-    #   control node or a categorical state factor; stored as ``(key, parents)`` pairs sorted by
-    #   key because static fields must hash (``dict(system.C_deps)`` reads it). The target under
-    #   a key is a ``ConditionalCategorical`` (child axis first, then one axis per parent in
-    #   this order) or a ``ConditionalGaussian`` (``loc`` ``(*levels, d)``, ``chol``
-    #   ``(*levels, d, d)``; control parents only). At each step of a plan the target is
-    #   resolved under its parents, a clamped control node's level selecting its own
-    #   distribution and a state parent averaging mean-field, then scored as an unconditional
-    #   target is. Design: step-durations.md T5.
+    #: The grid of each continuous state factor that a tabular state factor reads as a parent,
+    #: **by name**: ``{"x": Grid(...)}`` at construction, stored as ``(state factor, Grid)`` pairs
+    #: in node order. A tabular state factor naming such a state factor in ``B_deps`` has a table
+    #: parent axis of ``Grid.n_cells`` entries, the cell the parent's belief falls in, flattened in
+    #: C order. Design: terrain-field.md.
     cells: tuple[tuple[str, Grid], ...] = eqx.field(static=True, default=())
-    #   the grid of each continuous state factor a tabular factor reads as a parent, **by name**:
-    #   ``{"x": Grid(...)}`` at construction, stored as ``(factor, Grid)`` pairs in factor order
-    #   because static fields must hash (``dict(system.cells)`` reads it). A tabular factor
-    #   naming such a factor in ``B_deps`` has a table parent axis of ``Grid.n_cells`` entries,
-    #   the cell the factor's belief falls in, flattened row-major. Design: terrain-field.md.
+    #: One name per modality, in modality order; ``None`` at construction fills in
+    #: ``modality_{m}``. These are the keys of ``SystemParams.likelihood``, ``obs_targets`` and the
+    #: term tree.
     modality_names: tuple[str, ...] = eqx.field(static=True, default=None)
-    #   one name per modality, in node order; ``None`` at construction fills in ``modality_{m}``
+    #: One name per node (state factors, then control nodes), in node order; ``None`` at
+    #: construction fills in ``factor_{i}`` (and ``u_factor_{i}`` for the sugar's nodes). With
+    #: ``modality_names``, the single source of names and order: keys in ``SystemParams``, targets
+    #: and rate maps refer to them and are validated at every face. No node is named after a
+    #: reserved first segment of the key grammar (``obs`` or a slot word).
     factor_names: tuple[str, ...] = eqx.field(static=True, default=None)
-    #   one name per node (state factors, then control nodes), in node order; ``None`` at
-    #   construction fills in ``factor_{i}`` (and ``u_factor_{i}`` for the sugar's nodes). The two
-    #   tuples are the single source of names and order: keys in SystemParams, targets and rate
-    #   maps refer to them and are validated at every face. No node is named after a reserved
-    #   first segment of the key grammar (``obs`` or a slot word)
+    #: Names for the dimensions of continuous state factors: ``{factor: (name, ...)}`` at
+    #: construction (``{"pose": ("x", "y", "yaw", "b1", "b2")}``), stored as pairs in node order.
+    #: ``epistemic`` selects a dimension as ``<factor>:<name>``; a state factor declared without
+    #: names has ``dim0``, ``dim1``, ... by position, which change meaning when the state is
+    #: reordered. Names are unique within a state factor, one per dimension, single key segments
+    #: (no ``:``, ``.``, ``*`` or brackets), and ``dimN`` may name position ``N`` only.
     dims: tuple[tuple[str, tuple[str, ...]], ...] = eqx.field(static=True, default=())
-    #   names for the dimensions of continuous state factors: ``{factor: (name, ...)}`` at
-    #   construction (``{"pose": ("x", "y", "yaw", "b1", "b2")}``), stored as ``(factor, names)``
-    #   pairs in factor order because static fields must hash (``dict(system.dims)`` reads it).
-    #   ``epistemic`` selects a dimension as ``<factor>:<name>``; a factor declared without names
-    #   has ``dim0``, ``dim1``, … by position, which change meaning when the state is reordered.
-    #   Names are unique within a factor, one per dimension, single key segments (no ``:``,
-    #   ``.``, ``*`` or brackets), and ``dimN`` may name position ``N`` only
+    #: The structural half of the recognition slot: which variables an amortized module infers and
+    #: what each conditions on (:class:`~hybrid_aif.factors.Recognition`); ``None`` or ``()``:
+    #: none. The modules live in ``SystemParams.recognition``.
     recognition: tuple[Recognition, ...] | None = eqx.field(static=True, default=None)
-    #   the structural half of the recognition slot: which variables an amortized module
-    #   infers and what each conditions on (:class:`~hybrid_aif.factors.Recognition`);
-    #   ``None``/``()`` = none. The modules live in ``SystemParams.recognition``.
+    #: The term selector: which estimator-registry terms G carries beyond the ``infogain`` terms
+    #: ``epistemic`` selects (:data:`~hybrid_aif.objectives.registry.ROWS`). Never inferred from
+    #: ``SystemParams.scoring``, so the term tree's shape is a function of the System. The grammar
+    #: is the term name, optionally applied to an ``epistemic`` variable key:
+    #:
+    #: .. code-block:: text
+    #:
+    #:    <term>                   a term with no target ("g_tail", or a term scoring the
+    #:                             whole rollout against a model of its own)
+    #:    <term>:<slot>:<name>     a term on a declared kernel ("occupancy:transition:stoch")
+    #:    <term>:obs:<modality>    a term on an observation modality
+    #:                             ("predicted_reward:obs:reward")
+    #:    <term>:<state>           a term on a state variable ("uncertainty:pose")
+    #:    <term>:<state>:<dim>     a term on dimensions of a continuous state variable
+    #:                             ("uncertainty:pose:b1"; keys on one state factor are one
+    #:                             sub-block, as under epistemic)
+    #:
+    #: The term segment is always literal; the variable part may wildcard where the term declares
+    #: a target class (``"occupancy:transition:*"``). Selection is a union. A term mounts on a
+    #: target only if the registry has an estimator for that variable's family.
     terms: tuple[str, ...] = eqx.field(static=True, default=())
-    #   the row selector: which estimator-registry rows G carries beyond the ``infogain`` rows
-    #   ``epistemic`` selects (:data:`~hybrid_aif.objectives.registry.ROWS`). Never inferred
-    #   from ``SystemParams.scoring``, so the term-tree shape is a function of the System. The
-    #   grammar is the row name, optionally applied to an ``epistemic`` variable key:
-    #
-    #     <row>                       a row with no target ("g_tail", or a row scoring
-    #                                 the whole rollout against a model of its own)
-    #     <row>:<slot>:<name>         a row on a declared kernel ("occupancy:transition:stoch")
-    #     <row>:obs:<modality>        a row on an observation channel
-    #                                 ("predicted_reward:obs:reward")
-    #     <row>:<state>               a row on a state variable ("uncertainty:pose")
-    #     <row>:<state>:<dim>         a row on dimensions of a continuous state variable
-    #                                 ("uncertainty:pose:b1"; keys on one factor are one
-    #                                 sub-block, as under ``epistemic``)
-    #
-    #   The row segment is always literal; the variable part may wildcard where the row
-    #   declares a target class (``"occupancy:transition:*"``). Selection is a union. A row
-    #   mounts on a target only if the registry has an estimator for that variable's family.
+    #: The structural half of the scoring slot, keyed by term name (the parameters live in
+    #: ``SystemParams.scoring``): for example a term's preference model that is itself a declared
+    #: System; ``dict(system.scoring)`` reads it. ``terms`` does the mounting: an entry whose term
+    #: it does not mount raises.
     scoring: tuple[tuple[str, object], ...] = eqx.field(static=True, default=())
-    #   the structural half of the scoring slot, keyed by row name (parameters live in
-    #   ``SystemParams.scoring``): e.g. a row's preference model that is itself a declared
-    #   System. A tuple of pairs because static fields must hash; ``dict(system.scoring)``
-    #   reads it. ``terms`` does the mounting: an entry whose row it does not mount raises.
+    #: ``(name, width)`` vectors that a recognition module may condition on but this System does
+    #: not declare, spelled ``"external:<name>"`` in a ``Recognition`` parent set and supplied per
+    #: call (``infer_states(externals={...})``); the width lets ``parent_dims`` validate
+    #: statically.
     external_inputs: tuple[tuple[str, int], ...] = eqx.field(static=True, default=())
-    #   ``(name, width)`` vectors a q-side factor may condition on that this System does not
-    #   declare, spelled ``"external:<name>"`` in a Recognition parent set and supplied per
-    #   call (``infer_states(externals={...})``); the width lets ``parent_dims`` validate
-    #   statically
+    #: ``(name, Subsystem)`` pairs recording which state factors, modalities and control nodes came
+    #: from which component of a :func:`~hybrid_aif.composition.merge.merge` call (``None`` for a
+    #: hand-declared System); ``dict(system.subsystems)`` reads it. No face computes from it; a
+    #: refusal reads it to name what a node a binding removed became.
     subsystems: tuple[tuple[str, Subsystem], ...] | None = eqx.field(static=True, default=None)
-    #   ``(name, Subsystem)`` pairs recording which factors, modalities and control nodes came
-    #   from which component of a :func:`hybrid_aif.composition.merge.merge` call (``None``
-    #   for a hand-declared System); ``dict(system.subsystems)`` reads it. No face computes from it;
-    #   a refusal reads it to name what a node a binding removed became.
+    #: The observation modalities, by name, whose outcomes the ``"sophisticated"`` planner branches
+    #: on (:mod:`hybrid_aif.planning.sophisticated`): each categorical, over categorical parents
+    #: only. Empty for every other planner, which never reads it.
     branch_on: tuple[str, ...] = eqx.field(static=True, default=())
-    #   the observation modalities, by name, whose outcomes the ``"sophisticated"`` planner
-    #   branches on (:mod:`hybrid_aif.planning.sophisticated`): each categorical, over
-    #   categorical parents only. Empty for every other planner, which never reads it.
+    #: Which belief a plan's information-gain leaves read on a Gaussian-carried state factor:
+    #: ``"prior"``, the predictive belief (predict only); ``"posterior"``, a second chain that
+    #: conditions on the observations expected along the plan, so a linear-Gaussian modality's
+    #: leaf is the gain of its observation given the plan's earlier ones. Every other leaf reads
+    #: the predictive belief, except a Gaussian target under ``feedback``. Design:
+    #: planning-with-observations.md D1, D2; closed-loop-planning.md.
     planning_belief: Literal["prior", "posterior"] = eqx.field(static=True, default="prior")
-    #   which belief a plan's information-gain leaves read on a Gaussian-carried factor:
-    #   ``"prior"`` the predictive belief (predict only); ``"posterior"`` a second chain that
-    #   conditions on the observations expected along the plan, so a linear-Gaussian channel's
-    #   leaf is the gain of its observation given the plan's earlier ones. Every other leaf
-    #   reads the predictive belief, a Gaussian target under ``feedback`` excepted (design:
-    #   planning-with-observations.md D1, D2; closed-loop-planning.md).
+    #: How a plan's Gaussian targets are scored. ``None``: open loop, on the predictive belief.
+    #: ``"linear_quadratic"``: closed loop, as the policy that follows the plan and corrects
+    #: deviations from it by the linear-quadratic regulator's feedback on the estimate. Each
+    #: Gaussian state, terminal and linear-Gaussian observation target on a Gaussian-carried state
+    #: factor is then scored by its cross-entropy on the closed-loop state distribution (the
+    #: epistemic chain's posterior plus the estimate spread the corrections leave), and a Gaussian
+    #: target on a continuous control node also charges the corrections. Requires
+    #: ``planning_belief="posterior"``. Design: closed-loop-planning.md.
     feedback: Literal["linear_quadratic"] | None = eqx.field(static=True, default=None)
-    #   how a plan's Gaussian targets are scored: ``None`` open loop, on the predictive belief;
-    #   ``"linear_quadratic"`` closed loop, as the policy that follows the plan and corrects
-    #   deviations from it by the linear-quadratic regulator's feedback on the estimate. Each
-    #   Gaussian state, terminal and linear-Gaussian observation target on a Gaussian-carried
-    #   factor is then scored by its cross-entropy on the closed-loop state distribution (the
-    #   epistemic chain's posterior plus the estimate spread the corrections leave), and a
-    #   Gaussian target on a continuous control node also charges the corrections. Requires
-    #   ``planning_belief="posterior"`` (design: closed-loop-planning.md)
+    #: Which variable each slot observes: ``(slot, variable)`` pairs, given as ``{"cell_obs":
+    #: "cell"}`` at construction. A slot is a modality or a control node; a variable is an action
+    #: node or an emission of this System (the variables it generates), and the slot's port type
+    #: must equal the variable's. A control node named as a slot is *driven*: the variable's
+    #: realised value is its level, its ``action_names`` entry is ``None``, and no planner chooses
+    #: it. A slot the map does not name observes the variable of its own name, so it is an in-port
+    #: of the System (:meth:`ports`).
+    #:
+    #: The datum of an observed variable is an observation like any other: the caller supplies
+    #: it, keyed by the variable (:meth:`infer_states` fans it out to every slot observing it),
+    #: and ``replay`` and ``run`` realise the emissions after a round and feed them back as the
+    #: next round's observation. An own-belief read: ``emissions={"cell": Emission(("x",),
+    #: realise="mode", kernel=GRID)}, observes={"cell_obs": "cell"}``. The variable set (state
+    #: factors, control nodes, action nodes, emissions and the slots ``observes`` does not name)
+    #: is derived from the declarations, never stored. Design: engine-consolidation.md;
+    #: structure-learning.md S8; nesting-and-coupling.md N3.
     observes: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
-    #   which variable each slot observes: ``(slot, variable)`` pairs, given as ``{"cell_obs":
-    #   "cell"}`` at construction. A slot is a modality; a variable is an
-    #   action node or an emission of this System (the variables it generates), and the slot's
-    #   port type must equal the variable's. A slot the map does not name observes the variable
-    #   of its own name, so it is an in-port of the System (:meth:`ports`). The datum of an
-    #   observed variable is an observation like any other: the caller supplies it, keyed by
-    #   the variable (:meth:`infer_states` fans it out to every slot observing it), and
-    #   ``replay`` and ``run`` realise the emissions after a round and feed them back as the next
-    #   round's observation. Own-belief read: ``emissions={"cell": Emission(("x",),
-    #   realise="mode", kernel=GRID)}, observes={"cell_obs": "cell"}``. The variable set (state
-    #   factors, control nodes, action nodes, emissions and the slots ``observes`` does not name)
-    #   is derived from the declarations, never stored. Design: engine-consolidation.md;
-    #   structure-learning.md S8; nesting-and-coupling.md N3
+    #: The outputs the System draws from its state factors, **by name**: ``{"fix": ("x",),
+    #: "img": Emission(("x", "terrain"), realise="mode")}`` at construction (a tuple of parents is
+    #: a draw), stored as ``(name, Emission)`` pairs in the order given (the order fixes the key
+    #: each emission draws with). An emission is the action node of a state factor: its parents are
+    #: state factors and control nodes (a control parent reads the node's realised level), its
+    #: kernel is ``SystemParams.emission[name]`` or the static identity or ``Grid`` kernel its
+    #: declaration names, and its port type is read off that kernel.
+    #:
+    #: An emission has no node index: nothing in the model reads or scores it, so no ``A_deps``,
+    #: target, ``C_deps``, ``H_deps``, ``epistemic`` key, ``branch_on`` or ``readings`` entry may
+    #: name it. A modality may observe it (``observes``), which is the only way the model reads
+    #: it. Design: nesting-and-coupling.md N5.
     emissions: tuple[tuple[str, Emission], ...] = eqx.field(static=True, default=())
-    #   the outputs the System draws from its state factors, **by name**: ``{"fix": ("x",),
-    #   "img": Emission(("x", "terrain"), realise="mode")}`` at construction (a tuple of parents
-    #   is a draw), stored as ``(name, Emission)`` pairs in the order given because static fields
-    #   must hash (``dict(system.emissions)`` reads it, and the order fixes the key each emission
-    #   draws with). An emission is the action node of a state factor: its parents are state
-    #   factors and control nodes (a control parent reads the node's realised level), its kernel
-    #   is ``SystemParams.emission[name]``, or the static identity or ``Grid`` kernel its
-    #   declaration names, and its port type is read off that kernel. It has no
-    #   node index: nothing in the model reads or scores it, so no ``A_deps``, target,
-    #   ``C_deps``, ``H_deps``, ``epistemic`` key, ``branch_on`` or ``readings`` entry may name
-    #   it. A modality may observe it (``observes``), which is the only way the
-    #   model reads it. Design: nesting-and-coupling.md N5
+    #: ``(state factor or modality, control node)`` pairs: the named learnable table's one reading
+    #: at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
+    #: control node's at that step, and its novelty term is scaled by that count. A table not
+    #: named pools one. Design: step-durations.md T10.
     readings: tuple[tuple[str, str], ...] = eqx.field(static=True, default=())
-    #   ``(factor or modality, control node)`` pairs: the named learnable table's one reading
-    #   at a step pools ``SystemParams.readings[name][level]`` fast readings, the level being the
-    #   control node's at that step, and its novelty term is scaled by that count. A table not
-    #   named pools one. Design: step-durations.md T10
+    #: The schedule of Bayesian model reduction on the growable state factors: every
+    #: ``reduction_period``-th call of ``learn`` runs :meth:`reduce` on each of them, the counter
+    #: carried in ``LearnState.moments``; ``None`` leaves reduction to explicit calls. Design:
+    #: structure-learning.md S4.
     reduction_period: int | None = eqx.field(static=True, default=None)
-    #   the schedule of Bayesian model reduction on the growable factors: every
-    #   ``reduction_period``-th call of ``learn`` runs :meth:`reduce` on each of them, the
-    #   counter carried in ``LearnState.moments``; ``None`` leaves reduction to explicit calls
-    #   (design: structure-learning.md S4)
+    #: How many candidate pairs a reduction tests, chosen greedily as the best-scoring by mutual
+    #: expected log-likelihood.
     reduction_pairs: int = eqx.field(static=True, default=8)
-    #   how many candidate pairs a reduction tests, the best-scoring by mutual expected
-    #   log-likelihood, greedily
+    #: The control nodes, by node index, ascending: the nodes the System sets by decision rather
+    #: than by inference. They follow every state factor; each is read by a transition or sized
+    #: by another declaration that names it (a target, a modality, durations). A control node has
+    #: no parents, initial prior or terminal target of its own. A policy carries one column per
+    #: control node, in this order.
     controls: tuple[int, ...] = eqx.field(static=True, default=())
-    #   the control nodes, by node index, ascending: the nodes the System sets by decision
-    #   rather than by inference. They follow every state factor; each is read by a transition or
-    #   sized by another declaration that names it (a target, a modality, durations). It has no
-    #   parents, initial prior or terminal target of its own. A policy
-    #   carries one column per control node, in this order
+    #: One action node per control node, in ``controls`` order: the node through which the
+    #: decision leaves the System, a child of its control node (kernel P(a | u), a delta unless
+    #: ``SystemParams.actuator`` declares one). Declared with the control nodes, as
+    #: ``modality_names`` with ``A_deps``, paired with them by position, both names free; the
+    #: sugar's pair for state factor ``f`` is ``u_<f>`` and ``a_<f>``. The entry is ``None`` for a
+    #: driven control node (an input, driven from outside through ``observes``: nothing chooses
+    #: it, so nothing realises it). Action nodes follow the control nodes in node order, so
+    #: ``A_deps`` names action node ``k`` as ``len(B_deps) + k``.
     action_names: tuple[str, ...] = eqx.field(static=True, default=None)
-    #   one action node per control node, in ``controls`` order: the node through which the
-    #   decision leaves the System, a child of
-    #   its control node (kernel ``P(a | u)``, a delta unless ``SystemParams.actuator`` declares
-    #   one). Declared with the control nodes, as ``modality_names`` with ``A_deps``, paired with
-    #   them by position, both names free. The sugar's node for factor ``f`` is ``u_<f>`` with
-    #   action ``a_<f>``. Action
-    #   nodes follow the control nodes in node order, so ``A_deps`` names action node ``k`` as
-    #   ``len(B_deps) + k``
+    #: The ports of a black box (an external process declared by its ports alone), **by name**:
+    #: ``{"v": (FLOAT, 2), "gauge": (LEVEL, 4)}`` at construction, stored as ``(port, (kind,
+    #: size))`` pairs in the order given. An in-port is a control node no declaration reads and no
+    #: action node realises (a link into it drives it); an out-port is an emission with no parents
+    #: whose kernel is ``"black_box"``. Nothing between them is stated, so no face that needs the
+    #: inside (inference, planning, learning, sampling, ``as_env``, ``mirror``, ``joint_planner``)
+    #: runs on a System that holds one, and its step under ``run`` is a custom one. A splice
+    #: carries each component's entries under its prefix. Built by
+    #: :func:`~hybrid_aif.composition.black_box.black_box`; docs/composing-systems.md, "External
+    #: processes".
     black_box: tuple[tuple[str, tuple[str, int]], ...] = eqx.field(static=True, default=())
-    #   the ports of a black box, an external process declared by its ports alone, **by name**:
-    #   ``{"v": (FLOAT, 2), "gauge": (LEVEL, 4)}`` at construction, stored as ``(port, (kind,
-    #   size))`` pairs in the order given because static fields must hash. An in-port is a control
-    #   node no declaration reads and no action node realises (a link into it drives it), an
-    #   out-port an emission with no parents whose kernel is ``"black_box"``; nothing between them
-    #   is stated, so no face that needs the inside (inference, planning, learning, sampling,
-    #   ``as_env``, ``mirror``, ``joint_planner``) runs on a System that holds one, and its step
-    #   under ``run`` is a custom one. A splice carries each component's entries under its prefix.
-    #   Built by :func:`~hybrid_aif.composition.black_box.black_box`; docs/composing-systems.md,
-    #   "External processes"
+    #: The planning horizon: the number of steps in a policy (for the enumeration planner, the
+    #: policy length).
     policy_len: int = eqx.field(static=True, kw_only=True)
+    #: Sugar: per state factor, whether it gets a control node ``u_<f>`` (with action node
+    #: ``a_<f>``).
     controlled: dataclasses.InitVar[tuple[bool, ...] | None] = eqx.field(default=None, kw_only=True)
-    #   sugar: per state factor, whether it gets a control node ``u_<f>``
+    #: Sugar: per state factor, the controlled state factors whose nodes slice its transition, in
+    #: axis order (``None``: each controlled state factor reads its own node alone). Design:
+    #: docs/design/control-states.md (Timing; C6).
     B_control_deps: dataclasses.InitVar[tuple[tuple[int, ...], ...] | None] = eqx.field(
         default=None, kw_only=True
     )
-    #   sugar: per state factor, the controlled factors whose nodes slice its transition, in axis
-    #   order (``None``: each controlled factor reads its own node alone). Design:
-    #   docs/design/control-states.md (Timing; C6)
 
     def __post_init__(self, controlled, B_control_deps) -> None:
         """Translate the control sugar into control nodes, and fill in generated names.
@@ -2270,11 +2327,11 @@ class System(eqx.Module):
         }
 
     def beliefs_from_states(self, params: SystemParams, states) -> dict[str, object]:
-        """An amortized model's filter states as the beliefs the faces take, keyed by factor.
+        """An amortized model's filter states as the beliefs the faces take, keyed by state factor.
 
         ``states`` is an :class:`~hybrid_aif.inference.rssm.RSSMState` (e.g.
         :func:`~hybrid_aif.train.world.posterior_states`): the carry's vector and the code's
-        tensor, by factor name, leading batch and time axes passing through (flatten them for
+        tensor, by state factor name, leading batch and time axes passing through (flatten them for
         :func:`~hybrid_aif.train.imagine.imagine`'s ``(N, ...)`` start beliefs).
         """
         from hybrid_aif.train.world import belief_tuple
@@ -2307,7 +2364,7 @@ class System(eqx.Module):
         """A name-keyed value as the positional form the internals use.
 
         ``kind`` and what comes back: ``"beliefs"`` → a tuple of the state factors' beliefs, in
-        factor order (a control node's entry is left out); ``"observations"`` → a tuple in
+        state factor order (a control node's entry is left out); ``"observations"`` → a tuple in
         modality order (a complete ``present`` mapping converts as observations); ``"actions"``
         (keyed by action node) → an int32 ``(..., K)`` level array, one column per action node
         in node order, the
@@ -2381,12 +2438,12 @@ class System(eqx.Module):
 
         A terminal target is ``h``, the prior over intended final states, reciprocal to the initial
         prior ``d``. An ``H_deps`` entry makes it a
-        :class:`~hybrid_aif.distributions.ConditionalCategorical` over the designated factor,
-        conditional on parent factors (under ``merge`` possibly a higher System's). It resolves
-        mean-field, as ``D_deps`` does in :meth:`initial_priors` — ``Σ_parents h(· | parents)
-        q(parents)`` — with ``q(parents)`` read from the final predicted beliefs of the rollout
-        being scored, so a parent the plan can steer makes the target plan-dependent. Learnable and
-        continuous conditional targets raise.
+        :class:`~hybrid_aif.distributions.ConditionalCategorical` over the designated state factor,
+        conditional on parent state factors (under ``merge`` possibly a higher System's). It
+        resolves mean-field, as ``D_deps`` does in :meth:`initial_priors` — ``Σ_parents h(· |
+        parents) q(parents)`` — with ``q(parents)`` read from the final predicted beliefs of the
+        rollout being scored, so a parent the plan can steer makes the target plan-dependent.
+        Learnable and continuous conditional targets raise.
 
         Design: docs/design/nesting-systems.md N1.
         """
@@ -2410,7 +2467,8 @@ class System(eqx.Module):
         return CompiledSystem(self, watch=watch)
 
     def initial_priors(self, params: SystemParams) -> dict[str, Belief]:
-        """Ancestral mean-field marginals of the initial priors, ``D_deps`` resolved, by factor.
+        """Ancestral mean-field marginals of the initial priors, ``D_deps`` resolved, by state
+        factor.
 
         A conditional prior is averaged over its parents' resolved marginals in declaration order,
         unconditional priors pass through, and a learnable prior contributes its posterior-mean
@@ -2453,7 +2511,7 @@ class System(eqx.Module):
         """The same tensors run forward: ``(env, env_params)``.
 
         ``env`` is a :class:`~hybrid_aif.envs.GenerativeEnv` (observations by modality name,
-        states by factor name, actions by action-node name) over the discrete process
+        states by state factor name, actions by action-node name) over the discrete process
         (probability tables) for an all-tabular System, the hybrid one (the declarations
         themselves) otherwise; ``env_params`` keys its containers by name and carries
         ``params.actuator``, from which the env realises each action it is given.
@@ -2629,8 +2687,8 @@ class System(eqx.Module):
         params: SystemParams,
         state: Mapping[str, Array] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
-        """Draw an initial state (or take ``state``, one point per factor) and the emissions of
-        it: ``(emitted, state)``, both keyed by name. The forward process's reset, over the
+        """Draw an initial state (or take ``state``, one point per state factor) and the emissions
+        of it: ``(emitted, state)``, both keyed by name. The forward process's reset, over the
         emissions in place of modalities, each emission realised by its declared rule; a control
         node an emission reads is at level 0 (the zero vector when continuous)."""
         self._refuse_black_box("sample_initial")
@@ -2739,7 +2797,7 @@ class System(eqx.Module):
         ``sample`` draws the parents and then the kernel (an exact predictive draw), and
         ``mode`` and ``stats`` are those of the predictive distribution
         (:mod:`hybrid_aif.system.emissions`). Learnable kernels act at their posterior mean. A
-        static kernel realises its parent directly: the identity gives the factor's level,
+        static kernel realises its parent directly: the identity gives the state factor's level,
         probability vector or location, and a :class:`~hybrid_aif.cells.Grid` gives the cell a
         point falls in, or from a belief the cell index by ``sample`` and ``mode`` and the cell
         mass by ``stats``. Nothing in inference or planning reads an emission; a modality
@@ -2860,38 +2918,38 @@ class System(eqx.Module):
         one-hot or a probability vector over the levels (a soft observation: the expected
         log-likelihood under the vector) for a categorical modality, a float array for an LG
         one. Design: nesting-and-coupling.md N8. ``priors`` and the
-        returned beliefs are keyed by factor name; ``priors=None`` uses :meth:`initial_priors`.
-        A discrete control node's entry is optional in ``priors`` and always returned: no
-        inference runs on it, so it passes through (its uniform prior when absent). An action
-        node a modality observes (``A_deps`` naming it) is inferred like a state factor on the
-        tabular path: its entry in ``priors`` is its prior (uniform when absent), and its
+        returned beliefs are keyed by state factor name; ``priors=None`` uses
+        :meth:`initial_priors`. A discrete control node's entry is optional in ``priors`` and always
+        returned: no inference runs on it, so it passes through (its uniform prior when absent). An
+        action node a modality observes (``A_deps`` naming it) is inferred like a state factor on
+        the tabular path: its entry in ``priors`` is its prior (uniform when absent), and its
         posterior is returned under its name.
         With ``detail=True`` (a static bool) the second slot is an
         :class:`~hybrid_aif.inference.InferenceDetail` (pre-reduction switching mixtures, per-mode
-        and total log-evidence keyed by modality name; ``unsupported`` keyed by factor name), else
-        ``None``; the beliefs are identical either way.
+        and total log-evidence keyed by modality name; ``unsupported`` keyed by state factor name),
+        else ``None``; the beliefs are identical either way.
 
         ``present`` says which modalities are observed this tick, a flag per modality keyed by
         name: a modality it leaves out is present, ``None`` means all are, and an unknown key
-        raises. An absent modality is not clamped: its value is ignored and its factors keep what
-        the other modalities leave them; all absent is a predict-only tick. A traced flag
+        raises. An absent modality is not clamped: its value is ignored and its state factors keep
+        what the other modalities leave them; all absent is a predict-only tick. A traced flag
         computes the update and selects against it (its ``detail`` entries report the
         hypothetical update, ``log_evidence`` zeroed); a Python ``False`` skips it statically. On
         the amortized path the modalities the recognition modules read are present or absent
         together: static flags splitting them raise, traced ones reduce with ``all`` (absent).
 
-        ``detail.unsupported`` flags each categorical factor none of whose levels explains this
-        tick's tabular evidence, as :func:`hybrid_aif.inference.discrete.unsupported` defines it
-        against ``support_floor``; the posterior is left as computed.
+        ``detail.unsupported`` flags each categorical state factor none of whose levels explains
+        this tick's tabular evidence, as :func:`hybrid_aif.inference.discrete.unsupported` defines
+        it against ``support_floor``; the posterior is left as computed.
 
         Hybrid Systems run one structured sweep in declaration order: the discrete FPI over the
         categorical sub-model; exact LG ``condition`` per LG modality, sequential in modality order;
-        exact Gaussian-sum conditioning for a mixture-carried factor, with a mode-parent evidence
-        message under ``mixture_schedule="mode_aligned"``; and grow-then-reduce conditioning for a
-        switching LG modality (categorical mode parents after the observed factor in ``A_deps``),
-        under either schedule. A modality that observes a mixture-carried factor directly (one
-        whose *transition* switches) raises under ``"runnalls"`` and needs ``"mode_aligned"``;
-        non-LG likelihoods on continuous factors raise.
+        exact Gaussian-sum conditioning for a mixture-carried state factor, with a mode-parent
+        evidence message under ``mixture_schedule="mode_aligned"``; and grow-then-reduce
+        conditioning for a switching LG modality (categorical mode parents after the observed state
+        factor in ``A_deps``), under either schedule. A modality that observes a mixture-carried
+        state factor directly (one whose *transition* switches) raises under ``"runnalls"`` and
+        needs ``"mode_aligned"``; non-LG likelihoods on continuous state factors raise.
 
         On the amortized path this runs the recognition modules in order
         (:func:`hybrid_aif.inference.amortized.recognize`): the value ``None`` is allowed for a
@@ -3081,28 +3139,28 @@ class System(eqx.Module):
         statistic; point-valued slots are not learnable. A non-frozen
         :class:`~hybrid_aif.distributions.MLPConditional` takes an optax step on its negative
         log-density at point evidence from the beliefs (posterior means, probability vectors for
-        discrete variables, a one-hot action). A transition net's parents are its factor's previous
-        value then the action one-hot if controlled; a likelihood net's are the ``A_deps`` factors
-        in order.
+        discrete variables, a one-hot action). A transition net's parents are its state factor's
+        previous value then the action one-hot if controlled; a likelihood net's are the ``A_deps``
+        state factors in order.
 
         A non-frozen :class:`~hybrid_aif.distributions.MLPConditional` likelihood takes the
         gradient of the free energy ``infer_states(detail=True)`` reports for the tick: the
         inference pass is re-run from ``priors``, the prior beliefs ``infer_states`` was given
-        (keyed by factor name), with every other input held fixed, and differentiated in the
+        (keyed by state factor name), with every other input held fixed, and differentiated in the
         decoder. Without ``priors`` they are the prediction from ``prev_beliefs`` and ``action``
         when ``prev_beliefs`` is given, else the initial priors. ``externals`` is the mapping
         ``infer_states`` took for a recognition entry's external parents. A modality a
         recognition entry covers contributes its expected negative log-likelihood under the final
         belief, as ``infer_states`` records it.
 
-        A parameter variable several factors read (``SystemParams.parameters``) absorbs the sum
-        of its readers' statistics once, at the rate ``lr_by_slot["parameter:<name>"]`` (default
+        A parameter variable several state factors read (``SystemParams.parameters``) absorbs the
+        sum of its readers' statistics once, at the rate ``lr_by_slot["parameter:<name>"]`` (default
         ``lr``). A reader's own key (``"transition:<factor>"``, ``"likelihood:<modality>"``) takes
         only a static ``0.0``, which keeps that reader's statistic out of the variable; any other
         value raises, naming the variable's key. A reader with no observed child counts its
-        predictive belief like any factor does, which is why this exclusion exists: a scheduler
-        that reads a table it never observes would otherwise add its own predictions to the
-        counts. A literal key outranks a pattern, for readers as for rates: a pattern
+        predictive belief like any state factor does, which is why this exclusion exists: a
+        scheduler that reads a table it never observes would otherwise add its own predictions to
+        the counts. A literal key outranks a pattern, for readers as for rates: a pattern
         (``"transition:*"``, ``"*:*"``) at ``0.0`` excludes the referencing readers it matches
         only while the variable's own rate is not named literally, so ``{"*:*": 0.0,
         "parameter:T": 1.0}`` learns ``T`` from all its readers and ``{"*:*": 0.0}`` freezes
@@ -3110,12 +3168,12 @@ class System(eqx.Module):
         pattern with a literal slot raises on a referencing reader, and a fully wildcarded
         nonzero pattern reaches the variable through ``parameter:*`` instead.
 
-        ``observations`` is keyed by modality name, ``beliefs`` and ``prev_beliefs`` by factor
+        ``observations`` is keyed by modality name, ``beliefs`` and ``prev_beliefs`` by state factor
         name, ``action`` by action-node name (as :meth:`act` returns it). ``action`` is
         **a_{t-1}**, the action that produced this tick's observations; each control node is
         clamped to its value. ``prev_beliefs`` and
         ``action`` are required exactly when a learnable transition has a nonzero-or-traced rate
-        (``action`` only if that factor is controlled). ``detail`` is the keyed
+        (``action`` only if that state factor is controlled). ``detail`` is the keyed
         :class:`~hybrid_aif.inference.InferenceDetail` ``infer_states(detail=True)`` returned.
 
         Returns bare params for a conjugate-only model, ``(params, learn_state)`` when the model has
@@ -3151,17 +3209,17 @@ class System(eqx.Module):
         initial-prior rates to tick 0, since they accumulate once per episode. ``learn`` is
         unbatched; lift it with ``vmap``.
 
-        **Growth.** A growable factor (a memoryless factor whose weights carry a growth
+        **Growth.** A growable state factor (a memoryless state factor whose weights carry a growth
         propensity) runs its growth step first: the tick's data scored under every level, the
         first dead level woken when the best live level explains them worse than the prior does
         by the propensity's margin, the woken level taking the datum hard and seeded from it by
-        the ordinary update. Every ``reduction_period``-th call then reduces each growable factor
-        (:meth:`reduce`), which needs ``prior``, the model's prior params (the statistics a merge
-        pools are the posterior's beyond them, and a killed level returns to them), and a
+        the ordinary update. Every ``reduction_period``-th call then reduces each growable state
+        factor (:meth:`reduce`), which needs ``prior``, the model's prior params (the statistics a
+        merge pools are the posterior's beyond them, and a killed level returns to them), and a
         ``learn_state`` carrying the counter (:meth:`init_learn_state`). Both move with the
-        weights: a tick where no modality over the factor is present grows nothing, and the
+        weights: a tick where no modality over the state factor is present grows nothing, and the
         weights' rate (``transition:<factor>``) gates growth and reduction, a static zero
-        freezing the factor's structure and a traced zero skipping it at run time.
+        freezing the state factor's structure and a traced zero skipping it at run time.
 
         ``observations`` is keyed by variable, as :meth:`infer_states` takes it: the datum of an
         emission or action node a modality observes (``System.observes``) is the one the caller
@@ -3247,15 +3305,15 @@ class System(eqx.Module):
         propensity included. Every block is carried when ``slots`` is ``None``, else the ones
         the keys name: ``"likelihood:<modality>"``, ``"transition:<factor>"``,
         ``"initial_state_prior:<factor>"``, ``"parameter:<name>"`` (a named parameter variable,
-        the one block of every factor and modality that reads it) or
+        the one block of every state factor and modality that reads it) or
         ``"likelihood:<modality>:noise"``, without wildcards (under ``jit``, pass ``slots`` as a
         static argument). Everything else comes from ``fresh``: point values, and a separate
         ``MatrixNormal`` head, which ``learn`` does not update. A block whose family, shape or dtype
         differs between the two raises, as do a selected slot that holds a posterior on one side
-        only, a key that names no posterior, and a selection that would split a growable factor's
-        blocks, which growth and reduction keep in step. Trainable slots that ``learn`` does not
-        train (a recognition model, a scoring row, a policy module) are not carried; a gradient
-        slot's optimizer state is the ``LearnState`` the agent already carries.
+        only, a key that names no posterior, and a selection that would split a growable state
+        factor's blocks, which growth and reduction keep in step. Trainable slots that ``learn``
+        does not train (a recognition model, a scoring row, a policy module) are not carried; a
+        gradient slot's optimizer state is the ``LearnState`` the agent already carries.
 
         The carry is exact when what was learned means the same thing in the rebuilt params, as
         counts over the same levels do. A posterior over a parameter the rebuild re-expresses
@@ -3273,9 +3331,9 @@ class System(eqx.Module):
         factor: str | None = None,
         n_pair: int | None = None,
     ) -> SystemParams:
-        """Bayesian model reduction on a growable factor, or on every one when ``factor`` is
+        """Bayesian model reduction on a growable state factor, or on every one when ``factor`` is
         ``None``: two live levels are merged when the evidence of their pooled statistics, in
-        every slot the factor is an axis of, is no lower than that of the separate levels. The
+        every slot the state factor is an axis of, is no lower than that of the separate levels. The
         merged level keeps its own prior once and both levels' data; the other returns to dead,
         its weight zero and its emissions at their prior. Candidate pairs are the ``n_pair``
         (default ``reduction_pairs``) best by mutual expected log-likelihood, tested greedily.
@@ -3294,12 +3352,12 @@ class System(eqx.Module):
         rounds: int = 1,
         lr: float | Array = 1.0,
     ) -> SystemParams:
-        """The batch form of growth on a growable factor: ``observations`` holds a window of
-        ``N`` data, ``(N, …)`` per modality over the factor alone. Each of ``rounds`` rounds
+        """The batch form of growth on a growable state factor: ``observations`` holds a window of
+        ``N`` data, ``(N, …)`` per modality over the state factor alone. Each of ``rounds`` rounds
         scores every datum under every level, takes the worst-explained one and wakes the first
         dead level for it while it falls below the growth threshold, seeding the level from that
         datum; the window is then absorbed at rate ``lr`` under the responsibilities the woken
-        levels leave, into the factor's weights and its modalities. ``learn`` is this with one
+        levels leave, into the state factor's weights and its modalities. ``learn`` is this with one
         datum and one round.
 
         Design: docs/design/structure-learning.md S3
@@ -3534,15 +3592,15 @@ class System(eqx.Module):
     ) -> PlannerContext:
         """Build the per-call context a planner runs against (never stored).
 
-        ``beliefs`` is keyed by factor name and must be marginals: resolve a conditional or
+        ``beliefs`` is keyed by state factor name and must be marginals: resolve a conditional or
         learnable ``D`` with :meth:`initial_priors` first (a control node's entry is ignored).
-        The context itself is positional (``init_beliefs`` in factor order, actions and policies
-        with one column per control node), as planners index it. ``horizon`` is the plan length
-        the planner plans to and the closures are built for (``None``: ``policy_len``). ``key``
-        is the plan key a stochastic planner (CEM) reads; ``scoring_key`` is the scoring rows'
-        own key, under which a row that rolls a model of its own takes the sampled rollout (only
-        :meth:`score_policies` passes one). ``aux_beliefs`` is keyed by scoring-row name; each
-        value is the belief carry of that row's own model, keyed by the nested System's factor
+        The context itself is positional (``init_beliefs`` in state factor order, actions and
+        policies with one column per control node), as planners index it. ``horizon`` is the plan
+        length the planner plans to and the closures are built for (``None``: ``policy_len``).
+        ``key`` is the plan key a stochastic planner (CEM) reads; ``scoring_key`` is the scoring
+        rows' own key, under which a row that rolls a model of its own takes the sampled rollout
+        (only :meth:`score_policies` passes one). ``aux_beliefs`` is keyed by scoring-row name; each
+        value is the belief carry of that row's own model, keyed by the nested System's state factor
         names (amortized path only).
 
         All-tabular Systems get the compiled prob-space closures
@@ -3729,7 +3787,7 @@ class System(eqx.Module):
         that selects without building a tree (``"habit"``) returns ``{}``; :meth:`score_policies`
         gives the tree G would assign its plan. ``plan_key`` is required by, and only by, a
         stochastic planner (``"cem"``). ``legal`` is the hard constraint of :meth:`act`, keyed by
-        control node or one bool per policy. ``beliefs`` is keyed by factor name. The planner
+        control node or one bool per policy. ``beliefs`` is keyed by state factor name. The planner
         must return clamped (integer) policies: a belief-valued policy set raises. ``present``
         says which modalities the plan expects to observe at each step, keyed by name: a bool
         for the whole plan, a per-step bool array (``(policy_len,)``, or ``(horizon,)`` under
@@ -3780,11 +3838,11 @@ class System(eqx.Module):
         ``(P, H)`` (or ``(H,)``), a belief. A mapping is how a space mixing discrete and
         continuous nodes is scored. The type of each entry selects, statically, how its node is
         read: a level indexes the tables, a belief mixes them, a continuous value enters a
-        linear-Gaussian factor's ``G u`` as an offset and a Gaussian belief over it pushes through
-        exactly (a truncated one by its closed moments), a nonlinear factor's map reads a value as
-        an input and a belief through its moments, and every leaf is computed under the result.
-        The tree is then the objective of committing to the *randomised* policy that draws each
-        node's level from its belief, step by step: a term linear in the control
+        linear-Gaussian state factor's ``G u`` as an offset and a Gaussian belief over it pushes
+        through exactly (a truncated one by its closed moments), a nonlinear state factor's map
+        reads a value as an input and a belief through its moments, and every leaf is computed under
+        the result. The tree is then the objective of committing to the *randomised* policy that
+        draws each node's level from its belief, step by step: a term linear in the control
         (utility, ambiguity, the predicted state) is the mixture of its clamped values, a
         nonlinear one (risk, info gain) is not. Under a belief, transition novelty is the
         mean-field mixture (the novelty weights averaged over ``q(u)``, contracted with the mixed
@@ -3793,15 +3851,15 @@ class System(eqx.Module):
         objective under a policy posterior ``q_pi`` over clamped policies, which is the
         ``q_pi``-weighted ``total`` of the clamped tree. A one-hot belief scores as its clamp;
         an all-clamp mapping is the positional policy. A belief on a discrete node is read by
-        categorical (tabular) transitions; a continuous factor reading a belief-valued discrete
-        node raises, as does a neural transition reading a belief-valued continuous one.
+        categorical (tabular) transitions; a continuous state factor reading a belief-valued
+        discrete node raises, as does a neural transition reading a belief-valued continuous one.
 
         A ``state_targets`` entry on a control node scores it: a ``risk`` leaf keyed by the
         node's name, ``−log C(u)`` under a clamp and ``KL(q(u) ‖ C)`` under a belief, at every
         step; a ``terminal_targets`` entry scores the last step as ``terminal_risk``.
 
-        ``beliefs`` is keyed by factor name. In either form the plan's length ``H`` need not be
-        ``policy_len``: the scoring rows are built for the plan's own horizon.
+        ``beliefs`` is keyed by state factor name. In either form the plan's length ``H`` need not
+        be ``policy_len``: the scoring rows are built for the plan's own horizon.
         ``aux_beliefs`` passes to :meth:`planner_context`. ``key`` is the scoring rows' key: rows
         that roll a model of their own take the sampled rollout under it, the expected one without.
         """
@@ -3828,7 +3886,7 @@ class System(eqx.Module):
     ) -> tuple[dict[str, Array], Categorical, TermTree | None]:
         """Infer policies and emit an action: ``(action, q_pi, metrics)``.
 
-        ``beliefs`` is keyed by factor name; the action by action-node name, one entry per
+        ``beliefs`` is keyed by state factor name; the action by action-node name, one entry per
         action node, the intended value of its control node (a level, or a continuous node's
         float value): a draw (or the mode) from each control node's posterior, sampled over the
         policy set the planner returned. ``key`` selects the action,
@@ -3900,7 +3958,8 @@ class System(eqx.Module):
         policy: Array,
         key: Array | None = None,
     ) -> list[dict[str, Belief]]:
-        """Open-loop prediction: the beliefs, keyed by factor name, after each step of one policy.
+        """Open-loop prediction: the beliefs, keyed by state factor name, after each step of one
+        policy.
 
         ``policy`` stays positional: int32 ``(horizon, K)``, one column per control node, or float
         ``(horizon, action_dim)`` over an all-continuous action space; step ``t`` of the result
@@ -3920,7 +3979,8 @@ class System(eqx.Module):
         action: Mapping[str, Array],
         key: Array | None = None,
     ) -> dict[str, Belief]:
-        """Next tick's state priors: ``beliefs`` pushed through ``action``, keyed by factor name.
+        """Next tick's state priors: ``beliefs`` pushed through ``action``, keyed by state factor
+        name.
 
         ``action`` is keyed by action-node name as :meth:`act` returns it (``{}`` when nothing is
         controlled): a level per discrete node, a float vector per continuous one, the two kinds
@@ -3929,17 +3989,17 @@ class System(eqx.Module):
         next step, uniform over its levels. An action node a modality observes gets an entry
         too, the agent's prediction of its action: the column of ``params.actuator`` at the
         clamped level, the one-hot of that level under the delta kernel. A continuous node enters
-        a linear-Gaussian factor as the ``G u`` offset, a neural one as part of its input, a
+        a linear-Gaussian state factor as the ``G u`` offset, a neural one as part of its input, a
         nonlinear one as an entry of its map's controls. Hybrid
-        factors go through their own transitions (exact Gaussian ``predict``; grow then
-        ``reduce(mixture_k)`` for mode-coupled factors), the closure the planner uses for one step.
-        On the amortized path each carry advances, then each code is read off its transition at this
-        step's parents.
+        state factors go through their own transitions (exact Gaussian ``predict``; grow then
+        ``reduce(mixture_k)`` for mode-coupled state factors), the closure the planner uses for one
+        step. On the amortized path each carry advances, then each code is read off its transition
+        at this step's parents.
 
         Without ``key`` the result is the expected belief. With one it is the sampled belief: one
-        draw per factor as a belief of its family (:mod:`hybrid_aif.inference.sample`). That is a
-        legal carry but a point mass: a collapsed Gaussian or mixture cannot be conditioned and has
-        no finite entropy. See docs/composing-systems.md.
+        draw per state factor as a belief of its family (:mod:`hybrid_aif.inference.sample`). That
+        is a legal carry but a point mass: a collapsed Gaussian or mixture cannot be conditioned and
+        has no finite entropy. See docs/composing-systems.md.
         """
         self._refuse_black_box("update_empirical_prior")
         return _infer_face.update_empirical_prior(self, params, beliefs, action, key)

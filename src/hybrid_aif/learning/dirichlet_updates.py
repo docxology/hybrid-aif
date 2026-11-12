@@ -23,7 +23,14 @@ def update_likelihood_dirichlet(
     A_deps: tuple[tuple[int, ...], ...],
     lr: float = 1.0,
 ) -> tuple[Array, ...]:
-    """One conjugate step per modality via :meth:`ConditionalDirichlet.update`."""
+    """One conjugate count update per modality, on positional arrays.
+
+    ``prior`` holds each modality's child-first concentration table, ``observations`` its
+    observation (a level index or a probability vector), ``posteriors`` one belief per state
+    factor and ``A_deps`` each modality's parent state factors; each table gains
+    ``lr * onehot(o) ⊗ q(parents)`` (:meth:`ConditionalDirichlet.update`). Returns the updated
+    tables in modality order.
+    """
     updated = []
     for conc_m, obs_m, deps_m in zip(prior, observations, A_deps, strict=True):
         cd = ConditionalDirichlet(concentration=jnp.asarray(conc_m), parent_ndims=len(deps_m))

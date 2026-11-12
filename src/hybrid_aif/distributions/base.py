@@ -33,7 +33,22 @@ from hybrid_aif.interval import Interval
 
 
 class Distribution(eqx.Module):
-    """Abstract base for all distribution/belief objects. See module docstring."""
+    """Abstract base for every belief, message payload and preference object.
+
+    A Distribution is an ``equinox.Module`` whose leaves are ``jax.Array`` parameters (no
+    callables, no shared mutable state), so it crosses any ``jit``, ``vmap``, ``scan`` or
+    serialization boundary unchanged. Its family's event and parameter structure occupies a fixed
+    number of trailing axes, documented per class; :attr:`batch_shape` is everything to the left,
+    and elementwise methods broadcast over it. Static structure (event dimension, number of
+    levels, mixture size) is read off the leaf shapes.
+
+    Every subclass provides :attr:`batch_shape`, :meth:`log_prob`, :meth:`sample` (a JAX PRNG
+    key and a static sample shape; discrete draws are ``int32``), :meth:`mean` (the moment
+    view), and :meth:`entropy` and :meth:`kl_to`, which return an
+    :class:`~hybrid_aif.interval.Interval`: zero-width where a closed form exists, a bound pair
+    otherwise (mixtures). Arrays are float32 unless a class says otherwise. The full contract is
+    the docstring of :mod:`hybrid_aif.distributions.base`.
+    """
 
     @property
     @abc.abstractmethod
@@ -62,7 +77,12 @@ class Distribution(eqx.Module):
 
 
 class ExponentialFamily(Distribution):
-    """Mixin contract for exponential-family members: dual parameter views."""
+    """A :class:`Distribution` in the exponential family, with a natural-parameter view.
+
+    Each family stores its numerically safest parameterization and also provides
+    :meth:`natural` and :meth:`from_natural`, a round trip up to a gauge constant and float
+    error. Conjugate updates add in natural coordinates; rollouts read moments.
+    """
 
     @abc.abstractmethod
     def natural(self) -> tuple[Array, ...]:

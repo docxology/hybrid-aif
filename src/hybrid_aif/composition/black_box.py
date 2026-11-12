@@ -164,14 +164,14 @@ def env_step(env: Env, params: Any = None, *, actions: Mapping[str, int] | None 
     The black box the step runs declares one out-port per observation, in that order, each of the
     observation's type; its in-ports fill the action. Level in-ports make a level action (an
     integer vector, one level per state factor): each in-port is one level at its position,
-    ``actions`` mapping an in-port's name to its factor (by default in-port ``k`` at factor
-    ``k``), the other factors at ``null_action``'s level. Float in-ports make a continuous action:
-    their vectors concatenated in declaration order (float32) are the whole vector, of
-    ``null_action``'s size. In-ports of both kinds are refused. Where the environment's own
-    params show its transitions (a tabular process: ``params.transition``, one table per factor,
-    the action axis last), a level outside a factor's action axis and an in-port mapped onto a
-    factor that takes no action are refused; elsewhere the environment receives the levels as
-    given. ``params`` are the environment's own, passed to every call.
+    ``actions`` mapping an in-port's name to its state factor (by default in-port ``k`` at state
+    factor ``k``), the other state factors at ``null_action``'s level. Float in-ports make a
+    continuous action: their vectors concatenated in declaration order (float32) are the whole
+    vector, of ``null_action``'s size. In-ports of both kinds are refused. Where the environment's
+    own params show its transitions (a tabular process: ``params.transition``, one table per state
+    factor, the action axis last), a level outside a state factor's action axis and an in-port
+    mapped onto a state factor that takes no action are refused; elsewhere the environment receives
+    the levels as given. ``params`` are the environment's own, passed to every call.
 
     The reset call (``obs is None``) is ``env.reset(key, params)``, or ``env.reset(key, params,
     state)`` when ``run(carries=...)`` seeds the carry with a positional state; every other call

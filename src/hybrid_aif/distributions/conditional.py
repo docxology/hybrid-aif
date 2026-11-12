@@ -85,7 +85,21 @@ def _count_update(
 
 
 class Conditional(eqx.Module):
-    """Abstract base for conditional families. See module docstring."""
+    """Abstract base for conditional families: Markov kernels P(child | parents) with discrete
+    parents.
+
+    A conditional holds one child distribution per parent configuration; the parent axes are
+    model structure, not batch axes, and normalization is over the child axis only. The number of
+    parent axes is the static field ``parent_ndims``; :attr:`parent_shape` gives their sizes and
+    :attr:`batch_shape` the axes to their left. :meth:`condition_on` takes unbatched parent
+    level indices and returns the child distribution at that configuration (batch it with
+    ``vmap``).
+
+    Tabular families (:class:`ConditionalCategorical`, :class:`ConditionalDirichlet`) store the
+    child axis first, ``(..., num_levels, *parent_shape)`` (the pymdp and SPM layout);
+    :class:`ConditionalGaussian` puts the parent axes before the Gaussian's own trailing axes.
+    Design: docs/design/conditional-families.md
+    """
 
     @property
     @abc.abstractmethod
@@ -148,7 +162,9 @@ class ConditionalCategorical(_TabularConditional):
     carries a per-config additive gauge, as ``Categorical.logits`` does.
     """
 
-    log_table: Array  # (..., num_levels, *parent_shape)
+    #: Unnormalized log-probabilities, ``(..., num_levels, *parent_shape)``, child axis first.
+    log_table: Array
+    #: The number of parent axes (a count, not their sizes).
     parent_ndims: int = eqx.field(static=True)
 
     def __check_init__(self) -> None:
@@ -231,22 +247,25 @@ class ConditionalDirichlet(_TabularConditional):
     :class:`~hybrid_aif.distributions.learnable.Learnable`), placed in ``SystemParams.likelihood`` /
     ``transition`` / ``initial_state_prior`` in place of a point table. Swapping forms changes the
     pytree structure; to stop learning without losing the counts, pass a rate of ``0.0`` to
-    ``System.learn``. ``alpha0`` is the decay anchor a ``decay < 1`` update relaxes toward: the
-    declaration's own concentration (:meth:`from_table` ``anchor="prior"``), a scalar (a uniform
-    table, ``anchor="uniform"``), or absent, in which case decaying the slot raises. ``growth``
-    is the growth propensity ``α`` of a growable factor whose weights this table holds (the
-    transition column of a memoryless factor; structure-learning.md S3): the pseudo-count the
-    prior gives a level not yet live. A level whose concentration is zero is absent from the
-    family whatever ``growth`` says; ``growth`` is what lets such a level be woken, and without
-    it the level stays absent.
+    ``System.learn``.
 
     Design: docs/design/parameter-learning.md D3, D7; docs/design/structure-learning.md S3
     """
 
-    concentration: Array  # (..., num_levels, *parent_shape), positive counts
+    #: Positive counts, ``(..., num_levels, *parent_shape)``, child axis first.
+    concentration: Array
+    #: The number of parent axes (a count, not their sizes).
     parent_ndims: int = eqx.field(static=True)
-    alpha0: Array | None = None  # decay anchor (D7): the prior, a scalar (uniform), or absent
-    growth: Array | None = None  # the growth propensity α (S3): a scalar, or absent
+    #: The decay anchor a ``decay < 1`` update relaxes toward: the declaration's own concentration
+    #: (:meth:`from_table` ``anchor="prior"``), a scalar (a uniform table, ``anchor="uniform"``),
+    #: or ``None``, in which case decaying the slot raises.
+    alpha0: Array | None = None
+    #: The growth propensity ``α``, a scalar or ``None``, of a growable state factor whose weights
+    #: this table holds (the transition column of a memoryless state factor;
+    #: structure-learning.md S3): the pseudo-count the prior gives a level not yet live. A level
+    #: whose concentration is zero is absent from the family whatever ``growth`` says; ``growth``
+    #: is what lets such a level be woken, and without it the level stays absent.
+    growth: Array | None = None
 
     def __check_init__(self) -> None:
         self._check()
@@ -275,7 +294,7 @@ class ConditionalDirichlet(_TabularConditional):
         ``anchor`` is what a ``decay < 1`` update relaxes toward: ``"prior"`` (or ``True``) keeps
         the initial concentration as ``alpha0``, a second table of parameters; ``"uniform"`` keeps
         a scalar ``1.0``, which costs nothing; an array is kept as given; ``False`` keeps none, and
-        the slot then cannot decay. ``growth`` is the growth propensity of a growable factor's
+        the slot then cannot decay. ``growth`` is the growth propensity of a growable state factor's
         weights (a table with zero rows for its dead levels).
         """
         conc = strength * jnp.asarray(table)
@@ -390,8 +409,12 @@ class ConditionalGaussian(Conditional):
     entries above its diagonal is refused as neither.
     """
 
-    loc: Array  # (..., *parent_shape, dim)
-    chol: Array  # (..., *parent_shape, dim, dim) or, shared, (..., dim, dim); lower-triangular
+    #: The means, ``(..., *parent_shape, dim)``; the parent axes are read from here.
+    loc: Array
+    #: The lower-triangular Cholesky factors, ``(..., *parent_shape, dim, dim)``; or one shared
+    #: factor, ``(..., dim, dim)``; or a diagonal standard deviation, the shape of ``loc``.
+    chol: Array
+    #: The number of parent axes (a count, not their sizes).
     parent_ndims: int = eqx.field(static=True)
 
     def __check_init__(self) -> None:

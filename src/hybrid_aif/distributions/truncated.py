@@ -172,9 +172,13 @@ class TruncatedGaussian(Distribution):
     Every leaf is ``(..., dim)``; ``low < high`` elementwise.
     """
 
+    #: The location of the untruncated Gaussian, ``(..., dim)``.
     loc: Array
+    #: The standard deviation of the untruncated Gaussian, ``(..., dim)``.
     scale: Array
+    #: The lower bound, ``(..., dim)``.
     low: Array
+    #: The upper bound, ``(..., dim)``.
     high: Array
 
     def __init__(self, loc: Array, scale: Array, low: Array, high: Array):

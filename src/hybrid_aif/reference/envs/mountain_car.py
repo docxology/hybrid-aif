@@ -24,15 +24,25 @@ from hybrid_aif.envs.base import Env, Obs, State
 class MountainCar(Env):
     """Sparse-reward continuous Mountain Car. The dynamics constants are static fields."""
 
+    #: The force per unit of action, added to the velocity each raw step.
     power: float = eqx.field(static=True, default=0.0015)
+    #: The bound on the absolute velocity.
     max_speed: float = eqx.field(static=True, default=0.07)
+    #: The left wall (inelastic: hitting it stops inward velocity).
     min_position: float = eqx.field(static=True, default=-1.2)
+    #: The right bound on the position.
     max_position: float = eqx.field(static=True, default=0.6)
+    #: The position at or beyond which the goal is reached (termination and success).
     goal_position: float = eqx.field(static=True, default=0.45)
+    #: The gravity term, ``gravity * cos(3 * position)`` subtracted from the velocity.
     gravity: float = eqx.field(static=True, default=0.0025)
+    #: The raw steps per agent step (at least 1).
     action_repeat: int = eqx.field(static=True, default=2)
+    #: The agent steps per episode before truncation (at least 1), read by the collectors.
     time_limit: int = eqx.field(static=True, default=100)
+    #: The lower end of the uniform reset position.
     reset_low: float = eqx.field(static=True, default=-0.6)
+    #: The upper end of the uniform reset position.
     reset_high: float = eqx.field(static=True, default=-0.4)
 
     def __check_init__(self) -> None:
@@ -43,7 +53,7 @@ class MountainCar(Env):
 
     @property
     def num_factors(self) -> int:
-        """One factor: the ``(position, velocity)`` vector."""
+        """One state factor: the ``(position, velocity)`` vector."""
         return 1
 
     @property

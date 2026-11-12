@@ -16,7 +16,17 @@ from hybrid_aif.interval import Interval
 
 
 class Categorical(ExponentialFamily):
-    logits: Array  # (..., num_levels)
+    """A categorical distribution over ``num_levels`` outcomes, batched over leading axes.
+
+    Stored as ``logits``; the event shape is ``()``: a sample or a ``log_prob`` argument is an
+    integer level index. :attr:`probs` and :attr:`log_probs` give the normalised table,
+    :meth:`from_probs` builds one from probabilities, :meth:`mean` is the probability vector, and
+    :meth:`natural` pins the last level's logit to zero (the gauge choice).
+    """
+
+    #: Unnormalized log-probabilities, ``(..., num_levels)``: the natural parameters up to an
+    #: additive gauge constant per batch entry. The trailing axis is the level axis.
+    logits: Array
 
     @property
     def batch_shape(self) -> tuple[int, ...]:

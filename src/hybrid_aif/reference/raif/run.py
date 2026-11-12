@@ -17,16 +17,18 @@ A checkpoint (every ``--checkpoint-every`` minutes and at shutdown, SIGINT/SIGTE
 included) holds every numeric carrier, the buffers, the keys, the counters and the partial
 episodes, so ``--resume`` continues the run; bitwise continuation is not asserted.
 
-``<out>/scores.jsonl``   per finished episode: ``{step, seed, lane, return, length, success,
-                         stability, log_entropy, coverage}``. ``step`` is the pooled agent
-                         step it ended on; ``return`` the raw summed reward; ``stability``
-                         R-S's ``C``; ``log_entropy`` the episode's mean act-time policy
-                         entropy (:func:`act_entropy`); ``coverage`` the lane's cumulative
-                         grid fraction (:class:`Coverage`).
-``<out>/metrics.jsonl``  per chunk, per seed: the trainers' losses and :func:`probe`'s
-                         diagnostics.
-``<out>/checkpoint/``    the resumable state.
-``<out>/run.json``       the resolved configuration and the launching commit.
+``<out>/scores.jsonl``
+    Per finished episode: ``{step, seed, lane, return, length, success, stability,
+    log_entropy, coverage}``. ``step`` is the pooled agent step it ended on; ``return`` the raw
+    summed reward; ``stability`` R-S's ``C``; ``log_entropy`` the episode's mean act-time policy
+    entropy (:func:`act_entropy`); ``coverage`` the lane's cumulative grid fraction
+    (:class:`Coverage`).
+``<out>/metrics.jsonl``
+    Per chunk, per seed: the trainers' losses and :func:`probe`'s diagnostics.
+``<out>/checkpoint/``
+    The resumable state.
+``<out>/run.json``
+    The resolved configuration and the launching commit.
 
 Modes: no flag = train; ``--report`` = the §7 table from ``scores.jsonl``;
 ``--benchmark`` = the throughput table (:func:`benchmark`)::
@@ -1215,15 +1217,21 @@ def seed_report(
 ) -> SeedReport:
     """The §7-comparable numbers for one seed, from ``scores.jsonl`` rows.
 
-    ``best_window``   the best mean over complete tiled ``span``-step windows (the log reaching
-                      within 1% of a window's end); a partial trailing window is not counted
-    ``final_acr``     §6's ACR: the mean over the last ``window`` episodes (an endpoint read)
-    ``last_500k``     the mean over episodes in the final ``tail`` steps
-    ``sr_window``     §6's SR: the fraction of the last ``window`` episodes reaching the goal
-    ``sr_oracle``     the oracle table's SR: the fraction of the last ``tail`` steps' episodes
-                      returning above ``threshold``, a different statistic from §6's
-    ``rs``            §6's R-S at the Mountain Car offset, over each row's ``C``
-                      (:func:`_stability`)
+    ``best_window``
+        The best mean over complete tiled ``span``-step windows (the log reaching within 1% of
+        a window's end); a partial trailing window is not counted.
+    ``final_acr``
+        §6's ACR: the mean over the last ``window`` episodes (an endpoint read).
+    ``last_500k``
+        The mean over episodes in the final ``tail`` steps.
+    ``sr_window``
+        §6's SR: the fraction of the last ``window`` episodes reaching the goal.
+    ``sr_oracle``
+        The oracle table's SR: the fraction of the last ``tail`` steps' episodes returning above
+        ``threshold``, a different statistic from §6's.
+    ``rs``
+        §6's R-S at the Mountain Car offset, over each logged episode's ``C``
+        (:func:`_stability`).
 
     Design: ``docs/design/amortization-p0-addendum.md`` §7.
     """

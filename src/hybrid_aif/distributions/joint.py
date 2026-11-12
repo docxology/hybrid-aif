@@ -22,13 +22,14 @@ from hybrid_aif.interval import Interval
 class JointCategorical(Distribution):
     """Joint distribution over ``event_ndims`` discrete axes.
 
-    ``logits`` are unnormalized log-probabilities over the trailing
-    ``event_ndims`` axes jointly (a single additive gauge for the whole
-    table). Samples and ``log_prob`` arguments are stacked ``int32`` indices
-    with a trailing axis of length ``event_ndims``, one index per event axis.
+    Samples and ``log_prob`` arguments are stacked ``int32`` indices with a trailing axis of
+    length ``event_ndims``, one index per event axis.
     """
 
-    logits: Array  # (..., *event_shape)
+    #: Unnormalized log-probabilities over the trailing ``event_ndims`` axes jointly,
+    #: ``(..., *event_shape)`` (a single additive gauge for the whole table).
+    logits: Array
+    #: The number of trailing event axes.
     event_ndims: int = eqx.field(static=True)
 
     def __check_init__(self) -> None:

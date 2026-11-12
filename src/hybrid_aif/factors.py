@@ -69,19 +69,26 @@ def _student_t_log_density(y: Array, loc: Array, scale: Array, df: Array) -> Arr
 # new family. The classifiers (`System._is_hybrid`,
 # `objectives.hybrid.factor_families`, the observation classifier) dispatch on
 # these unions, never on special-cased Dirichlet branches.
+#: The tabular declarations a ``likelihood`` entry accepts: a child-first conditional table
+#: (:class:`ConditionalCategorical`) or a Dirichlet over one (:class:`ConditionalDirichlet`).
 TabularObservation = ConditionalCategorical | ConditionalDirichlet
+#: The tabular declarations a ``transition`` entry accepts: a child-first conditional table
+#: (:class:`ConditionalCategorical`) or a Dirichlet over one (:class:`ConditionalDirichlet`).
 TabularTransition = ConditionalCategorical | ConditionalDirichlet
+#: The tabular declarations an ``initial_state_prior`` entry accepts: an unconditional
+#: :class:`Categorical` or :class:`Dirichlet`, or, for a state factor with ``D_deps`` parents, a
+#: :class:`ConditionalCategorical` or :class:`ConditionalDirichlet`.
 TabularPrior = Categorical | ConditionalCategorical | Dirichlet | ConditionalDirichlet
 
 
 class Parameter(eqx.Module):
     """A reference to a named parameter variable, in place of a table.
 
-    A factor's ``transition`` entry or a modality's ``likelihood`` entry may be ``Parameter(name)``,
-    which says the factor or modality reads the declaration held under ``name`` in
-    ``SystemParams.parameters``. Every reader of one name reads one table, and ``learn`` updates it
-    once from the sum of the readers' count statistics. The token carries no array: the name is
-    static, so a reference is a pytree node with no leaves.
+    A state factor's ``transition`` entry or a modality's ``likelihood`` entry may be
+    ``Parameter(name)``, which says the state factor or modality reads the declaration held under
+    ``name`` in ``SystemParams.parameters``. Every reader of one name reads one table, and ``learn``
+    updates it once from the sum of the readers' count statistics. The token carries no array: the
+    name is static, so a reference is a pytree node with no leaves.
 
     The variable is internal to one particle: its readers share it outright, and another particle
     sees it only as a report of counts (by ``stats``, the counts since the last report; ``mode``
@@ -89,6 +96,7 @@ class Parameter(eqx.Module):
     nesting-and-coupling.md N6.
     """
 
+    #: The name of the parameter variable, a key of ``SystemParams.parameters`` (static).
     name: str = eqx.field(static=True)
 
     def __check_init__(self) -> None:
@@ -104,19 +112,23 @@ TabularHome = ConditionalCategorical | ConditionalDirichlet
 class LinearGaussianTransition(eqx.Module):
     """``x' = F_j x + G_j u + b_j + eps_j``: linear map(s) with conditioned innovations.
 
-    ``innovations`` is a :class:`ConditionalGaussian` whose parent axes are the factor's discrete
-    parents in declared (``B_deps``) order: its discrete state parents and any discrete control
-    node, each a mode index ``j``; a factor with no discrete parent declares the trivial parent
-    shape ``(1,)`` (always index 0). ``F`` is ``(d, d)``, shared across modes, or
-    ``(*parent_shape, d, d)`` matching ``innovations.parent_shape``, a per-mode map (the SLDS
-    pattern). ``G`` is the control input map of the factor's continuous control nodes, ``u``
-    their values concatenated in declared order: ``(d, du)`` shared, or ``(*parent_shape, d, du)``
-    per mode on the rule ``F`` follows; ``None`` when the factor reads no continuous node.
+    The mode index ``j`` runs over the state factor's discrete parents (see ``innovations``);
+    ``F`` and ``G`` are shared across modes or given per mode (the switching linear dynamical
+    system pattern).
     """
 
-    F: Array  # (d, d) shared, or (*innovations.parent_shape, d, d) per-mode.
+    #: The state map: ``(d, d)``, shared across modes, or ``(*parent_shape, d, d)`` matching
+    #: ``innovations.parent_shape``, one map per mode.
+    F: Array
+    #: A :class:`ConditionalGaussian` whose parent axes are the state factor's discrete parents in
+    #: declared (``B_deps``) order: its discrete state parents and any discrete control node, each
+    #: a mode index ``j``. A state factor with no discrete parent declares the trivial parent shape
+    #: ``(1,)`` (always index 0). Its location is the offset ``b_j``.
     innovations: ConditionalGaussian
-    G: Array | None = None  # (d, du) shared, or (*innovations.parent_shape, d, du) per-mode.
+    #: The control input map of the state factor's continuous control nodes, ``u`` their values
+    #: concatenated in declared order: ``(d, du)`` shared, or ``(*parent_shape, d, du)`` per mode
+    #: on the rule ``F`` follows; ``None`` when the state factor reads no continuous node.
+    G: Array | None = None
 
     @property
     def dim(self) -> int:
@@ -130,26 +142,27 @@ PROPAGATIONS = ("first_order", "unscented")
 class NonlinearGaussianTransition(eqx.Module):
     """``x' = f(x, controls) + eps``: a user-written mean map with conditioned innovations.
 
-    ``f`` is an :class:`equinox.Module` called as ``f(x, controls)``: ``x`` the factor's
-    ``(d,)`` state, ``controls`` a tuple with one entry per control parent of the factor in
-    declared order (a discrete node's integer level, a continuous node's float vector); it
-    returns the ``(d,)`` mean of the next state. Its numeric fields are pytree leaves and its
-    code is static structure. ``innovations`` is a :class:`ConditionalGaussian` added to
-    ``f``'s output, ``eps ~ N(loc_j, chol_j chol_jᵀ)``, whose parent axes are the factor's
-    discrete control nodes in declared order (the trivial ``(1,)`` for none); its Cholesky
-    factor's diagonal must be positive for beliefs to be propagated.
-
-    ``propagation`` (static) is how a belief is pushed through ``f``: ``"first_order"``
-    linearises ``f`` at the belief's mean, ``"unscented"`` pushes ``2n + 1`` sigma points through
-    it (``n`` the state's dimension plus that of any control carried as a belief). Both are
-    exact for ``f`` affine in its continuous inputs. A factor declaring this transition has no
-    discrete state parents; it is Gaussian-carried, or mixture-carried when its prior is a
-    :class:`~hybrid_aif.distributions.MixtureGaussian`. ``f`` is not learned.
+    A state factor declaring this transition has no discrete state parents; it is
+    Gaussian-carried, or mixture-carried when its prior is a
+    :class:`~hybrid_aif.distributions.MixtureGaussian`.
     Design: docs/design/nonlinear-transitions.md N1–N5.
     """
 
+    #: An :class:`equinox.Module` called as ``f(x, controls)``: ``x`` the state factor's ``(d,)``
+    #: state, ``controls`` a tuple with one entry per control parent in declared order (a discrete
+    #: node's integer level, a continuous node's float vector); it returns the ``(d,)`` mean of
+    #: the next state. Its numeric fields are pytree leaves and its code is static structure.
+    #: ``f`` is not learned.
     f: eqx.Module
+    #: A :class:`ConditionalGaussian` added to ``f``'s output, ``eps ~ N(loc_j, chol_j chol_jᵀ)``,
+    #: whose parent axes are the state factor's discrete control nodes in declared order (the
+    #: trivial ``(1,)`` for none); its Cholesky factor's diagonal must be positive for beliefs to
+    #: be propagated.
     innovations: ConditionalGaussian
+    #: How a belief is pushed through ``f`` (static): ``"first_order"`` linearises ``f`` at the
+    #: belief's mean, ``"unscented"`` pushes ``2n + 1`` sigma points through it (``n`` the state's
+    #: dimension plus that of any control carried as a belief). Both are exact for ``f`` affine in
+    #: its continuous inputs.
     propagation: str = eqx.field(static=True, default="first_order")
 
     def __check_init__(self) -> None:
@@ -208,9 +221,14 @@ class GridNoiseMap(NoiseMap):
     directly it returns every level's factor, ``(*levels, *batch, d_obs, d_obs)``.
     """
 
+    #: The Cholesky factor at every grid node, ``(*levels, *grid_shape, d_obs, d_obs)``: lower
+    #: triangular with a positive diagonal (the leading level axes only on a levelled map).
     values: Array
+    #: The grid's lower extent per axis, one number each.
     low: Array
+    #: The grid's upper extent per axis, one number each.
     high: Array
+    #: The state coordinates the grid spans, in order (static).
     axes: tuple[int, ...] = eqx.field(static=True)
 
     def __init__(self, values: Array, low, high, axes: tuple[int, ...]):
@@ -304,26 +322,25 @@ class GridNoiseMap(NoiseMap):
 
 
 class LinearGaussianObservation(eqx.Module):
-    """``y = H x + c + eps``: an LG modality over one Gaussian factor.
+    """``y = H x + c + eps``: a linear-Gaussian modality over one Gaussian state factor.
 
-    ``head`` is the augmented ``[H | c]``, shape ``(*parent_shape, d_obs, d + 1)`` (or a
-    ``MatrixNormal`` over it); construct with ``H=``/``c=`` to have it assembled.
-    ``H``, ``c`` and the noise are each either shared (``(d_obs, d)`` / ``(d_obs,)`` /
-    ``(d_obs, d_obs)``) or per-mode, with leading parent axes ``parent_shape`` (the categorical
-    parents named after the observed factor in ``A_deps``), broadcast like the per-mode ``F_j`` of
-    :class:`LinearGaussianTransition`. ``noise`` holds a point ``R_chol`` or a posterior over it
-    (:class:`~hybrid_aif.distributions.InverseGamma`,
-    :class:`~hybrid_aif.distributions.InverseWishart`), which makes it learnable and samplable.
-    Every inference consumer reads the :attr:`R_chol` property, which lowers a distributional noise
-    by its expected precision.
+    Construct with ``H=``/``c=`` to have ``head`` assembled. ``H``, ``c`` and the noise are each
+    either shared (``(d_obs, d)`` / ``(d_obs,)`` / ``(d_obs, d_obs)``) or per-mode, with leading
+    parent axes ``parent_shape`` (the categorical parents named after the observed state factor
+    in ``A_deps``), broadcast like the per-mode ``F_j`` of :class:`LinearGaussianTransition`.
+    Every inference consumer reads the :attr:`R_chol` property, which lowers a distributional
+    noise by its expected precision.
     """
 
-    head: Array | MatrixNormal  # the augmented [H | c]: (d_obs, dx+1), or
-    #   (*parent_shape, d_obs, dx+1) per-mode; point value or the posterior
-    #   over it (never separate H/c posteriors — they are coupled)
-    noise: Array | InverseGamma | InverseWishart  # point R_chol (lower-triangular
-    #   (d_obs, d_obs), or (*parent_shape, d_obs, d_obs) per-mode), or the
-    #   conjugate posterior over R
+    #: The augmented ``[H | c]``: ``(d_obs, d + 1)``, or ``(*parent_shape, d_obs, d + 1)`` per
+    #: mode; a point value or a ``MatrixNormal`` posterior over it (never separate posteriors over
+    #: ``H`` and ``c``, which are coupled).
+    head: Array | MatrixNormal
+    #: A point ``R_chol`` (lower triangular ``(d_obs, d_obs)``, or ``(*parent_shape, d_obs,
+    #: d_obs)`` per mode), or the conjugate posterior over ``R``
+    #: (:class:`~hybrid_aif.distributions.InverseGamma`,
+    #: :class:`~hybrid_aif.distributions.InverseWishart`), which makes it learnable and samplable.
+    noise: Array | InverseGamma | InverseWishart
 
     def __init__(self, head=None, noise=None, *, H=None, c=None):
         if head is None:
@@ -604,7 +621,7 @@ def gaussian_emission(
     mixture's component means, the parent its component label); ``R_chol`` is per
     configuration, ``(*parent_shape, d_obs, d_obs)``, or shared, ``(d_obs, d_obs)``.
     ``strength`` and ``anchor`` are :meth:`LinearGaussianObservationMNIW.from_head_noise`'s. A
-    modality declared this way names only categorical factors in ``A_deps``; its message to
+    modality declared this way names only categorical state factors in ``A_deps``; its message to
     them is the exact categorical message of its predictive density, and it learns by the
     responsibility-weighted conjugate update at zero regressor width.
 
@@ -643,19 +660,21 @@ _UNBUILT_RULES = {
 class Deterministic(eqx.Module):
     """A deterministic node: a pure map, optionally with trainable parameters.
 
-    ``map`` is any pure callable pytree (an ``equinox.Module`` whose array leaves are its
-    parameters, or a bare function with none); :meth:`gru` builds the RSSM carry case. A recurrent
-    map takes its carry as an argument and returns the next one; nothing is stashed on the module.
-    ``rule`` is the per-node message treatment, a static string from :data:`_RULES`; only
-    ``"carry"`` (computed forward, never inferred) is built. ``frozen`` is the trainable marking.
-    The gradient statistic arrives from whatever consumes the node's output, and :meth:`absorb`
-    applies it through the shared gradient path.
+    :meth:`gru` builds the RSSM carry case. A recurrent map takes its carry as an argument and
+    returns the next one; nothing is stashed on the module. The gradient statistic arrives from
+    whatever consumes the node's output, and :meth:`absorb` applies it through the shared
+    gradient path.
 
     Design: docs/design/system.md (Factors)
     """
 
-    map: object  # a pure callable; its array leaves are the node's parameters
+    #: Any pure callable pytree: an ``equinox.Module`` whose array leaves are the node's
+    #: parameters, or a bare function with none.
+    map: object
+    #: The per-node message treatment, a static string from :data:`_RULES`; only ``"carry"``
+    #: (computed forward, never inferred) is built.
     rule: str = eqx.field(static=True, default="carry")
+    #: The trainable marking: ``True`` keeps the parameters fixed.
     frozen: bool = eqx.field(static=True, default=False)
 
     def __check_init__(self) -> None:
@@ -730,14 +749,15 @@ class Deterministic(eqx.Module):
 
 
 class DerivedInitial(eqx.Module):
-    """ "This factor's initial belief is its own transition, at the episode start."
+    """ "This state factor's initial belief is its own transition, at the episode start."
 
-    An ``initial_state_prior`` declaration with no parameters of its own: the factor's ``t=0`` value
-    is its transition evaluated at its within-step parents' initialized values (an RSSM's initial
-    code, read off the prior at the initial carry). ``reduction`` names how the transition's
+    An ``initial_state_prior`` declaration with no parameters of its own: the state factor's ``t=0``
+    value is its transition evaluated at its within-step parents' initialized values (an RSSM's
+    initial code, read off the prior at the initial carry). ``reduction`` names how the transition's
     distribution is reduced to the carried value; only ``"mode"`` is built.
     """
 
+    #: How the transition's distribution is reduced to the carried value; only ``"mode"``.
     reduction: str = eqx.field(static=True, default="mode")
 
     def __check_init__(self) -> None:
@@ -763,11 +783,11 @@ class Recognition(NamedTuple):
     holds the module. :func:`hybrid_aif.inference.amortized.validate_structure` enforces that no
     parent is another amortized variable and no two entries share a module object.
 
-    ``variable`` is a factor name (the amortized posterior for that factor) or any other name (an
-    auxiliary q-side variable, such as an observation embedding). ``parents`` is explicit, in the
-    module's parent order, each entry one of
+    ``variable`` is a state factor name (the amortized posterior for that state factor) or any other
+    name (an auxiliary q-side variable, such as an observation embedding). ``parents`` is explicit,
+    in the module's parent order, each entry one of
 
-    - ``"<factor>"``          a factor's value at this tick (the predicted one, for a variable
+    - ``"<factor>"``          a state factor's value at this tick (the predicted one, for a variable
                               inferred after it),
     - ``"obs:<modality>"``    this tick's observation of that modality,
     - ``"recognition:<name>"`` an earlier recognition variable's value,
@@ -779,7 +799,10 @@ class Recognition(NamedTuple):
     Design: docs/design/amortization.md A11
     """
 
+    #: The inferred variable, the q-side factor's child: a state factor name (the amortized
+    #: posterior for that state factor) or any other name (an auxiliary q-side variable).
     variable: str
+    #: The conditioning set, in the module's parent order (grammar above).
     parents: tuple[str, ...]
 
 

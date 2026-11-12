@@ -38,45 +38,51 @@ __all__ = ["Replay", "replay", "replay_document", "stack_traces"]
 
 
 class Replay(NamedTuple):
-    """What :func:`replay` returns. Every leaf carries a leading ``(T, …)`` axis.
+    """What :func:`replay` returns. Every leaf carries a leading ``(T, …)`` axis, one entry per
+    tick.
 
-    ``beliefs`` are the posteriors at every tick, ``priors`` the priors each was
-    inferred under, both keyed by factor name; ``q_pi`` is the counterfactual policy
-    posterior and ``trees`` its term tree (``None`` under ``metrics=False``); ``chosen``
-    is the model's own deterministic choice, keyed by the action nodes' names
-    (``System.names.actions``; under a policy
-    module, the habit planner's draw under ``key``). ``action_log_prob`` is
-    ``log P(actions[t])`` under the policy posterior, summed over policies sharing
-    that first step: ``-inf`` where no policy begins with it, the module's
-    log-density under a policy module, and ``None`` over a continuous action space
-    with no module. ``free_energy`` is the per-tick variational free energy
-    (``InferenceDetail.free_energy``), ``None`` on the amortized path; ``log_evidence`` is
-    ``−free_energy``, the tick's log evidence where its posterior is exact (every modality
-    LG, or one categorical factor) and a lower bound otherwise, so its sum over the valid
-    ticks is the prequential description length of the record under the model as it stood
-    at each tick. ``valid`` marks real ticks. ``exercised`` maps each modality to a bool,
-    present on at least one valid tick (``None`` without ``present``). ``unsupported`` maps
-    each factor to a ``(T,)`` bool (``None`` for a continuous factor; empty on the
-    amortized path): under the beliefs held about its co-parents, no level was
-    compatible with the tabular evidence; co-parents of the contradicted factor are
-    flagged too. ``params``/``learn_state`` are the final parameters (containers keyed by name) and
-    optimizer carry under ``learn=True``, else ``None``.
     Design: docs/design/zero-support-evidence.md Z2
     """
 
+    #: The posteriors at every tick, keyed by state factor name.
     beliefs: dict[str, Belief]
+    #: The priors each posterior was inferred under, keyed by state factor name.
     priors: dict[str, Belief]
+    #: The counterfactual policy posterior.
     q_pi: Categorical
+    #: The term tree of ``q_pi`` (``None`` under ``metrics=False``).
     trees: TermTree | None
+    #: The model's own deterministic choice, keyed by the action nodes' names
+    #: (``System.names.actions``); under a policy module, the habit planner's draw under ``key``.
     chosen: dict[str, Array]
+    #: ``log P(actions[t])`` under the policy posterior, summed over the policies sharing that
+    #: first step: ``-inf`` where no policy begins with it, the module's log-density under a
+    #: policy module, and ``None`` over a continuous action space with no module.
     action_log_prob: Array | None
+    #: ``-free_energy``: the tick's log evidence where its posterior is exact (every modality
+    #: linear-Gaussian, or one categorical state factor) and a lower bound otherwise, so its sum
+    #: over the valid ticks is the prequential description length of the record under the model
+    #: as it stood at each tick.
     log_evidence: Array | None
+    #: The per-tick variational free energy (``InferenceDetail.free_energy``); ``None`` on the
+    #: amortized path.
     free_energy: Array | None
+    #: Marks the real ticks.
     valid: Array
+    #: Each modality mapped to a bool: present on at least one valid tick (``None`` without
+    #: ``present``).
     exercised: dict[str, Array] | None
+    #: Each state factor mapped to a ``(T,)`` bool (``None`` for a continuous state factor; empty
+    #: on the amortized path): under the beliefs held about its co-parents, no level was
+    #: compatible with the tabular evidence. Co-parents of the contradicted state factor are
+    #: flagged too.
     unsupported: dict[str, Array | None]
+    #: The final parameters (containers keyed by name) under ``learn=True``, else ``None``.
     params: SystemParams | None
+    #: The final optimizer carry under ``learn=True``, else ``None``.
     learn_state: LearnState | None
+    #: Each emission realised from the tick's posterior and recorded action, keyed by emission
+    #: name; empty when the System declares no emissions or runs on the amortized path.
     emitted: dict[str, Array] = {}
 
 
@@ -218,7 +224,7 @@ def replay(
     ``chosen`` and ``action_log_prob``: keyed by control node, each entry ``(T, levels)``
     or ``(T, H, levels)`` (a node left out is unrestricted), or a ``(T, P)`` bool array
     over the policy set. ``priors`` seeds the first tick, keyed by
-    factor (``None``: the initial priors). ``key`` drives a
+    state factor (``None``: the initial priors). ``key`` drives a
     stochastic planner and is split per tick; selection is deterministic.
     ``externals`` supplies ``external:<name>`` recognition inputs as
     ``(T, width)`` arrays. ``learn=True`` runs :meth:`System.learn` between

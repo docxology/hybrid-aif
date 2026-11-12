@@ -282,17 +282,10 @@ class Links(NamedTuple):
 
 
 class DescriptionLength(NamedTuple):
-    """A model's length, or a model's and a trace's together, in nats: ``structure`` (graph +
-    family) and ``parameters`` (prior + posterior), the model part; ``data``, the data part
-    (the trace's free energy summed along a replay; ``None`` for the model alone); ``total``,
-    the model part plus the data part where there is one. ``per_address`` holds the links
-    behind the model part, ``exact`` whether every address's are exact, ``data_exact`` whether
-    the data part is the exact free energy of the tick's posterior (``False`` where a neural
-    likelihood, an ``MLPConditional`` transition or a ``NonlinearGaussianTransition`` enters it,
-    each read through its linearisation, so the data part is the free energy of the linearised
-    model; ``None`` without a replay), ``unscored`` the
-    ``(address, link)`` pairs reported ``None``. ``learned`` names the addresses a replay
-    learned, whose family links the data part pays for instead (D6). A black box the System holds
+    """A model's length, or a model's and a trace's together, in nats.
+
+    The model part is ``structure`` plus ``parameters``; the data part is ``data``. A black box the
+    System holds
     (an external process declared by its ports alone) is priced by its ports, which are declared
     structure: its out-ports are emissions of the graph code, each with its size code, and an
     in-port nothing drives a control node. Its inside, the kernel between the ports, is listed
@@ -303,14 +296,26 @@ class DescriptionLength(NamedTuple):
     D3). A System that states nothing but black-box ports has no graph record: its totals are its
     ports' codes."""
 
+    #: The graph and family codes, in nats.
     structure: float
+    #: The prior and posterior codes, in nats.
     parameters: float
+    #: The model part plus the data part where there is one.
     total: float
+    #: The links behind the model part, by address.
     per_address: Mapping[str, Links]
+    #: Whether every address's links are exact.
     exact: bool
+    #: The ``(address, link)`` pairs reported ``None``.
     unscored: tuple[tuple[str, str], ...]
+    #: The data part: the trace's free energy summed along a replay; ``None`` for the model alone.
     data: float | None = None
+    #: The addresses a replay learned, whose family links the data part pays for instead (D6).
     learned: tuple[str, ...] = ()
+    #: Whether the data part is the exact free energy of the tick's posterior: ``False`` where a
+    #: neural likelihood, an ``MLPConditional`` transition or a ``NonlinearGaussianTransition``
+    #: enters it, each read through its linearisation, so the data part is the free energy of the
+    #: linearised model; ``None`` without a replay.
     data_exact: bool | None = None
 
     @property

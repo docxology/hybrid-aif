@@ -47,28 +47,30 @@ def state_key(row: str = ROW) -> str:
 
 
 class EnsembleLosses(NamedTuple):
-    """The ensemble's loss: the sum over members, and each member's own.
+    """The ensemble's loss: the sum over members, and each member's own."""
 
-    ``per_member`` is the unscaled NLL; ``weights`` the ``(M,)`` vector each
-    member's loss was folded with (ones unless ``member_weights`` was given).
-    """
-
+    #: The weighted sum over members.
     total: Array
+    #: Each member's unscaled negative log-likelihood.
     per_member: Array
-    weights: Array = ()  # (M,) the per-member loss weights the total was folded with
+    #: The ``(M,)`` vector each member's loss was folded with into ``total`` (ones unless
+    #: ``member_weights`` was given).
+    weights: Array = ()
 
 
 class EnsembleBatch(NamedTuple):
     """The flat ``(N, ...)`` batch the members are pointwise functions of.
 
-    ``deter`` ``(N, deter_dim)``, ``code`` ``(N, flat_code)`` (the current code),
-    ``action`` ``(N, action_dim)``, and ``target`` ``(N, flat_code)`` (the next
-    code). A ``(B, T)`` batch becomes ``B·(T−1)`` examples (:func:`transitions`).
+    A ``(B, T)`` batch becomes ``B·(T−1)`` examples (:func:`transitions`).
     """
 
+    #: The deterministic carry, ``(N, deter_dim)``.
     deter: Array
+    #: The current code, ``(N, flat_code)``.
     code: Array
+    #: The action, ``(N, action_dim)``.
     action: Array
+    #: The next code, ``(N, flat_code)``.
     target: Array
 
     def check(self, members: Sequence[MLPConditional]) -> None:

@@ -62,9 +62,13 @@ class InverseGamma(eqx.Module):
     dimension per parent configuration. Isotropic noise is the ``d_obs = 1`` case.
     """
 
-    alpha: Array  # (..., d_obs) shape parameters
-    beta: Array  # (..., d_obs) rate parameters
-    alpha0: Array | None = None  # decay anchors (D7); required iff decay < 1
+    #: The shape parameters, ``(..., d_obs)``.
+    alpha: Array
+    #: The rate parameters, ``(..., d_obs)``.
+    beta: Array
+    #: The decay anchor for ``alpha`` (design D7); required iff ``decay < 1``.
+    alpha0: Array | None = None
+    #: The decay anchor for ``beta`` (design D7); required iff ``decay < 1``.
     beta0: Array | None = None
 
     def __check_init__(self) -> None:
@@ -148,9 +152,13 @@ class InverseWishart(eqx.Module):
     the propriety floor ``ν > d − 1`` (the mean exists from ``ν > d + 1``).
     """
 
-    Psi: Array  # (..., d, d) scale matrices
-    nu: Array  # (...,) degrees of freedom
-    Psi0: Array | None = None  # decay anchors (D7); required iff decay < 1
+    #: The positive-definite scale matrices, ``(..., d, d)``.
+    Psi: Array
+    #: The degrees of freedom, ``(...,)``.
+    nu: Array
+    #: The decay anchor for ``Psi`` (design D7); required iff ``decay < 1``.
+    Psi0: Array | None = None
+    #: The decay anchor for ``nu`` (design D7); required iff ``decay < 1``.
     nu0: Array | None = None
 
     def __check_init__(self) -> None:

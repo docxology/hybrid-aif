@@ -81,7 +81,7 @@ def joint_planner(
     round has one clock) or on a node a collapse removes, precision declared by some leaves and
     not others or with different values, a habit that does not join (a policy module, a
     continuous node, a leaf whose own policy set the joint view does not have), an actuator
-    kernel on the action node of a collapsed pair, and a collapse that makes a factor read one
+    kernel on the action node of a collapsed pair, and a collapse that makes a state factor read one
     node twice.
     """
     unset = sorted(k for k, v in config.items() if v is UNSET)

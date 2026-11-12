@@ -42,12 +42,14 @@ FLOAT = "float"
 class Box(eqx.Module):
     """A continuous control node's support: ``dim`` numbers in ``[low, high]`` elementwise.
 
-    ``low``/``high`` are float ``(dim,)`` arrays (scalars broadcast to the other's shape); every
-    bound is finite and ``low < high`` in every dimension. Concrete bounds are checked here and
-    again where :func:`control_space` reads the box; traced ones there, by ``equinox.error_if``.
+    Every bound is finite and ``low < high`` in every dimension. Concrete bounds are checked here
+    and again where :func:`control_space` reads the box; traced ones there, by
+    ``equinox.error_if``.
     """
 
+    #: The lower bounds, a float ``(dim,)`` array (a scalar broadcasts to ``high``'s shape).
     low: Array
+    #: The upper bounds, a float ``(dim,)`` array (a scalar broadcasts to ``low``'s shape).
     high: Array
 
     def __init__(self, low: Array, high: Array):

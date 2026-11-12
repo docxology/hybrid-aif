@@ -46,20 +46,19 @@ DEFAULT_EPS = 1e-8
 
 
 class WorldBatch(NamedTuple):
-    """A batch of replay sequences, all shapes static.
+    """A batch of replay sequences, all shapes static."""
 
-    ``obs`` ``(B, T, obs_dim)``, ``action`` ``(B, T, action_dim)``, ``reward``
-    ``(B, T)``, ``cont`` ``(B, T)``, and optionally ``is_first`` ``(B, T)``.
-    ``action[b, t]`` is ``a_{t−1}``, the action that produced ``obs[b, t]``.
-    ``cont`` is ``1 − done``. ``is_first`` marks where an episode begins inside a
-    sequence and restarts the recurrent carry there; episode-aligned batches may
-    leave it ``None``.
-    """
-
+    #: The observations, ``(B, T, obs_dim)``.
     obs: Array
+    #: ``action[b, t]`` is ``a_{t-1}``, the action that produced ``obs[b, t]``,
+    #: ``(B, T, action_dim)``.
     action: Array
+    #: The rewards, ``(B, T)``.
     reward: Array
+    #: ``1 - done``, ``(B, T)``.
     cont: Array
+    #: Where an episode begins inside a sequence, ``(B, T)``; the recurrent carry restarts there.
+    #: Episode-aligned batches may leave it ``None``.
     is_first: Array | None = None
 
     def check(self, core: RSSMCore) -> tuple[int, int]:
@@ -85,21 +84,28 @@ class WorldBatch(NamedTuple):
 
 
 class WorldLosses(NamedTuple):
-    """The objective, decomposed — every field a scalar mean over batch and time.
+    """The objective, decomposed: every field a scalar mean over batch and time.
 
-    ``total`` is the differentiated loss (scales applied). ``decoder``, ``reward``
-    and ``cont`` are the unscaled NLLs; ``dyn``/``rep`` the two KL directions after
-    the free-bits floor and before their scales, ``dyn_raw``/``rep_raw`` before the
-    floor (``dyn > dyn_raw`` means the floor binds).
+    ``dyn > dyn_raw`` means the free-bits floor binds.
     """
 
+    #: The differentiated loss (scales applied).
     total: Array
+    #: The decoder's unscaled negative log-likelihood.
     decoder: Array
+    #: The reward head's unscaled negative log-likelihood.
     reward: Array
+    #: The continuation head's unscaled negative log-likelihood.
     cont: Array
+    #: The dynamics KL ``KL[sg(posterior) || prior]``, after the free-bits floor and before its
+    #: scale.
     dyn: Array
+    #: The representation KL ``KL[posterior || sg(prior)]``, after the free-bits floor and before
+    #: its scale.
     rep: Array
+    #: The dynamics KL before the floor.
     dyn_raw: Array
+    #: The representation KL before the floor.
     rep_raw: Array
 
 

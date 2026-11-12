@@ -132,34 +132,37 @@ class MindCarry(NamedTuple):
     """One planning mind's internal state between rounds, the only place its beliefs live: the
     carry of :func:`plan`.
 
-    ``beliefs`` is ``None`` before the first round (use the declared initial priors): the empirical
-    prior the next round filters from, the last posterior pushed through its transition under the
-    chosen action. ``learn_state`` holds the carry of ``System.learn`` once a mind learns online.
-    ``previous`` is the posterior of the last round and ``action`` the action it chose, the pair
-    ``System.learn`` takes as ``prev_beliefs`` and ``action`` (``None`` before the first round);
-    ``trace`` holds the last round's :class:`Trace` under ``plan(trace=True)``. Carries are never
-    merged, so two minds share no leaf.
+    Carries are never merged, so two minds share no leaf.
 
     Design: nesting-and-coupling.md N1.
     """
 
+    #: The empirical prior the next round filters from: the last posterior pushed through its
+    #: transition under the chosen action. ``None`` before the first round (the declared initial
+    #: priors are used).
     beliefs: Mapping[str, Belief] | None = None
+    #: The carry of ``System.learn`` once the mind learns online.
     learn_state: LearnState | None = None
+    #: The posterior of the last round, the ``prev_beliefs`` that ``System.learn`` takes
+    #: (``None`` before the first round).
     previous: Mapping[str, Belief] | None = None
+    #: The action the last round chose, the ``action`` that ``System.learn`` takes (``None``
+    #: before the first round).
     action: Mapping[str, Array] | None = None
+    #: The last round's :class:`Trace` under ``plan(trace=True)``.
     trace: object | None = None
 
 
 class Trace(NamedTuple):
-    """What a planning step kept of one round's plan (``plan(trace=True)``, in ``MindCarry.trace``).
+    """What a planning step kept of one round's plan (``plan(trace=True)``, in
+    ``MindCarry.trace``)."""
 
-    ``q_pi`` is the posterior over the policy set, ``tree`` the term tree of the objective
-    (``System.act``'s metrics), ``policies`` the enumerated policy set ``q_pi`` is over
-    (``System.policies``, ``None`` unless the plan is over an enumerated set).
-    """
-
+    #: The posterior over the policy set.
     q_pi: Categorical
+    #: The term tree of the objective (``System.act``'s metrics).
     tree: Any
+    #: The enumerated policy set ``q_pi`` is over (``System.policies``); ``None`` unless the plan
+    #: is over an enumerated set.
     policies: Array | None
 
 
@@ -381,7 +384,7 @@ def sample() -> Step:
     other nodes drive taken from ``obs`` (a driven node's value as the driver realised it),
     returning every emission realised by its declared rule from the stepped state and the action
     node of each control node that no variable drives, drawn from its habit or uniformly. The
-    carry is the point state, keyed by factor name.
+    carry is the point state, keyed by state factor name.
     """
     return _Sample()
 
@@ -392,44 +395,47 @@ def sample() -> Step:
 class Trajectory(NamedTuple):
     """What :func:`run` recorded: a tree with one node per component of the System.
 
-    The root holds ``params`` (the parameter home after the last round); every node holds its
-    ``parts`` (its components, by their name relative to the node) and the records below, each a
-    mapping keyed by name relative to the node, a non-leaf node's mappings being the prefixed
-    union of its parts':
-
-    - ``received`` and ``present``: the value each modality slot, and each control node a
-      variable drives, held for its step, and whether it held one, ``ticks + 1`` entries (entry
-      ``t`` is what the step was handed at round ``t``, the last what the slots hold after the
-      last round); an absent value is zeros;
-    - ``emitted``: the realised value of each action node and emission of the node, ``ticks``
-      entries;
-    - ``intended``: each action node as its step chose it, ``ticks`` entries (equal to ``emitted``
-      where no kernel in ``params.actuator`` moved the draw);
-    - ``start``: the out-ports that held a value entering round 0, as the reset call left them;
-    - ``carries`` and ``carry``: a stepped node's carry after each round (``ticks + 1`` entries,
-      the first after the reset call) when ``record_carries`` asked for them, else ``None``, and
-      its carry after the last round; for a node that is not itself stepped, a mapping from each
-      stepped node beneath it, by relative name. Each entry is the object the step returned, kept
-      as it is and not copied, so a step whose carries are recorded returns a new carry each round
-      rather than mutating the one it was handed;
-    - ``decided``: a bool per round, whether the node stepped (``False`` on a round a node that
-      declares durations spent inside its option; ``True`` every round of any other node). On such
-      a round ``received`` holds what the node's in-ports held, ``intended`` its held action and
-      ``emitted`` its standing values.
+    The root holds ``params``; every node holds its ``parts`` (its components, by their name
+    relative to the node) and the records below, each a mapping keyed by name relative to the
+    node, a non-leaf node's mappings being the prefixed union of its parts'. The records are
+    stacked over rounds: ``received``, ``present`` and ``carries`` have ``ticks + 1`` entries,
+    ``emitted``, ``intended`` and ``decided`` have ``ticks``.
 
     ``trajectory["agent.rover"]`` walks the tree by dotted path; a name that is no node is
     refused, naming the nodes. A node that is planned jointly is a leaf of the tree.
     """
 
+    #: The parameter home after the last round (held at the root).
     params: SystemParams | None
+    #: The node's components, each a ``Trajectory``, keyed by name relative to the node.
     parts: dict[str, "Trajectory"]
+    #: The value each modality slot, and each control node a variable drives, held for its step,
+    #: ``ticks + 1`` entries: entry ``t`` is what the step was handed at round ``t``, the last what
+    #: the slots hold after the last round. An absent value is zeros. On a round the node did not
+    #: step (see ``decided``) it holds what the node's in-ports held.
     received: dict[str, Array]
+    #: Whether each entry of ``received`` held a value, ``ticks + 1`` entries.
     present: dict[str, Array]
+    #: The realised value of each action node and emission of the node, ``ticks`` entries. On a
+    #: round the node did not step it holds the node's standing values.
     emitted: dict[str, Array]
+    #: Each action node as its step chose it, ``ticks`` entries: equal to ``emitted`` where no
+    #: kernel in ``params.actuator`` moved the draw. On a round the node did not step it holds the
+    #: node's held action.
     intended: dict[str, Array]
+    #: The out-ports that held a value entering round 0, as the reset call left them.
     start: dict[str, Array]
+    #: A stepped node's carry after each round (``ticks + 1`` entries, the first after the reset
+    #: call) when ``record_carries`` asked for them, else ``None``. For a node that is not itself
+    #: stepped, a mapping from each stepped node beneath it, by relative name. Each entry is the
+    #: object the step returned, kept as it is and not copied, so a step whose carries are
+    #: recorded returns a new carry each round rather than mutating the one it was handed.
     carries: Any
+    #: A stepped node's carry after the last round; for a node that is not itself stepped, a
+    #: mapping from each stepped node beneath it, by relative name.
     carry: Any
+    #: A bool per round, whether the node stepped: ``False`` on a round that a node declaring
+    #: durations spent inside its option, ``True`` every round of any other node.
     decided: Any
 
     def __getitem__(self, path):

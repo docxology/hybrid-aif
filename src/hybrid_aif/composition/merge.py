@@ -105,15 +105,15 @@ class Link(NamedTuple):
       is *driven*: it stays in its own component, carries the driver's one realised value
       (control-states.md C13), and has no action node of its own, so no planner chooses it. A
       :func:`~hybrid_aif.composition.joint.joint_planner` over a node holding both collapses it
-      into the driver's: every factor that read the driven node reads the driver's, and the driven
-      node leaves the planning problem. Level counts (or, for continuous nodes, widths) must
+      into the driver's: every state factor that read the driven node reads the driver's, and the
+      driven node leaves the planning problem. Level counts (or, for continuous nodes, widths) must
       agree. A decision is not a belief, so no belief of the driven component is identified with
       the driver's, and the link is blanket-shaped at the driven component's boundary. The link
       takes no ``realise``, and a control node as the source is refused, naming its action node;
     - **from a state factor to a control node** (``Link("agent.location", "world.u_location")``):
-      the relay. The state becomes a ``B_deps`` parent of the one factor reading the node, in its
-      place, read a step later, the table's control axis re-read as that parent and a no-op axis of
-      size 1 appended. The state's level count must equal the node's. Structural: it identifies a
+      the relay. The state becomes a ``B_deps`` parent of the one state factor reading the node, in
+      its place, read a step later, the table's control axis re-read as that parent and a no-op axis
+      of size 1 appended. The state's level count must equal the node's. Structural: it identifies a
       latent outright;
     - **from state factors to a modality, with no ``realise``** (``Link(("a.x", "b.y"),
       "a.obs")``): structural. The sources are the modality's complete new parent list, unchanged
@@ -139,9 +139,9 @@ class Link(NamedTuple):
       the identity kernel, nor the grid's cell count under an indicator, a categorical modality
       reading a continuous source with no grid and ``"stats"`` of a Gaussian source are refused;
     - **from state factors to ``"terminal:<factor>"``** (``Link(("a.x", "b.y"), "terminal:a.z")``,
-      the spelling ``terminal:agent.z`` under a prefix): the terminal target of the factor, already
-      a ``ConditionalCategorical`` in the component's ``terminal_targets``, resolved against the
-      sources' final predicted beliefs (its ``H_deps``). Structural.
+      the spelling ``terminal:agent.z`` under a prefix): the terminal target of the state factor,
+      already a ``ConditionalCategorical`` in the component's ``terminal_targets``, resolved against
+      the sources' final predicted beliefs (its ``H_deps``). Structural.
 
     A link from a **realised port** (an action node, or an emission) into a modality is a
     coupling's, and a ``merge`` refuses it, naming :func:`~hybrid_aif.composition.couple.couple`.
@@ -150,9 +150,15 @@ class Link(NamedTuple):
     engine-consolidation.md.
     """
 
+    #: A node, or a tuple of nodes where the link states the complete parent list of its target.
     source: "str | tuple[str, ...]"
+    #: A modality, a control node, or ``"terminal:<factor>"`` (a state factor's terminal target).
     target: str
+    #: For a belief read only: how the source's posterior is realised, ``"sample"``, ``"mode"``
+    #: or ``"stats"``; ``None`` for every other link.
     realise: str | None = None
+    #: For a belief read only: ``None`` or ``"identity"`` (the identity kernel), or a
+    #: :class:`~hybrid_aif.cells.Grid` (the indicator of its cells over a continuous source).
     kernel: "str | Grid | None" = None
 
 
@@ -173,8 +179,8 @@ class Identify(NamedTuple):
     ``a`` and ``b`` name entries of the composite's ``parameters`` (``"rover.field"``,
     ``"mission.field"``: a component's own parameter name under its prefix). The composite keeps
     one variable under ``a``, with ``a``'s declaration (its prior and its counts), and every
-    factor, modality or emission that read ``b`` reads ``a``. The two must be the same family with
-    the same table shape; anything else raises, naming both. ``b``'s counts are discarded: only
+    state factor, modality or emission that read ``b`` reads ``a``. The two must be the same family
+    with the same table shape; anything else raises, naming both. ``b``'s counts are discarded: only
     ``a``'s declaration survives, so identify before ``b``'s member has learned anything worth
     keeping.
 
@@ -185,23 +191,27 @@ class Identify(NamedTuple):
     parameter stay deferred. Design: nesting-and-coupling.md N2, N6.
     """
 
+    #: A port, or the parameter variable that survives (with its declaration).
     a: str
+    #: The other port, or the parameter variable whose readers are redirected to ``a``.
     b: str
 
 
 class Clamp(NamedTuple):
     """A control node no planner chooses and no link drives, clamped at a constant.
 
-    ``node`` names a discrete control node (``"world.u_location"``). ``level`` is an ``int`` level
-    (a delta: slices every reading factor's control axis, pinning the dynamics) or a
-    :class:`~hybrid_aif.distributions.Categorical` / probability vector over the node's levels
-    (averages every reading factor's table over the axis; uniform means no one is steering).
-    The average is taken once, at merge time, with a fixed vector: the static case of a node
-    consumed as a probability vector. The per-tick consumption is the planner's contraction
-    (:func:`~hybrid_aif.controls.take_controls`). Design: nesting-and-coupling.md N8.
+    The average under a distribution is taken once, at merge time, with a fixed vector: the
+    static case of a node consumed as a probability vector. The per-tick consumption is the
+    planner's contraction (:func:`~hybrid_aif.controls.take_controls`). Design:
+    nesting-and-coupling.md N8.
     """
 
+    #: A discrete control node, by name (``"world.u_location"``).
     node: str
+    #: An ``int`` level (a delta: slices every reading state factor's control axis, pinning the
+    #: dynamics) or a :class:`~hybrid_aif.distributions.Categorical` or probability vector over
+    #: the node's levels (averages every reading state factor's table over the axis; uniform
+    #: means no one is steering).
     level: "int | Categorical | Array"
 
 
@@ -293,8 +303,8 @@ def resolved_epistemic(system: System, params: SystemParams) -> tuple[str, ...]:
     Patterns and ``True`` are expanded against the component's own variable table, so a component's
     ``("*",)`` is fixed at merge time and does not widen to variables the composite gained.
     ``True`` excludes initial-prior parameter variables as it does everywhere, and names each
-    continuous factor whole rather than by its dimensions; a learnable family with no
-    registered novelty estimator raises here. A continuous factor no channel with an
+    continuous state factor whole rather than by its dimensions; a learnable family with no
+    registered novelty estimator raises here. A continuous state factor no channel with an
     information-gain estimator observes (and its dimensions) resolves to nothing under ``True``
     or a pattern, as in the component itself, rather than to a literal key the composite would
     refuse. :func:`merge` calls this only for a mixed merge: all-``True`` or all-off components
@@ -983,7 +993,7 @@ def merge(
       ``SystemParams.parts[<leaf>]`` (present when it holds any); the composite states none of
       them, and :func:`~hybrid_aif.composition.joint.joint_planner` composes them.
     - ``epistemic`` is resolved and unioned (:func:`resolved_epistemic`); ``dims`` moves with its
-      factors, under the namespaced names (a key ``pose:b1`` becomes ``arm.pose:b1``).
+      state factors, under the namespaced names (a key ``pose:b1`` becomes ``arm.pose:b1``).
     - A modality observing an action node keeps it: the node's index at or above the component's
       node count becomes the composite's, ``len(B_deps) + position`` among the control nodes
       that stay (one a relay or ``Clamp`` removed, or an action node a driven node lost, raises).
@@ -2333,12 +2343,12 @@ def nested(composite: System, name: str) -> bool:
 
 
 def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
-    """Composite factor indices one mind's view carries, in composite order.
+    """Composite state factor indices one mind's view carries, in composite order.
 
-    Its own factors, plus every other component's factor that is a direct parent of something of
-    ours (a ``B_deps``/``D_deps`` parent of our factor, an ``A_deps`` parent of our modality, an
-    ``H_deps`` parent of our terminal designation, a ``C_deps`` state parent of our per-step
-    designation), closed transitively over those stubs' own
+    Its own state factors, plus every other component's state factor that is a direct parent of
+    something of ours (a ``B_deps``/``D_deps`` parent of our state factor, an ``A_deps`` parent of
+    our modality, an ``H_deps`` parent of our terminal designation, a ``C_deps`` state parent of our
+    per-step designation), closed transitively over those stubs' own
     declared dynamics, since a stub is carried verbatim. Composite order keeps ``D_deps``
     ancestral.
     """
@@ -2511,20 +2521,20 @@ def subsystem(
 
     The view holds:
 
-    - its own factors and modalities, under the composite's namespaced names, and the control
+    - its own state factors and modalities, under the composite's namespaced names, and the control
       nodes it still chooses (``Subsystem.controls``) with their action nodes;
-    - boundary stubs (:func:`subsystem_factors`) as ordinary latent factors with their declared
-      dynamics;
-    - for every control node another component chooses that a factor of the view reads (a stub's
-      own node, or a node a same-step ``Link`` made one with ours), that factor's axis
+    - boundary stubs (:func:`subsystem_factors`) as ordinary latent state factors with their
+      declared dynamics;
+    - for every control node another component chooses that a state factor of the view reads (a
+      stub's own node, or a node a same-step ``Link`` made one with ours), that state factor's axis
       marginalised under a prior over the node: uniform by default, or given in ``inputs`` keyed
       by the node's action node, read as in :class:`Clamp`; the node itself is absent, as is a
       node merged away;
     - for every control node of the component that a variable drives (``System.observes`` names
       a control node: ``Identify("mission.a_option", "rover.u_opt")``), the node as a control node
-      with no action node (an input, driven from outside) and every factor reading it; given an
-      ``inputs`` entry for its driving variable, the node is sliced out at that level (an ``int``),
-      averaged under a distribution (a :class:`~hybrid_aif.distributions.Categorical` or a
+      with no action node (an input, driven from outside) and every state factor reading it; given
+      an ``inputs`` entry for its driving variable, the node is sliced out at that level (an
+      ``int``), averaged under a distribution (a :class:`~hybrid_aif.distributions.Categorical` or a
       probability vector), or averaged uniformly (``None``), as a partner's node is. A driven
       continuous node is never sliced;
     - for every carried per-step target conditional on such a node (``C_deps``), that parent axis

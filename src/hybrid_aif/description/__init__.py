@@ -105,13 +105,12 @@ class DescriptionError(ValueError):
 
 
 class Description(NamedTuple):
-    """What :func:`describe` returns: the JSON document and its arrays file.
+    """What :func:`describe` returns: the JSON document and its arrays file."""
 
-    ``arrays`` is keyed by the key part of the document's ``ref`` strings, ready for
-    ``np.savez``; empty when every clamp went inline.
-    """
-
+    #: The JSON document, as a dict.
     document: dict[str, Any]
+    #: The arrays the document refers to, keyed by the key part of its ``ref`` strings, ready for
+    #: ``np.savez``; empty when every clamp went inline.
     arrays: dict[str, np.ndarray]
 
 
@@ -2014,14 +2013,17 @@ def build(
 
 
 class ParameterRecord(NamedTuple):
-    """One parameter array a document declares: its ``address`` (the variable's name, with a
-    leaf's path for a tree variable), ``dtype``, ``shape``, ``domain`` and ``source``
-    (``"clamp"``, ``"ref"``, ``"init"`` or ``"prior"``)."""
+    """One parameter array a document declares."""
 
+    #: The variable's name, with a leaf's path for a tree variable.
     address: str
+    #: The array's dtype, as a string.
     dtype: str
+    #: The array's shape.
     shape: tuple[int, ...]
+    #: The array's domain, as the document states it.
     domain: str
+    #: Where the value comes from: ``"clamp"``, ``"ref"``, ``"init"`` or ``"prior"``.
     source: str
 
 

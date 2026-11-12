@@ -29,7 +29,17 @@ State = tuple[Array, ...]
 
 
 class Env(eqx.Module):
-    """Abstract functional environment. See module docstring for conventions."""
+    """Abstract functional environment (pymdp's ``Env``, with value semantics).
+
+    An ``Env`` is an ``equinox.Module`` carrying only static structure; every array-valued
+    parameter travels in a separate ``params`` pytree passed to each call, so one instance vmaps
+    across a batch of parameter sets. :meth:`reset` and :meth:`step` are pure and unjitted
+    (callers jit, vmap or scan them). In the positional convention an observation is a tuple of
+    scalar ``int32`` indices, one per modality; a state a tuple of scalar ``int32`` indices, one
+    per state factor; and an action an ``int32`` ``(num_factors,)`` array, one level per state
+    factor (an uncontrolled state factor exposes a single no-op action). A
+    :class:`~hybrid_aif.envs.GenerativeEnv` speaks name-keyed mappings instead.
+    """
 
     @property
     @abc.abstractmethod

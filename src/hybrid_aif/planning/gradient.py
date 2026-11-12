@@ -82,15 +82,13 @@ Posterior = Literal["mode", "laplace"]
 
 
 class PlanPosterior(NamedTuple):
-    """A continuous plan and the Laplace posterior around it.
+    """A continuous plan and the Laplace posterior around it."""
 
-    ``mode`` is the plans as a policy set ``(starts, policy_len, action_dim)`` (one member for one
-    start), the best start's at the index ``q_pi`` is a point mass on;
-    ``posterior`` is the :class:`~hybrid_aif.distributions.TruncatedGaussian` on the box over
-    the flattened plan ``(policy_len · action_dim,)``, time-major.
-    """
-
+    #: The plans as a policy set, ``(starts, policy_len, action_dim)`` (one member for one start),
+    #: the best start's at the index ``q_pi`` is a point mass on.
     mode: Array
+    #: The :class:`~hybrid_aif.distributions.TruncatedGaussian` on the box over the flattened
+    #: plan, ``(policy_len · action_dim,)``, time-major.
     posterior: TruncatedGaussian
 
     def first_step(self, key: Array) -> Array:
@@ -100,36 +98,42 @@ class PlanPosterior(NamedTuple):
 
 
 class GradientResult(NamedTuple):
-    """One gradient plan: ``plan`` ``(policy_len, action_dim)``, the best start's. ``start_plans``
-    ``(starts, policy_len, action_dim)`` holds every start's plan and ``pick`` the int32 index of
-    ``plan`` among them; ``start_G`` ``(starts,)`` and ``start_tree`` (``None`` under
-    ``metrics=False``) are evaluated over ``start_plans``, a policy axis of ``starts`` entries,
-    and ``q_pi`` ``(starts,)`` is the point mass on ``pick``. ``curvature`` the Laplace
-    Gaussian ``N(plan, (γ∇²G)⁻¹)`` over the flattened plan and ``posterior`` its restriction to
-    the box (both ``None`` under ``posterior="mode"``), and ``trace`` the scored ``G`` before
-    each step. ``gradient_trace`` ``(steps,)`` is the root mean square of the gradient over all
-    plan coordinates before each step, and ``best_step`` is the int32 index of the plan returned:
-    ``t`` for the plan held before step ``t`` (``0`` is the warm start) and ``steps`` for the
-    final plan. ``plan`` is the best plan scored over the descent (the warm start and the final
-    plan included), ``G`` ``(1,)`` and ``tree`` are its own (the picked start's slice of
-    ``start_G`` and ``start_tree``), and ``curvature`` is taken at it. With
-    several starts, ``plan`` is the best start's and ``trace``, ``gradient_trace`` and
-    ``best_step`` are its own; ``start_scores`` ``(starts,)`` is each start's final score (the
-    descended point of ``G``; ``(1,)`` for one start)."""
+    """One gradient plan. With several starts, ``plan`` is the best start's and ``trace``,
+    ``gradient_trace`` and ``best_step`` are its own."""
 
+    #: The point mass on ``pick``, ``(starts,)``.
     q_pi: Categorical
+    #: The term tree of ``plan`` (the picked start's slice of ``start_tree``).
     tree: TermTree | None
+    #: The best plan scored over the descent (the warm start and the final plan included),
+    #: ``(policy_len, action_dim)``: the best start's.
     plan: Array
+    #: The expected free energy of ``plan``, ``(1,)`` (the picked start's slice of ``start_G``).
     G: Interval
+    #: Every start's plan, ``(starts, policy_len, action_dim)``.
     start_plans: Array
+    #: The int32 index of ``plan`` among ``start_plans``.
     pick: Array
+    #: The expected free energy over ``start_plans`` (a policy axis of ``starts`` entries),
+    #: ``(starts,)``.
     start_G: Interval
+    #: The term tree over ``start_plans`` (``None`` under ``metrics=False``).
     start_tree: TermTree | None
+    #: The restriction of ``curvature`` to the box (``None`` under ``posterior="mode"``).
     posterior: TruncatedGaussian | None
+    #: The Laplace Gaussian ``N(plan, (γ∇²G)⁻¹)`` over the flattened plan, taken at ``plan``
+    #: (``None`` under ``posterior="mode"``).
     curvature: Gaussian | None
+    #: The scored ``G`` before each step.
     trace: Array
+    #: The root mean square of the gradient over all plan coordinates before each step,
+    #: ``(steps,)``.
     gradient_trace: Array
+    #: The int32 index of the plan returned: ``t`` for the plan held before step ``t`` (``0`` is
+    #: the warm start) and ``steps`` for the final plan.
     best_step: Array
+    #: Each start's final score (the descended point of ``G``), ``(starts,)``; ``(1,)`` for one
+    #: start.
     start_scores: Array
 
 

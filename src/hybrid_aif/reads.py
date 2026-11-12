@@ -38,31 +38,32 @@ BLACK_BOX = "black_box"
 class Emission(NamedTuple):
     """The declaration of an emission: an output of a System realised from its state factors.
 
-    ``parents`` names the state factors and control nodes the emission is conditioned on, in the
-    order of its kernel's parent axes. ``realise`` is ``"sample"`` (a draw from the kernel),
-    ``"mode"`` (its most probable level, or its mean) or ``"stats"`` (its probability vector, or
-    its mean and covariance). ``kernel`` is the emission's static kernel:
-
-    - ``None``: the kernel is ``SystemParams.emission[name]``, a likelihood of any family, which
-      must be there;
-    - ``"identity"``: the emission is its one state factor. A categorical factor gives a level
-      port (its level, or under ``stats`` its probability vector), and a continuous one a float
-      port of the factor's width (its location under ``mode``, a draw under ``sample``;
-      ``stats`` is not defined);
-    - a :class:`~hybrid_aif.cells.Grid`: an indicator likelihood over the cells of the grid of
-      one continuous state factor, a level port with as many levels as the grid has cells: from a
-      point the cell the point falls in, from a belief the belief's mass in each cell
-      (:func:`~hybrid_aif.cells.cell_mass`), of which ``mode`` is the largest cell, ``stats``
-      the vector and ``sample`` a draw;
-    - :data:`BLACK_BOX` (``"black_box"``): an out-port of a black box, with no parents; nothing
-      in the library realises it, the black box's step returns its value, and its type is its
-      entry in ``System.black_box``.
-
     Declared in ``System.emissions`` as ``name -> parents`` (a draw through the params' kernel)
     or ``name -> Emission(parents, realise, kernel)``. Design: docs/design/nesting-and-coupling.md
     N5; docs/design/engine-consolidation.md.
     """
 
+    #: The state factors and control nodes the emission is conditioned on, in the order of its
+    #: kernel's parent axes.
     parents: tuple[str, ...]
+    #: How the emission is realised: ``"sample"`` (a draw from the kernel), ``"mode"`` (its most
+    #: probable level, or its mean) or ``"stats"`` (its probability vector, or its mean and
+    #: covariance).
     realise: str = "sample"
+    #: The emission's static kernel:
+    #:
+    #: - ``None``: the kernel is ``SystemParams.emission[name]``, a likelihood of any family, which
+    #:   must be there;
+    #: - ``"identity"``: the emission is its one state factor. A categorical state factor gives a
+    #:   level port (its level, or under ``stats`` its probability vector), and a continuous one a
+    #:   float port of the state factor's width (its location under ``mode``, a draw under
+    #:   ``sample``; ``stats`` is not defined);
+    #: - a :class:`~hybrid_aif.cells.Grid`: an indicator likelihood over the cells of the grid of
+    #:   one continuous state factor, a level port with as many levels as the grid has cells: from
+    #:   a point the cell the point falls in, from a belief the belief's mass in each cell
+    #:   (:func:`~hybrid_aif.cells.cell_mass`), of which ``mode`` is the largest cell, ``stats``
+    #:   the vector and ``sample`` a draw;
+    #: - :data:`BLACK_BOX` (``"black_box"``): an out-port of a black box, with no parents; nothing
+    #:   in the library realises it, the black box's step returns its value, and its type is its
+    #:   entry in ``System.black_box``.
     kernel: "Grid | None" = None

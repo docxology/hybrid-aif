@@ -38,12 +38,15 @@ _LOG_2 = math.log(2.0)
 
 
 class Evidence(NamedTuple):
-    """One slot's evidence: ``nats`` (``None`` when the slot is unscored), whether the number is
-    the exact marginal likelihood, and the mass the slot absorbed (``None`` when it holds no
-    posterior)."""
+    """The evidence of one learnable slot (a ``likelihood``, ``transition`` or
+    ``initial_state_prior`` entry) for what its posterior absorbed from its prior, as
+    :func:`evidence_by_slot` reports it, summed over the slot's parent combinations."""
 
+    #: The evidence in nats (``None`` when the slot is unscored).
     nats: Array | None
+    #: Whether the number is the exact marginal likelihood.
     exact: bool
+    #: The mass the slot absorbed (``None`` when it holds no posterior).
     count: Array | None
 
 

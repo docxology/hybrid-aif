@@ -48,6 +48,9 @@ def validate_write_mode(mode: str) -> str:
 
 
 def register_format(cls: type[Format]) -> type[Format]:
+    """Register a :class:`Format` subclass under its ``name`` class attribute, and return it
+    (usable as a class decorator). Raises :class:`ValueError` when ``name`` is empty or already
+    registered."""
     name = getattr(cls, "name", None)
     if not name:
         raise ValueError(f"{cls.__name__} must set a non-empty `name` class attribute")
@@ -58,10 +61,13 @@ def register_format(cls: type[Format]) -> type[Format]:
 
 
 def list_formats() -> list[str]:
+    """The names of the registered formats, in registration order."""
     return list(FORMATS)
 
 
 def get_format(name: str) -> type[Format]:
+    """The registered :class:`Format` subclass named ``name``. Raises :class:`ValueError`,
+    listing the registered names, when there is none."""
     try:
         return FORMATS[name]
     except KeyError:
@@ -96,7 +102,13 @@ class Format:
 
 
 class Reader(Protocol):
-    """Random-access episode reader over flat per-column storage."""
+    """Random-access episode reader over flat per-column storage (a protocol).
+
+    ``lengths`` and ``offsets`` give each stored episode's step count and its first step in the
+    flat storage; ``column_names`` the stored columns; ``read_slice(ep_idx, start, end)`` returns
+    steps ``start`` to ``end`` of one episode as a column dict. A :class:`Format`'s
+    ``open_reader`` returns one.
+    """
 
     @property
     def lengths(self) -> np.ndarray: ...

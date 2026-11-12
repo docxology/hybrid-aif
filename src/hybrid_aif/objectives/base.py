@@ -31,7 +31,9 @@ _TERM_SIGNS: dict[str, float] = {
 
 
 def register_term(name: str, sign: float) -> None:
-    """Register a term name with its sign as a contribution to G (+1 cost, -1 value)."""
+    """Register a term name with its sign as a contribution to G: ``+1.0`` for a cost, ``-1.0``
+    for a value. Any other sign raises :class:`ValueError`; registering a name again replaces its
+    sign."""
     if sign not in (1.0, -1.0):
         raise ValueError(f"sign must be +1.0 or -1.0, got {sign}")
     _TERM_SIGNS[name] = sign

@@ -68,14 +68,13 @@ from hybrid_aif.data.format import check_schema, episode_schema, get_format, pub
 
 
 class ColumnSpec(NamedTuple):
-    """One task-specific column of an :class:`Episode`.
+    """One task-specific column of an :class:`Episode`."""
 
-    Its per-step trailing shape, its dtype by name, and how :func:`fit_length` pads
-    it: ``"zero"`` or ``"hold"`` (repeat the last value).
-    """
-
+    #: The column's per-step trailing shape.
     shape: tuple[int, ...] = ()
+    #: The column's dtype, by name.
     dtype: str = "float32"
+    #: How :func:`fit_length` pads the column: ``"zero"`` or ``"hold"`` (repeat the last value).
     pad: str = "zero"
 
 
@@ -86,18 +85,24 @@ class Episode(NamedTuple):
     pairs ``obs[t]`` with the action then drawn at it, so ``reward[t]`` is the
     reward of ``action[t−1]`` and every flag is a predicate on ``obs[t]``. ``T``
     applied actions make ``T + 1`` rows: a reset row (``is_first``, ``reward = 0``)
-    and a terminal row with the action zeroed. ``cont`` is ``1 − terminal``, as
-    recorded by the collector. ``extras`` holds the task's own per-step columns,
-    carried through untouched.
+    and a terminal row with the action zeroed.
     """
 
-    obs: Array  # (T, obs_dim) float32
-    action: Array  # (T, action_dim) float32 — a_t, the RAW draw taken AT obs[t]
-    reward: Array  # (T,) float32 — the reward that PRODUCED obs[t], i.e. a_{t−1}'s
-    cont: Array  # (T,) float32 — 1 − terminal, a predicate on obs[t]
-    is_first: Array  # (T,) bool
-    is_last: Array  # (T,) bool
-    extras: dict[str, Array] = {}  # (T, ...) each — the task's own columns
+    #: The observations, ``(T, obs_dim)`` float32.
+    obs: Array
+    #: ``a_t``, the raw draw taken at ``obs[t]``, ``(T, action_dim)`` float32.
+    action: Array
+    #: The reward that produced ``obs[t]``, that is ``a_{t-1}``'s, ``(T,)`` float32.
+    reward: Array
+    #: ``1 - terminal``, a predicate on ``obs[t]`` as recorded by the collector, ``(T,)``
+    #: float32.
+    cont: Array
+    #: Whether ``obs[t]`` starts the episode (the reset row), ``(T,)`` bool.
+    is_first: Array
+    #: Whether ``obs[t]`` ends the episode, ``(T,)`` bool.
+    is_last: Array
+    #: The task's own per-step columns, ``(T, ...)`` each, carried through untouched.
+    extras: dict[str, Array] = {}
 
     @property
     def length(self) -> int:
@@ -213,10 +218,15 @@ def fit_length(ep: Episode, seq_len: int, pad: Mapping[str, str] | None = None) 
 # ======================================================= host-side, dynamic schema
 
 Sampler = Callable[["ReplayBuffer", int, np.random.Generator], np.ndarray]
-"""``sampler(buffer, batch_size, rng) -> flat clip indices in [0, len(buffer))``."""
+"""The type of a :class:`ReplayBuffer`'s clip sampler: ``sampler(buffer, batch_size, rng)``
+returns ``batch_size`` flat clip indices in ``[0, len(buffer))``, which
+:meth:`ReplayBuffer.sample` turns into clips. :func:`uniform_sampler` is the default."""
 
 
 def uniform_sampler(buffer: ReplayBuffer, batch_size: int, rng: np.random.Generator):
+    """The default :data:`Sampler`: ``batch_size`` clip indices drawn uniformly, with
+    replacement, from ``[0, len(buffer))`` by ``rng``. Raises :class:`RuntimeError` when the
+    buffer holds no clip."""
     n = len(buffer)
     if n == 0:
         raise RuntimeError("ReplayBuffer.sample: no clips available")
@@ -232,13 +242,14 @@ class ReplayBuffer(Dataset):
     cross episode boundaries. ``dump(path, format)`` persists through any
     registered format.
 
-    Args:
-        max_steps: capacity budget in raw steps.
-        num_steps: observation frames per clip (Dataset windowing).
-        frameskip: stride between observation frames within a clip.
-        sampler: pluggable :data:`Sampler` used by :meth:`sample`; uniform
-            over valid clips by default.
-        seed: seed for the default rng handed to the sampler.
+    Arguments:
+
+    - ``max_steps``: capacity budget in raw steps.
+    - ``num_steps``: observation frames per clip (Dataset windowing).
+    - ``frameskip``: stride between observation frames within a clip.
+    - ``sampler``: pluggable :data:`Sampler` used by :meth:`sample`; uniform over valid clips by
+      default.
+    - ``seed``: seed for the default rng handed to the sampler.
     """
 
     def __init__(
@@ -371,17 +382,22 @@ class ReplayBuffer(Dataset):
 class StaticBuffer(eqx.Module):
     """A uniform replay buffer of fixed-length episode-aligned sequences. A pytree.
 
-    ``capacity`` sequences of ``seq_len`` steps, one JAX array per column, written
-    FIFO into a ring. ``size`` (live slots) and ``cursor`` (next slot) are traced
-    scalars, so :func:`add` and :func:`sample` are pure and the buffer can ride a
-    ``lax.scan`` carry.
+    One JAX array per column, written FIFO into a ring. ``size`` and ``cursor`` are traced
+    scalars, so :func:`add` and :func:`sample` are pure and the buffer can ride a ``lax.scan``
+    carry.
     """
 
+    #: The stored sequences, one array per column, ``(capacity, seq_len, ...)``.
     data: Episode
+    #: The number of live slots (traced).
     size: Array
+    #: The next slot to write (traced).
     cursor: Array
+    #: The number of sequences held.
     capacity: int = eqx.field(static=True)
+    #: The steps per sequence.
     seq_len: int = eqx.field(static=True)
+    #: The task's own columns, ``(name, ColumnSpec)`` pairs.
     schema: tuple[tuple[str, ColumnSpec], ...] = eqx.field(static=True, default=())
 
     @property
@@ -512,11 +528,17 @@ class StreamBuffer(eqx.Module):
     Design: docs/design/amortization.md A12 chunk 2c §(d′)
     """
 
+    #: The step stream, one array per column, ``(capacity, ...)``.
     data: Episode
+    #: The number of live steps (traced).
     size: Array
+    #: The next step slot to write (traced).
     cursor: Array
+    #: The number of steps held.
     capacity: int = eqx.field(static=True)
+    #: The steps per sampled window.
     seq_len: int = eqx.field(static=True)
+    #: The task's own columns, ``(name, ColumnSpec)`` pairs.
     schema: tuple[tuple[str, ColumnSpec], ...] = eqx.field(static=True, default=())
 
     @property

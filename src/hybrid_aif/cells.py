@@ -34,18 +34,20 @@ def _tuple(value, n: int, what: str, cast) -> tuple:
 
 @dataclasses.dataclass(frozen=True)
 class Grid:
-    """A rectangular grid over some coordinates of a continuous factor's state.
+    """A rectangular grid over some coordinates of a continuous state factor's state.
 
-    ``shape`` is the number of cells along each spanned axis, ``low`` and ``high`` the extent
-    along each (one number each, or one number for every axis), and ``axes`` the state
-    coordinates spanned, in order (default ``0, 1, ...``). The cells are flattened row-major
-    over ``shape``, so a table's parent axis for the factor has :attr:`n_cells` entries. The
-    first and last cell on each axis absorb the tail beyond the extent.
+    The cells are flattened in C order over ``shape``, so a table's parent axis for the state
+    factor has :attr:`n_cells` entries. The first and last cell on each axis absorb the tail
+    beyond the extent.
     """
 
+    #: The number of cells along each spanned axis.
     shape: tuple[int, ...]
+    #: The lower end of the extent along each axis (one number each, or one number for every axis).
     low: tuple[float, ...]
+    #: The upper end of the extent along each axis (one number each, or one number for every axis).
     high: tuple[float, ...]
+    #: The state coordinates spanned, in order (``None``: ``0, 1, ...``).
     axes: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:

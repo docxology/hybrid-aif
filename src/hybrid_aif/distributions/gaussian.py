@@ -17,8 +17,21 @@ _LOG_2PI = jnp.log(2.0 * jnp.pi)
 
 
 class Gaussian(ExponentialFamily):
-    loc: Array  # (..., dim)
-    chol: Array  # (..., dim, dim), lower-triangular
+    """A multivariate Gaussian with full covariance, batched over leading axes.
+
+    Stored as the mean ``loc`` and a lower-triangular Cholesky factor ``chol`` (log-determinants
+    and solves read off the factor); the event shape is ``(dim,)``. :meth:`from_cov` builds one
+    from a covariance, :attr:`cov` returns it, :meth:`kl_to` is the closed form (a
+    ``MixtureGaussian`` other is handled through the mixture bounds), and the natural view is
+    ``eta1 = Σ⁻¹ μ``, ``eta2 = -0.5 Σ⁻¹``.
+    """
+
+    #: The mean, ``(..., dim)``.
+    loc: Array
+    #: The lower-triangular Cholesky factor of the covariance, ``(..., dim, dim)``. A preference
+    #: over a modality may instead give a diagonal standard deviation, the shape of ``loc``
+    #: (:attr:`diagonal`; :meth:`dense` expands it).
+    chol: Array
 
     @property
     def batch_shape(self) -> tuple[int, ...]:

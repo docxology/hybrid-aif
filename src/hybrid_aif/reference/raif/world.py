@@ -2,7 +2,7 @@
 
 The placement of :func:`tiny_core`'s parts into slots::
 
-    factors        deter  = the Deterministic GRU carry   (controlled: the action)
+    state factors  deter  = the Deterministic GRU carry   (controlled: the action)
                    stoch  = the 32x32 categorical code    (parent: deter, same step)
     transition     transition:deter  GRU(deter, flat stoch_{t-1}, action)
                    transition:stoch  p(stoch | deter_t)

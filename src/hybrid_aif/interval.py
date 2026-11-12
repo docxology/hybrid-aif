@@ -18,23 +18,22 @@ from jax import Array
 class Interval(eqx.Module):
     """A closed interval [lower, upper], broadcastable like its member arrays.
 
-    ``derived`` (default ``True``) asserts the enclosure is guaranteed given a correct
-    implementation; ``False`` marks a number a net produced, which nothing bounds. It is a static
-    field, so it cannot be traced and must agree across a ``lax.scan`` carry. A result is derived
-    iff every input is (an AND through every combinator below). Rows declare it once at
-    registration (:mod:`hybrid_aif.objectives.registry`).
-
-    ``derived`` says the enclosure is guaranteed on the model the planner was handed;
-    ``approximate`` (default ``False``) says that model is a linearised or quadrature reading of
-    the declared one (a nonlinear transition or a neural likelihood), so the enclosure holds for
-    the reading, not for the declaration. It is static like ``derived``, must agree across a
-    ``lax.scan`` carry, and is ORed through every combinator: a result is approximate iff any
-    input is.
+    The two flags are static fields, so they cannot be traced and must agree across a
+    ``lax.scan`` carry; each combinator below propagates them.
     """
 
+    #: The lower end.
     lower: Array
+    #: The upper end.
     upper: Array
+    #: Whether the enclosure is guaranteed, given a correct implementation, on the model the
+    #: planner was handed; ``False`` marks a number a net produced, which nothing bounds. A result
+    #: is derived iff every input is (an AND through every combinator). Estimators declare it once
+    #: at registration (:mod:`hybrid_aif.objectives.registry`).
     derived: bool = eqx.field(static=True, default=True)
+    #: Whether that model is a linearised or quadrature reading of the declared one (a nonlinear
+    #: transition or a neural likelihood), so the enclosure holds for the reading, not for the
+    #: declaration. ORed through every combinator: a result is approximate iff any input is.
     approximate: bool = eqx.field(static=True, default=False)
 
     @classmethod

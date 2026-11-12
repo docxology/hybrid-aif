@@ -46,16 +46,21 @@ MIN_STD_FRACTION = 0.1
 class CEMResult(NamedTuple):
     """One CEM plan: the posterior, the metrics, and the proposal it ended on.
 
-    ``candidates`` is ``(num_candidates + 1, policy_len, action_dim)`` with row 0
-    the final proposal ``mean``; ``G``, ``q_pi`` and every ``tree`` leaf share that
-    leading axis.
+    ``G``, ``q_pi`` and every ``tree`` leaf share the leading axis of ``candidates``.
     """
 
+    #: The posterior over the candidates.
     q_pi: Categorical
+    #: The term tree of the objective over the candidates (``None`` under ``metrics=False``).
     tree: TermTree | None
+    #: The scored plans, ``(num_candidates + 1, policy_len, action_dim)``; entry 0 is the final
+    #: proposal ``mean``.
     candidates: Array
+    #: The expected free energy of each candidate.
     G: Interval
+    #: The final proposal's mean, ``(policy_len, action_dim)``.
     mean: Array
+    #: The final proposal's standard deviation, ``(policy_len, action_dim)``.
     std: Array
 
 

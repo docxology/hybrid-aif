@@ -33,51 +33,56 @@ UseBound = Literal["midpoint", "lower", "upper"]
 class PlannerContext(NamedTuple):
     """Everything a System offers a planner for a single ``infer_policies`` call.
 
-    ``transition_fn(qs, action) -> qs`` pushes beliefs through one control step;
-    ``step_terms_fn(qs, action, t) -> TermTree`` scores post-transition beliefs;
-    ``terminal_terms_fn(qs_final) -> TermTree`` (or ``None``) scores the horizon
-    end. The posterior is ``q_pi ∝ softmax(-gamma * G + policy_prior)``.
-
-    ``action`` is an int32 ``(K,)`` vector, one level per control node in node
-    order (``controls`` is the System's :class:`~hybrid_aif.controls.ControlTable`,
-    ``levels`` each node's level count), unless ``continuous_controls`` is set:
-    then every node is continuous, the step is the float ``(action_dim,)`` flat vector, its
-    box ``continuous_controls.bounds``, and every level count is ``1``. ``kinds`` gives each
-    node's kind and ``sizes`` its level count (a discrete node) or width (a continuous one);
-    ``boxes`` holds each continuous node's :class:`~hybrid_aif.controls.Box` (``None`` for a
-    discrete node). A space mixing discrete and continuous nodes has no flat form: the planner
-    ``"mixed"`` searches it and the other built-in planners refuse it (:func:`refuse_mixed`).
-    ``policy_len`` is the horizon the
-    planner plans to. ``num_controls`` and ``controlled`` read the same space in the form
-    :func:`enumerate_policies` takes, so ``enumerate_policies(ctx.num_controls,
-    ctx.policy_len, ctx.controlled)`` is the grid. ``key`` is ``None`` except for planners
-    registered with ``needs_key=True``. ``habit_fn(beliefs, key) -> control step`` is
-    set exactly when ``policy_prior`` is a policy module. ``branch_fn(beliefs) ->
-    (p, beliefs_after)`` is set exactly when the System declares ``branch_on``:
-    ``p`` has shape ``(n,)`` over the joint outcomes and ``beliefs_after`` a
-    leading ``(n,)`` axis. ``legal_steps`` is set when the caller passed a per-step ``legal=`` to
-    a planner registered with ``legal_depth=True``: a bool ``(L, A)`` over the ``A``
-    first-step actions (``enumerate_policies(num_controls, 1, controlled)[:, 0]``), true where
-    that action is legal at that depth; ``L`` is ``policy_len`` for a mask given per step and 1
-    for a mask on the first step alone.
+    The posterior is ``q_pi ∝ softmax(-gamma * G + policy_prior)``. An ``action`` is an int32
+    ``(K,)`` vector, one level per control node in node order, unless ``continuous_controls`` is
+    set: then every node is continuous, the step is the float ``(action_dim,)`` flat vector, its
+    box ``continuous_controls.bounds``, and every level count is ``1``. A space mixing discrete
+    and continuous nodes has no flat form: the planner ``"mixed"`` searches it and the other
+    built-in planners refuse it (:func:`refuse_mixed`). The properties ``num_controls`` and
+    ``controlled`` read the same space in the form :func:`enumerate_policies` takes, so
+    ``enumerate_policies(ctx.num_controls, ctx.policy_len, ctx.controlled)`` is the grid.
     """
 
+    #: ``transition_fn(qs, action) -> qs``: pushes beliefs through one control step.
     transition_fn: TransitionFn
+    #: ``step_terms_fn(qs, action, t) -> TermTree``: scores post-transition beliefs.
     step_terms_fn: StepTermsFn
+    #: ``terminal_terms_fn(qs_final) -> TermTree``, or ``None``: scores the horizon end.
     terminal_terms_fn: TerminalTermsFn | None
+    #: The System's :class:`~hybrid_aif.controls.ControlTable`.
     controls: ControlTable
+    #: Each control node's level count (``1`` for every node under ``continuous_controls``).
     levels: tuple[int, ...]
+    #: The horizon the planner plans to.
     policy_len: int
+    #: The policy precision.
     gamma: float
+    #: The prior over policies (``SystemParams.policy_prior``).
     policy_prior: Array | Categorical | object | None
+    #: The beliefs the plan starts from.
     init_beliefs: Beliefs
+    #: The flat layout of an all-continuous control space, or ``None``.
     continuous_controls: ControlLayout | None = None
+    #: A PRNG key; ``None`` except for planners registered with ``needs_key=True``.
     key: Array | None = None
+    #: ``habit_fn(beliefs, key) -> control step``: set exactly when ``policy_prior`` is a policy
+    #: module.
     habit_fn: Callable[[Beliefs, Array], Array] | None = None
+    #: ``branch_fn(beliefs) -> (p, beliefs_after)``: set exactly when the System declares
+    #: ``branch_on``; ``p`` has shape ``(n,)`` over the joint outcomes and ``beliefs_after`` a
+    #: leading ``(n,)`` axis.
     branch_fn: BranchFn | None = None
+    #: Each control node's kind.
     kinds: tuple[str, ...] = ()
+    #: Each control node's level count (a discrete node) or width (a continuous one).
     sizes: tuple[int, ...] = ()
+    #: Each continuous node's :class:`~hybrid_aif.controls.Box` (``None`` for a discrete node).
     boxes: tuple[object, ...] = ()
+    #: Set when the caller passed a per-step ``legal=`` to a planner registered with
+    #: ``legal_depth=True``: a bool ``(L, A)`` over the ``A`` first-step actions
+    #: (``enumerate_policies(num_controls, 1, controlled)[:, 0]``), true where that action is
+    #: legal at that depth; ``L`` is ``policy_len`` for a mask given per step and 1 for a mask on
+    #: the first step alone.
     legal_steps: Array | None = None
 
     @property
@@ -185,7 +190,8 @@ def planner_legal_depth(planner: Planner) -> bool:
 
 
 def get_planner(name: str) -> Planner:
-    """Resolve a registered planner by name; unknown names fail loudly."""
+    """The planner registered under ``name`` (:func:`register_planner`). An unknown name raises
+    :class:`KeyError`, listing the registered planners."""
     if name not in _PLANNERS:
         raise KeyError(
             f"unknown planner {name!r}; registered planners: {sorted(_PLANNERS)}. "

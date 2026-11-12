@@ -80,20 +80,23 @@ CRITIC_KEY = f"scoring:{ROW}"
 
 
 class ImagineMetrics(NamedTuple):
-    """Plain arrays, one scalar each — what a training loop logs and a test asserts.
+    """Plain arrays, one scalar each — what a training loop logs and a test asserts."""
 
-    ``value`` is the mean per-step G as a value (negated EFE), ``ret`` the mean
-    λ-return and ``critic_value`` the critic's mean at the same states.
-    ``per_term`` is the value's decomposition keyed by term name.
-    """
-
+    #: The actor's loss.
     actor_loss: Array
+    #: The critic's loss.
     critic_loss: Array
+    #: The mean per-step G as a value (the negated expected free energy).
     value: Array
+    #: The mean λ-return.
     ret: Array
+    #: The critic's mean at the same states.
     critic_value: Array
+    #: The mean advantage: the normalised return less the normalised critic value.
     advantage: Array
+    #: The mean policy entropy ``H[pi(a | s)]`` over the rollouts.
     policy_entropy: Array
+    #: The mean prior entropy ``H[p(stoch | deter)]`` over the rollouts.
     prior_entropy: Array
     #: ``mean(log pi(a_start | s_0))`` over **every** start, weighted or not: the
     #: actor's raw density at the replay draws, a distribution-shift diagnostic. It is
@@ -105,27 +108,38 @@ class ImagineMetrics(NamedTuple):
     #: The BC term's actual contribution to the actor loss:
     #: ``bc_scale · mean(−log pi(a_start | s_0) · bc_weights)``, weight and scale folded in.
     bc_term: Array
+    #: The low percentile moving average of the return normalization, after this batch.
     retnorm_low: Array
+    #: The high percentile moving average of the return normalization, after this batch.
     retnorm_high: Array
     #: The mean per-step rollout weight (:func:`rollout_weight`): how much of the
     #: horizon the continuation head is currently truncating — 1.0 means "nothing", and
     #: a value near ``1/horizon`` means the rollouts are being cut at their first step.
     #: It is also the direct read on ``start_cont``'s effect.
     rollout_weight_mean: Array
+    #: The value's decomposition, keyed by term name.
     per_term: dict[str, Array]
 
 
 class Rollout(NamedTuple):
     """One imagined trajectory's per-step quantities. Leaves ``(H,)`` or ``(H+1,)``."""
 
-    value: Array  # (H,) G as a value (negated EFE), per step taken
-    per_term: dict[str, Array]  # (H,) each, the value's decomposition
-    critic: Array  # (H+1,) the critic at s_0 … s_H
-    cont: Array  # (H,) the continuation head's MODE at s_1 … s_H — 0.0/1.0, see `_cont_mode`
-    prior_entropy: Array  # (H,) H[p(stoch | deter)] at each step
-    policy_entropy: Array  # (H,) H[pi(a | s)] at s_0 … s_{H-1}
-    start_logprob: Array  # log pi(a_start | s_0) — the BC term's content
-    start_features: Array  # (H, feature) features at s_0 … s_{H-1}, for the critic loss
+    #: G as a value (the negated expected free energy), per step taken, ``(H,)``.
+    value: Array
+    #: The value's decomposition by term name, ``(H,)`` each.
+    per_term: dict[str, Array]
+    #: The critic at ``s_0 … s_H``, ``(H+1,)``.
+    critic: Array
+    #: The continuation head's mode at ``s_1 … s_H``, 0.0 or 1.0, ``(H,)``.
+    cont: Array
+    #: ``H[p(stoch | deter)]`` at each step, ``(H,)``.
+    prior_entropy: Array
+    #: ``H[pi(a | s)]`` at ``s_0 … s_{H-1}``, ``(H,)``.
+    policy_entropy: Array
+    #: ``log pi(a_start | s_0)``, the content of the behaviour-cloning term.
+    start_logprob: Array
+    #: The features at ``s_0 … s_{H-1}``, for the critic loss, ``(H, feature)``.
+    start_features: Array
 
 
 def _cont_mode(probability: Array) -> Array:
@@ -253,7 +267,7 @@ def imagine(
     :data:`ACTOR_KEY` and ``scoring:g_tail``, threading every other ``LearnState``
     entry through.
 
-    ``start_beliefs`` is batched beliefs keyed by factor name (leaves ``(N, ...)``), e.g.
+    ``start_beliefs`` is batched beliefs keyed by state factor name (leaves ``(N, ...)``), e.g.
     :func:`~hybrid_aif.train.world.posterior_states` flattened over batch and time.
     ``horizon`` defaults to ``policy_len`` and must be at least 1.
     ``start_actions`` (keyed by the action nodes' names, ``System.names.actions``; leaves
@@ -261,7 +275,7 @@ def imagine(
     (in [0, 1]) are the replay action taken at each start state and its behaviour-cloning
     weight; with ``WorldBatch``'s ``action[t] = a_{t−1}`` that action sits at
     ``t+1``. Pass both or neither. ``aux_beliefs`` maps a scoring row name to the
-    belief carry of that row's own nested System, keyed by its factor names (leaves
+    belief carry of that row's own nested System, keyed by its state factor names (leaves
     ``(N, ...)``), as :meth:`~hybrid_aif.system.System.planner_context` takes it.
     ``cont_modality`` names the continuation head (``None``: the unique ``binary``
     head). ``start_cont`` ``(N,)`` is ``1 − is_terminal(s_0)``; omitted, every
@@ -518,13 +532,14 @@ def roll_batch(
 class ReturnEstimates(NamedTuple):
     """Per-state λ-returns and critic values over a batch of imagined rollouts.
 
-    Both ``(N, H)``: entry ``[i, k]`` is the return estimate at, and the critic's
-    value of, the ``k``-th state of trajectory ``i``. ``value`` is the per-step
-    G-as-a-value the return was folded from.
+    Entry ``[i, k]`` is about the ``k``-th state of trajectory ``i``.
     """
 
+    #: The return estimate at each state, ``(N, H)``.
     ret: Array
+    #: The critic's value of each state, ``(N, H)``.
     critic: Array
+    #: The per-step G as a value that the return was folded from.
     value: Array
 
 

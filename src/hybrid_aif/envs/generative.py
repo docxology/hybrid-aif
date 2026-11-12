@@ -45,19 +45,23 @@ KeyedState = dict[str, Array]
 
 
 class GenerativeEnvParams(eqx.Module):
-    """An environment's parameters: one entry per modality (``likelihood``) and per factor
-    (``transition``, ``initial_state_prior``), and the actuator's kernels (``actuator``).
+    """An environment's parameters: one entry per modality and per state factor, and the
+    actuator's kernels.
 
     Public faces key the containers by name (``params.likelihood["cue"]``); the processes read
     them as tuples in node order. A discrete process holds probability tables, a hybrid one the
-    System's declaration objects. ``actuator`` maps an action node's name to its kernel
-    ``P(a | u)``, a ``(levels, levels)`` probability table with one column per intended level;
-    an action node without an entry realises the intended action exactly.
+    System's declaration objects.
     """
 
-    likelihood: Any  # AIF A
-    transition: Any  # AIF B
-    initial_state_prior: Any  # AIF D
+    #: AIF's A: one entry per modality.
+    likelihood: Any
+    #: AIF's B: one entry per state factor.
+    transition: Any
+    #: AIF's D: one entry per state factor.
+    initial_state_prior: Any
+    #: An action node's name mapped to its kernel ``P(a | u)``, a ``(levels, levels)`` probability
+    #: table with one column per intended level; an action node without an entry realises the
+    #: intended action exactly.
     actuator: Any = eqx.field(default_factory=dict)
 
 
@@ -69,8 +73,8 @@ def make(
     B_deps: tuple[tuple[int, ...], ...] | None = None,
 ) -> "tuple[DiscreteProcess, GenerativeEnvParams]":
     """Build a positional (pymdp-style) process + params (tuple containers) from tensors;
-    defaults: A on all factors, B on own factor. Wrap it with :meth:`GenerativeEnv.wrap` given a
-    System, converting the params with ``system.from_positional("params", ...)``.
+    defaults: A on all state factors, B on own state factor. Wrap it with :meth:`GenerativeEnv.wrap`
+    given a System, converting the params with ``system.from_positional("params", ...)``.
 
     Multi-modality/multi-factor collections are canonically tuples; any
     sequence is accepted at runtime.
@@ -106,22 +110,24 @@ class GenerativeEnv(Env):
     pass to ``inner`` untouched.
     """
 
+    #: The positional process the faces wrap.
     inner: Env
+    #: The System's names (static), used to key the containers.
     names: keyed.FaceNames = eqx.field(static=True)
+    #: Whether ``inner`` takes the action one level per state factor (an outside, pymdp-style
+    #: environment) rather than one per control node (the System's own process).
     factor_actions: bool = eqx.field(static=True, default=False)
-    #   whether ``inner`` takes the action one level per state factor (an outside, pymdp-style
-    #   environment) rather than one per control node (the System's own process)
 
     @classmethod
     def wrap(cls, env: Env, system, params: Any = None) -> "GenerativeEnv":
         """An outside positional environment, keyed by ``system``'s names.
 
         ``env`` speaks the positional convention (:mod:`hybrid_aif.envs.base`): observations and
-        states as tuples, the action as one level per factor (or the flat continuous vector). Its
-        factor and modality counts are checked against the System's; their *order* must match the
-        System's node order too, which cannot be checked. ``params`` (the System's, keyed) are
-        needed when a control node is continuous: its box lives in ``params.control``. Wrapping an
-        already keyed env raises.
+        states as tuples, the action as one level per state factor (or the flat continuous vector).
+        Its state factor and modality counts are checked against the System's; their *order* must
+        match the System's node order too, which cannot be checked. ``params`` (the System's, keyed)
+        are needed when a control node is continuous: its box lives in ``params.control``. Wrapping
+        an already keyed env raises.
         """
         if isinstance(env, GenerativeEnv):
             raise TypeError(
@@ -216,9 +222,9 @@ class GenerativeEnv(Env):
         ``key``; any other is realised as given (and ``key`` is used as :meth:`step` always
         uses it). The world moves on the realised action.
 
-        ``factors`` names the state factors to step, by factor name; the others keep their
+        ``factors`` names the state factors to step, by state factor name; the others keep their
         values and the observation is of the state so made. It is the System's own process that
-        steps in parts (the driver's sequential and async orders step each component's factors
+        steps in parts (the driver's sequential and async orders step each component's state factors
         at that component's turn); an outside environment wrapped by :meth:`wrap` has no parts
         to name, and is refused.
         """

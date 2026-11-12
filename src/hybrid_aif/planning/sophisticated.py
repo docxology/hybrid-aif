@@ -53,15 +53,18 @@ from hybrid_aif.planning.tree import (
 
 
 class BranchingTreeMemory(NamedTuple):
-    """The memory of the sophisticated planner's tree, estimated: ``whole_level_bytes`` the
-    deepest level evaluated whole; given a budget, ``split_depth`` and ``batch_size`` the
-    :func:`~hybrid_aif.planning.tree.chunk_choice` they would choose (both ``None`` when the
-    whole level fits) and ``estimated_bytes`` the estimate under that choice. All but the first
-    are ``None`` without a budget."""
+    """The memory of the sophisticated planner's tree, estimated. All fields but the first are
+    ``None`` without a budget."""
 
+    #: The bytes of the deepest level, evaluated whole.
     whole_level_bytes: int
+    #: Given a budget, the split depth :func:`~hybrid_aif.planning.tree.chunk_choice` would
+    #: choose (``None`` when the whole level fits).
     split_depth: int | None
+    #: Given a budget, the batch size :func:`~hybrid_aif.planning.tree.chunk_choice` would choose
+    #: (``None`` when the whole level fits).
     batch_size: int | None
+    #: The estimate under that choice.
     estimated_bytes: int | None
 
 

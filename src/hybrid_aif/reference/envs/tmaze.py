@@ -40,7 +40,15 @@ def tmaze(
     cue_validity: float | Array = 0.95,
     reward_condition: int | None = None,
 ) -> tuple[DiscreteProcess, GenerativeEnvParams]:
-    """Env + params for the classic TMaze; ``reward_condition=None`` means 50/50."""
+    """The classic TMaze as a positional process and its parameters, tensor-identical to pymdp's.
+
+    Two state factors (location, five levels, controlled; context, two levels, fixed) and three
+    modalities (location, reward, cue; see the module docstring). ``reward_probability`` is the
+    chance the rewarded arm pays, ``punishment_probability`` the chance the other arm punishes,
+    ``cue_validity`` the chance the cue location shows the true context, and
+    ``reward_condition`` fixes the context (``None``: 50/50). The probabilities may be traced,
+    so batches of parameter sets build under ``vmap``.
+    """
     rp = jnp.asarray(reward_probability, jnp.float32)
     pp = jnp.asarray(punishment_probability, jnp.float32)
     cv = jnp.asarray(cue_validity, jnp.float32)

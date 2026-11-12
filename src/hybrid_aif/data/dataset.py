@@ -161,7 +161,12 @@ class FolderDataset(ReaderDataset):
 def load_dataset(
     path, *, format: str | None = None, num_steps: int = 1, frameskip: int = 1
 ) -> ReaderDataset:
-    """Open ``path`` as a Dataset, autodetecting the format unless given."""
+    """Open ``path`` as a :class:`ReaderDataset`, through the registered format named
+    ``format`` or, when it is ``None``, the first registered format that detects the path.
+
+    ``num_steps`` is the number of observation frames per clip and ``frameskip`` the stride
+    between them. Raises :class:`ValueError` when no format detects the path.
+    """
     import hybrid_aif.data.formats  # noqa: F401  (registers built-in formats)
 
     fmt = get_format(format) if format is not None else detect_format(path)

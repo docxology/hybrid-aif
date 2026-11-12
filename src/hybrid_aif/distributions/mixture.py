@@ -31,9 +31,12 @@ class MixtureGaussian(Distribution):
     may return any gauge (``reduce`` returns normalized weights).
     """
 
-    log_weights: Array  # (..., K)
-    means: Array  # (..., K, dim)
-    chols: Array  # (..., K, dim, dim), lower-triangular
+    #: The components' log weights, ``(..., K)``, up to an additive gauge.
+    log_weights: Array
+    #: The components' means, ``(..., K, dim)``.
+    means: Array
+    #: The components' lower-triangular Cholesky factors, ``(..., K, dim, dim)``.
+    chols: Array
 
     @property
     def batch_shape(self) -> tuple[int, ...]:
@@ -393,10 +396,14 @@ class LowRankMixture(eqx.Module):
     ``O(N² p³)`` dense.
     """
 
-    log_weights: Array  # (..., N)
-    means: Array  # (..., N, p)
-    diag: Array  # (..., N, p), the diagonal D_i of each covariance, positive
-    factors: Array  # (..., N, p, r)
+    #: The components' log weights, ``(..., N)``.
+    log_weights: Array
+    #: The components' means, ``(..., N, p)``.
+    means: Array
+    #: The positive diagonal ``D_i`` of each covariance, ``(..., N, p)``.
+    diag: Array
+    #: The low-rank factors ``U_i``, ``(..., N, p, r)``.
+    factors: Array
 
     @property
     def batch_shape(self) -> tuple[int, ...]:

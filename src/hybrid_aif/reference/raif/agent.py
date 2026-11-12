@@ -2,13 +2,13 @@
 
 The five parameter sets of their training step and where they live:
 
-======================  ==============================================  ==========
-θ  world model          the declared slots (``hybrid_aif.reference.raif.world``)  group 1
-ψ  actor                ``SystemParams.policy_prior``                   group 2
-χ  critic + slow copy   ``scoring["g_tail"]``                           group 3
-ω  info-gain ensemble   ``scoring["model_uncertainty"]``               group 3
-φ  CRSPP                ``scoring["cosine_sim_to_pref_rollout"]``       group 3
-======================  ==============================================  ==========
+======================  ==========================================================  =======
+θ  world model          the declared slots (``hybrid_aif.reference.raif.world``)    group 1
+ψ  actor                ``SystemParams.policy_prior``                               group 2
+χ  critic + slow copy   ``scoring["g_tail"]``                                       group 3
+ω  info-gain ensemble   ``scoring["model_uncertainty"]``                            group 3
+φ  CRSPP                ``scoring["cosine_sim_to_pref_rollout"]``                   group 3
+======================  ==========================================================  =======
 
 Sizes are the oracle's resolved config: the actor is 3 × 256, the critic and each ensemble
 member 2 × 32, and the world model is ``tiny``.

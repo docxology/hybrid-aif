@@ -125,7 +125,13 @@ def rollout_gpb1(
     transition_log_weights: Array,
     horizon: int,
 ) -> tuple[Gaussian, Gaussian]:
-    """GPB1 variant: propagate -> exact single-Gaussian moment_match each step."""
+    """The GPB1 rollout: at each of ``horizon`` steps, :func:`propagate` the belief through the
+    ``M`` mode transitions, then moment-match the result to a single Gaussian.
+
+    ``m`` is the starting belief (a mixture is moment-matched first); ``Fs``, ``bs``,
+    ``Q_chols`` and ``transition_log_weights`` are as :func:`propagate` takes them. Returns the
+    final Gaussian and the stacked per-step Gaussians.
+    """
     g = m.moment_match() if isinstance(m, MixtureGaussian) else m
 
     def step(carry: Gaussian, _) -> tuple[Gaussian, Gaussian]:

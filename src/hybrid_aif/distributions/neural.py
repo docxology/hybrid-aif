@@ -119,23 +119,38 @@ class MLPConditional(eqx.Module):
     ``dataclasses.replace`` and ``eqx.tree_at`` work. Freeze with
     ``dataclasses.replace(decl, frozen=True)``.
 
-    ``propagation`` (``"first_order"`` or ``"unscented"``) is how a Gaussian belief on the one
-    continuous parent is read through the network when the conditional is a likelihood on the
-    analytic path: a tangent at the mean, or the statistical linearisation over the sigma points
-    (:func:`~hybrid_aif.inference.linearise.linearise`).
+    The final layer emits ``2 * child_dim`` numbers, the mean and then the scale
+    pre-activation, read as ``head`` says.
     """
 
-    layers: tuple[eqx.nn.Linear, ...]  # the trainable leaves live here
-    parent_dims: tuple[int, ...] = eqx.field(static=True)  # width of each parent vector
+    #: The linear layers; the trainable leaves live here.
+    layers: tuple[eqx.nn.Linear, ...]
+    #: The width of each parent vector, in parent order.
+    parent_dims: tuple[int, ...] = eqx.field(static=True)
+    #: The width of the child, a diagonal Gaussian.
     child_dim: int = eqx.field(static=True)
-    norms: tuple[eqx.nn.LayerNorm, ...] = ()  # one per hidden layer, or () for no norm
+    #: One layer norm per hidden layer, or ``()`` for none.
+    norms: tuple[eqx.nn.LayerNorm, ...] = ()
+    #: The hidden layers' activation.
     activation: str = eqx.field(static=True, default="tanh")
-    min_scale: float = eqx.field(static=True, default=1e-3)  # softplus head's additive floor
-    frozen: bool = eqx.field(static=True, default=False)  # the trainable marking
-    head: str = eqx.field(static=True, default="softplus")  # or "bounded" — see module docstring
-    minstd: float = eqx.field(static=True, default=0.1)  # bounded head only
-    maxstd: float = eqx.field(static=True, default=1.0)  # bounded head only
-    propagation: str = eqx.field(static=True, default="first_order")  # see the class docstring
+    #: The softplus head's additive floor on the scale.
+    min_scale: float = eqx.field(static=True, default=1e-3)
+    #: The trainable marking: ``True`` keeps the weights fixed.
+    frozen: bool = eqx.field(static=True, default=False)
+    #: How the final layer is read. ``"softplus"``: mean raw, scale ``min_scale + softplus(raw)``.
+    #: ``"bounded"``: mean ``tanh(raw)``, scale ``minstd + (maxstd - minstd) * sigmoid(raw + 2)``;
+    #: ``minstd == maxstd`` is a fixed-scale head whose scale parameters get zero gradient. See
+    #: :mod:`hybrid_aif.distributions.neural`.
+    head: str = eqx.field(static=True, default="softplus")
+    #: The bounded head's smallest scale.
+    minstd: float = eqx.field(static=True, default=0.1)
+    #: The bounded head's largest scale.
+    maxstd: float = eqx.field(static=True, default=1.0)
+    #: How a Gaussian belief on the one continuous parent is read through the network when the
+    #: conditional is a likelihood on the analytic path: ``"first_order"``, a tangent at the mean,
+    #: or ``"unscented"``, the statistical linearisation over the sigma points
+    #: (:func:`~hybrid_aif.inference.linearise.linearise`).
+    propagation: str = eqx.field(static=True, default="first_order")
 
     def __check_init__(self) -> None:
         if not self.parent_dims or any(d <= 0 for d in self.parent_dims):
@@ -559,18 +574,23 @@ class MLPPredictor(eqx.Module):
     The trunk the other classes here are built from; paired with a loss it is a head without a
     density family (:class:`PredictorHead`). ``depth`` hidden layers of ``width`` units, each
     optionally layer-normed (eps 1e-3) then activated, and a final linear to ``out_dim``.
-    ``out_activation=True`` norms and activates the final layer too, making the trunk an encoder.
-    ``symlog_inputs`` applies :func:`symlog` to the concatenated parents before the first layer.
-    ``frozen`` is the trainable marking.
     """
 
+    #: The linear layers (the trainable leaves).
     layers: tuple[eqx.nn.Linear, ...]
-    norms: tuple[eqx.nn.LayerNorm, ...]  # one per activated layer, or () for no norm
+    #: One layer norm per activated layer, or ``()`` for none.
+    norms: tuple[eqx.nn.LayerNorm, ...]
+    #: The width of each parent vector, in parent order.
     parent_dims: tuple[int, ...] = eqx.field(static=True)
+    #: The width of the output vector.
     out_dim: int = eqx.field(static=True)
+    #: The activation of the hidden layers.
     activation: str = eqx.field(static=True, default="silu")
+    #: ``True`` norms and activates the final layer too, making the trunk an encoder.
     out_activation: bool = eqx.field(static=True, default=False)
+    #: The trainable marking: ``True`` keeps the weights fixed.
     frozen: bool = eqx.field(static=True, default=False)
+    #: ``True`` applies :func:`symlog` to the concatenated parents before the first layer.
     symlog_inputs: bool = eqx.field(static=True, default=False)
 
     def __check_init__(self) -> None:
@@ -737,9 +757,13 @@ class MLPCategorical(eqx.Module):
     :meth:`probs` is this family's moment view.
     """
 
+    #: The network from the concatenated parents to the ``num_vars * num_classes`` logits.
     trunk: MLPPredictor
+    #: The number of independent categoricals.
     num_vars: int = eqx.field(static=True)
+    #: The number of classes of each.
     num_classes: int = eqx.field(static=True)
+    #: The weight of the uniform distribution mixed into each categorical.
     unimix: float = eqx.field(static=True, default=0.01)
 
     def __check_init__(self) -> None:
@@ -1032,10 +1056,15 @@ class PredictorHead(eqx.Module):
     Design: docs/design/amortization-p0-addendum.md §2
     """
 
+    #: The network whose output the loss reads.
     trunk: MLPPredictor
+    #: The loss name: ``"symlog_mse"``, ``"symlog_disc"`` or ``"binary"``.
     loss: str = eqx.field(static=True)
-    num_bins: int = eqx.field(static=True, default=255)  # symlog_disc only
+    #: The number of two-hot bins (``symlog_disc`` only).
+    num_bins: int = eqx.field(static=True, default=255)
+    #: The lowest bin, in symlog space (``symlog_disc`` only).
     bin_low: float = eqx.field(static=True, default=-20.0)
+    #: The highest bin, in symlog space (``symlog_disc`` only).
     bin_high: float = eqx.field(static=True, default=20.0)
 
     def __check_init__(self) -> None:
@@ -1214,11 +1243,17 @@ class GRUCell(eqx.Module):
     passed separately.
     """
 
-    input_proj: eqx.nn.Linear  # non-carry inputs -> hidden
-    gate: eqx.nn.Linear  # [deter, hidden] -> 3*deter
-    norms: tuple[eqx.nn.LayerNorm, ...]  # (input, gate) norms, or () for none
+    #: The projection of the non-carry inputs to ``hidden`` units.
+    input_proj: eqx.nn.Linear
+    #: The linear map from ``[deter, hidden]`` to ``3 * deter``: reset, candidate and update.
+    gate: eqx.nn.Linear
+    #: The ``(input, gate)`` layer norms, or ``()`` for none.
+    norms: tuple[eqx.nn.LayerNorm, ...]
+    #: The width of the carry ``deter``.
     deter_dim: int = eqx.field(static=True)
+    #: The widths of the non-carry inputs, in declaration order.
     input_dims: tuple[int, ...] = eqx.field(static=True)
+    #: The activation applied after the input projection.
     activation: str = eqx.field(static=True, default="silu")
 
     def __check_init__(self) -> None:
@@ -1336,8 +1371,11 @@ class LearnedVector(eqx.Module):
     value. Trainable, it is DreamerV3's ``initial: 'learned'``; frozen, ``initial: 'zeros'``.
     """
 
-    value: Array  # the pre-activation parameter
+    #: The pre-activation parameter.
+    value: Array
+    #: The activation the value passes through (static).
     activation: str = eqx.field(static=True, default="tanh")
+    #: The trainable marking: ``True`` keeps ``value`` fixed.
     frozen: bool = eqx.field(static=True, default=False)
 
     def __check_init__(self) -> None:
