@@ -69,18 +69,3 @@ Episodes and replay buffers
    ~hybrid_aif.train.extend
    ~hybrid_aif.train.sample
    ~hybrid_aif.train.sample_windows
-
-Reading data from disk
-----------------------
-
-.. autosummary::
-   :toctree: _generated
-   :nosignatures:
-
-   ~hybrid_aif.data.load_dataset
-   ~hybrid_aif.data.detect_format
-   ~hybrid_aif.data.Dataset
-   ~hybrid_aif.data.Reader
-   ~hybrid_aif.data.Writer
-   ~hybrid_aif.data.Format
-

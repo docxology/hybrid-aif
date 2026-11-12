@@ -1,10 +1,10 @@
-Descriptions, replay and description length
-===========================================
+Model documents and description length
+======================================
 
 A System and its parameters can be written as a versioned JSON document, with an arrays file
 beside it, and built back from that document. The same description is what description length is
-measured on. A recorded trace of observations and actions can be replayed through a System to
-recover its beliefs at every step.
+measured on.
+Replaying a recorded trace is described under :doc:`records`.
 
 The model as a document
 -----------------------
@@ -35,16 +35,3 @@ Description length
    :nosignatures:
 
    ~hybrid_aif.DescriptionLength
-
-Replaying a trace
------------------
-
-.. autosummary::
-   :toctree: _generated
-   :nosignatures:
-
-   ~hybrid_aif.replay.replay
-   ~hybrid_aif.replay_document
-   ~hybrid_aif.Replay
-   ~hybrid_aif.stack_traces
-

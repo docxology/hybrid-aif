@@ -1,5 +1,7 @@
 """Sphinx configuration for the hybrid_aif API reference."""
 
+import os
+
 import hybrid_aif
 
 project = "hybrid-aif"
@@ -27,6 +29,7 @@ autosummary_generate_overwrite = True
 autosummary_imported_members = True
 
 autodoc_typehints = "description"
+autodoc_typehints_description_target = "documented"
 autodoc_typehints_format = "short"
 python_maximum_signature_line_length = 88
 autodoc_class_signature = "separated"
@@ -43,7 +46,12 @@ intersphinx_timeout = 10
 
 html_theme = "sphinx_book_theme"
 html_title = f"hybrid-aif {release}"
+# The launch page sits one level above the reference when both are published together; the logo
+# links back to it. HYBRID_AIF_SITE_URL overrides the address (the default is the server's root).
+html_logo = "../site/static/h-aif.svg"
+html_favicon = "../site/static/favicon.png"
 html_theme_options = {
+    "logo": {"link": os.environ.get("HYBRID_AIF_SITE_URL", "/"), "alt_text": "hybrid-aif"},
     "repository_url": "https://github.com/noumenal-labs/hybrid-aif",
     "use_repository_button": False,
     "show_toc_level": 2,

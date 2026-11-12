@@ -1,5 +1,5 @@
-Inference
-=========
+State inference
+===============
 
 Inference turns an observation into a posterior over state. The discrete scheme is mean-field fixed
 point iteration. The continuous scheme conditions a Gaussian or a Gaussian mixture on a linear

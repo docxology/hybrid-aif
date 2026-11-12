@@ -39,5 +39,4 @@ Clocks and durations
 
    ~hybrid_aif.discretise
    ~hybrid_aif.compose
-   ~hybrid_aif.accumulated_target
 
