@@ -266,7 +266,8 @@ a diagonal `Q`.
 
 - **The offset is not scaled** **(builder's choice).** `loc_j` is added as declared. Scaling it
   would make the predictive carry a cross term, `Cov(m(z), s(z) ∘ loc)`.
-- **The declaration** **(builder's choice: the field's name, its values, `None` for off).** A
+- **The declaration** **(the field's name, its values and `None` for off: the builder's choice,
+  confirmed by the owner on 2026-11-13).** A
   static field, `NonlinearGaussianTransition(f, innovations, propagation, noise_scale=None)`, with
   `noise_scale="per_coordinate"` declaring that `f` returns the pair `(mean, scale)`, both
   `float[d]`. Validation (the `jax.eval_shape` check of N5, which needs the System's control

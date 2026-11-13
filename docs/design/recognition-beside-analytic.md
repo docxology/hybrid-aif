@@ -487,10 +487,10 @@ as before.
 
 *Status: DECIDED 2026-11-12 (Alex): the state-space update is the default, with no switch,
 for every neural likelihood whose noise is independent across its readings, and the dense
-observation-space form is kept only as the reference the tests compare against. BUILT AND
-AWAITING ALEX'S CONFIRMATION: the extension to the unscented reading's correlated part (the
-paragraph on `"unscented"` below, `DiagonalNoise.low_rank`). Amends L2 and L4 where they
-condition a belief.*
+observation-space form is kept only as the reference the tests compare against. CONFIRMED
+2026-11-13 (Alex): the extension to the unscented reading's correlated part (the paragraph on
+`"unscented"` below, `DiagonalNoise.low_rank`), built beyond the first ruling. Amends L2 and L4
+where they condition a belief.*
 
 **L10, the update of a belief on independent readings.** A neural likelihood's noise is
 independent across its `p` readings, so conditioning a Gaussian belief `N(m, L Lᵀ)` of
