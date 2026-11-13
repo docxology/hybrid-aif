@@ -823,13 +823,15 @@ class Conditioner(NamedTuple):
     (:func:`neural_read`), ``levels`` the step's levels of its action-node parents, the noise a
     :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, and ``H`` and ``c`` are zero
     templates of the head's shapes; :meth:`at` returns the conditioner as a constant one at
-    ``q``, whose ``R_chol_at`` gives that noise, so the chain conditions on it in state space."""
+    ``q``, whose ``noise_at`` gives that noise, so the chain conditions on it in state space."""
 
     factor: int
     column: int
     H: Array
     c: Array
-    R_chol_at: Callable[[Array], Array | DiagonalNoise]
+    #: The observation noise at a mean ``loc``: a lower-triangular Cholesky factor, or a
+    #: :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise` (state-space update).
+    noise_at: Callable[[Array], Array | DiagonalNoise]
     nodes: tuple[int, ...] = ()
     modality: str = ""
     factor_name: str = ""
@@ -839,8 +841,8 @@ class Conditioner(NamedTuple):
         """This conditioner read at the belief ``q``: itself when its head is constant."""
         if self.read is None:
             return self
-        H, c, R_chol = self.read(q)
-        return self._replace(H=H, c=c, R_chol_at=lambda loc, R=R_chol: R, read=None)
+        H, c, noise = self.read(q)
+        return self._replace(H=H, c=c, noise_at=lambda loc, noise=noise: noise, read=None)
 
 
 class NeuralHead(NamedTuple):
@@ -969,7 +971,7 @@ def neural_conditioner(
         column=column,
         H=jnp.zeros((d_obs, d)),
         c=jnp.zeros((d_obs,)),
-        R_chol_at=no_constant_noise,
+        noise_at=no_constant_noise,
         nodes=nodes,
         modality=modality,
         factor_name=factor_name,
@@ -1091,7 +1093,7 @@ def select_conditioner(
     return cond._replace(
         H=_take_modes(cond.H, 2, levels),
         c=_take_modes(cond.c, 1, levels),
-        R_chol_at=lambda loc, read=cond.R_chol_at: _take_modes(read(loc), 2, levels),
+        noise_at=lambda loc, read=cond.noise_at: _take_modes(read(loc), 2, levels),
         nodes=(),
     )
 
@@ -1136,7 +1138,7 @@ def _seed_noises(q: Gaussian, factor: int, conditioners: tuple["Conditioner", ..
             d_obs = cond.H.shape[-2]
             out[cond.column] = jnp.zeros((d_obs, d_obs), cond.H.dtype)
         else:
-            out[cond.column] = cond.at(q).R_chol_at(q.loc)
+            out[cond.column] = cond.at(q).noise_at(q.loc)
     return out
 
 
@@ -1188,17 +1190,18 @@ def condition_expected(
     q: Gaussian,
     cond: Conditioner,
     flag: Array | None,
-    R_chol: Array | DiagonalNoise | None = None,
+    noise: Array | DiagonalNoise | None = None,
 ) -> Gaussian:
     """``q`` conditioned on the observation ``cond`` is expected to give at its mean: zero
     innovation, so the mean is ``q.loc`` itself and the covariance takes the Kalman update;
-    ``flag`` (``None``: present) leaves ``q`` where the modality is absent. ``R_chol`` is the
-    noise at ``q``'s mean when the caller has read it (``None``: read here): a Cholesky factor,
-    or a :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, which takes the update in
-    state space (:func:`~hybrid_aif.inference.linear_gaussian.condition_on_expected`)."""
-    if R_chol is None:
-        R_chol = cond.R_chol_at(q.loc)
-    posterior = condition_on_expected(q, cond.H, R_chol)
+    ``flag`` (``None``: present) leaves ``q`` where the modality is absent. ``noise`` is the
+    noise at ``q``'s mean when the caller has read it (``None``: read here): a lower-triangular
+    Cholesky factor, or a :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, which
+    takes the update in state space
+    (:func:`~hybrid_aif.inference.linear_gaussian.condition_on_expected`)."""
+    if noise is None:
+        noise = cond.noise_at(q.loc)
+    posterior = condition_on_expected(q, cond.H, noise)
     return posterior if flag is None else where_tree(flag, posterior, q)
 
 
@@ -1515,7 +1518,7 @@ def _step_pair(
         cond_t = cond if at_step is None else at_step(cond)
         cond_t = cond_t.at(epistemic)  # a neural head is read at the belief it conditions
         # the mean is the epistemic one throughout: conditioning leaves it unchanged
-        noises[cond.column] = cond_t.R_chol_at(epistemic.loc)
+        noises[cond.column] = cond_t.noise_at(epistemic.loc)
         conditioned = condition_expected(conditioned, cond_t, flag, noises[cond.column])
     return BeliefPair(
         step(q.predictive), epistemic, conditioned, q.step + 1, noises if q.noises else {}

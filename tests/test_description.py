@@ -182,7 +182,7 @@ def test_a_dotted_system_without_its_record_comes_back_with_the_record_filled():
     assert system.subsystems is None
     rebuilt, rebuilt_params = _round_trip(system, params)
     assert [name for name, _ in rebuilt.subsystems] == ["agent", "world"]
-    assert dict(rebuilt.subsystems)["agent"].factors == (0, 1)
+    assert dict(rebuilt.subsystems)["agent"].states == (0, 1)
     _assert_same(params, rebuilt_params)
     assert dataclasses.replace(rebuilt, subsystems=None) == system
 

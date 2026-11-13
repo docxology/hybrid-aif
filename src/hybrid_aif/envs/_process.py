@@ -66,9 +66,9 @@ def _reject_param_distribution(decl, slot: str, index: int) -> None:
         )
 
 
-def _null_levels(control_deps, num_factors: int) -> Array:
+def _null_levels(control_deps, num_states: int) -> Array:
     """Level zeros: one per action node under a control table, else one per factor."""
-    width = len(control_deps.controls) if isinstance(control_deps, ControlTable) else num_factors
+    width = len(control_deps.controls) if isinstance(control_deps, ControlTable) else num_states
     return jnp.zeros((width,), jnp.int32)
 
 
@@ -90,16 +90,16 @@ class DiscreteProcess(Env):
     #   where its control node is a parent), or a per-factor declaration (``None`` = each
     #   factor's own action on its one axis)
     sensed: tuple[int, ...] = eqx.field(static=True, default=())
-    #   the action columns a modality observes: ``A_deps`` index ``num_factors + i`` reads the
+    #   the action columns a modality observes: ``A_deps`` index ``num_states + i`` reads the
     #   action's column ``sensed[i]`` (the realised action of the step; level 0 at reset)
 
     @property
-    def num_factors(self) -> int:
+    def num_states(self) -> int:
         return len(self.B_deps)
 
     def null_action(self) -> Array:
         """The no-op action: level zeros, one per action node under a control table."""
-        return _null_levels(self.B_control_deps, self.num_factors)
+        return _null_levels(self.B_control_deps, self.num_states)
 
     def _with_action(self, state: State, action: Array) -> State:
         """``state`` followed by the observed action columns."""
@@ -121,9 +121,9 @@ class DiscreteProcess(Env):
         ``D``) and the process's true starting point can differ; observations
         are still sampled from the given state.
         """
-        d_deps = self.D_deps if self.D_deps is not None else ((),) * self.num_factors
+        d_deps = self.D_deps if self.D_deps is not None else ((),) * self.num_states
         if state is None:
-            keys = jax.random.split(key, self.num_factors + 1)
+            keys = jax.random.split(key, self.num_states + 1)
             drawn: list[Array] = []
             for k, d, deps in zip(list(keys[1:]), params.initial_state_prior, d_deps, strict=True):
                 probs = d[(slice(None), *(drawn[g] for g in deps))] if deps else d
@@ -131,8 +131,8 @@ class DiscreteProcess(Env):
             state = tuple(drawn)
             null = self.null_action()
             return self._observe(keys[0], self._with_action(state, null), params), state
-        if len(state) != self.num_factors:
-            raise ValueError(f"state override has {len(state)} factors, env has {self.num_factors}")
+        if len(state) != self.num_states:
+            raise ValueError(f"state override has {len(state)} factors, env has {self.num_states}")
         state = tuple(jnp.asarray(s, jnp.int32) for s in state)
         return self._observe(key, self._with_action(state, self.null_action()), params), state
 
@@ -152,9 +152,9 @@ class DiscreteProcess(Env):
         factors at that component's turn). ``None`` steps every factor.
         """
         k_obs, k_state = jax.random.split(key)
-        keys = jax.random.split(k_state, self.num_factors)
+        keys = jax.random.split(k_state, self.num_states)
         cdeps = self.B_control_deps
-        mask = (True,) * self.num_factors if factors is None else tuple(factors)
+        mask = (True,) * self.num_states if factors is None else tuple(factors)
         state_next = tuple(
             _draw(
                 k,
@@ -217,10 +217,10 @@ class HybridProcess(Env):
     sizes: tuple[int, ...] = eqx.field(static=True, default=())
     sensed: tuple[int, ...] = eqx.field(static=True, default=())
     #   the action columns a modality observes, as on :class:`DiscreteProcess`: ``A_deps`` index
-    #   ``num_factors + i`` reads the level of the action's column ``sensed[i]``
+    #   ``num_states + i`` reads the level of the action's column ``sensed[i]``
 
     @property
-    def num_factors(self) -> int:
+    def num_states(self) -> int:
         return len(self.B_deps)
 
     def _with_action(self, state: State, action: Array) -> State:
@@ -244,7 +244,7 @@ class HybridProcess(Env):
                     for k, n in zip(self.kinds, self.sizes, strict=True)
                 )
             )
-        return _null_levels(self.B_control_deps, self.num_factors)
+        return _null_levels(self.B_control_deps, self.num_states)
 
     @property
     def num_modalities(self) -> int:
@@ -270,9 +270,9 @@ class HybridProcess(Env):
         """
         for f, d in enumerate(params.initial_state_prior):
             _reject_param_distribution(d, "initial_state_prior factor", f)
-        d_deps = self.D_deps if self.D_deps is not None else ((),) * self.num_factors
+        d_deps = self.D_deps if self.D_deps is not None else ((),) * self.num_states
         if state is None:
-            keys = jax.random.split(key, self.num_factors + 1)
+            keys = jax.random.split(key, self.num_states + 1)
             drawn: list[Array] = []
             for k, d, deps in zip(list(keys[1:]), params.initial_state_prior, d_deps, strict=True):
                 if isinstance(d, ConditionalCategorical):
@@ -282,8 +282,8 @@ class HybridProcess(Env):
             state = tuple(drawn)
             null = self.null_action()
             return self._observe(keys[0], self._with_action(state, null), params), state
-        if len(state) != self.num_factors:
-            raise ValueError(f"state override has {len(state)} factors, env has {self.num_factors}")
+        if len(state) != self.num_states:
+            raise ValueError(f"state override has {len(state)} factors, env has {self.num_states}")
         state = tuple(
             jnp.asarray(s, jnp.int32) if isinstance(d, Categorical) else jnp.asarray(s)
             for s, d in zip(state, params.initial_state_prior, strict=True)
@@ -303,8 +303,8 @@ class HybridProcess(Env):
         the step as on :meth:`DiscreteProcess.step`, a kept factor being read as kept by any
         factor that reads this step's values."""
         k_obs, k_state = jax.random.split(key)
-        keys = jax.random.split(k_state, self.num_factors)
-        mask = (True,) * self.num_factors if factors is None else tuple(factors)
+        keys = jax.random.split(k_state, self.num_states)
+        mask = (True,) * self.num_states if factors is None else tuple(factors)
         next_state: list[Array] = []
         for f, (k, B_f, deps) in enumerate(
             zip(list(keys), params.transition, self.B_deps, strict=True)

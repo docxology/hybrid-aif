@@ -442,20 +442,20 @@ def reduce(
     system,
     params: SystemParams,
     prior: SystemParams,
-    factor: str | None = None,
+    state: str | None = None,
     n_pair: int | None = None,
 ) -> SystemParams:
     params = system._params_in(params, "reduce")
     prior = system._params_in(prior, "reduce")
     system._validate(params, "reduce")
     growable = _structure.growable_factors(system, params)
-    if factor is not None:
-        if factor not in system._facs or system._facs.index(factor) not in growable:
+    if state is not None:
+        if state not in system._facs or system._facs.index(state) not in growable:
             raise ValueError(
-                f"reduce: {factor!r} is not a growable factor; the growable factors are "
-                f"{[system._facs[f] for f in growable]}"
+                f"reduce: {state!r} is not a growable state factor; the growable state factors "
+                f"are {[system._facs[f] for f in growable]}"
             )
-        growable = (system._facs.index(factor),)
+        growable = (system._facs.index(state),)
     pairs = system.reduction_pairs if n_pair is None else int(n_pair)
     for f in growable:
         params = _structure.reduce(system, params, prior, f, pairs)
@@ -466,7 +466,7 @@ def grow(
     system,
     params: SystemParams,
     observations: Mapping[str, Array],
-    factor: str,
+    state: str,
     rounds: int = 1,
     lr: float | Array = 1.0,
 ) -> SystemParams:
@@ -474,12 +474,12 @@ def grow(
     names = system._names(params)
     system._validate(params, "grow")
     growable = _structure.growable_factors(system, params)
-    if factor not in system._facs or system._facs.index(factor) not in growable:
+    if state not in system._facs or system._facs.index(state) not in growable:
         raise ValueError(
-            f"grow: {factor!r} is not a growable factor; the growable factors are "
+            f"grow: {state!r} is not a growable state factor; the growable state factors are "
             f"{[system._facs[f] for f in growable]}"
         )
-    f = system._facs.index(factor)
+    f = system._facs.index(state)
     mods = tuple(m for m, deps in enumerate(system.A_deps) if deps == (f,))
     given = dict(observations)
     unknown = sorted(set(given) - set(system.modality_names))
@@ -491,7 +491,7 @@ def grow(
     missing = [names.modalities[m] for m in mods if obs[m] is None]
     if missing:
         raise ValueError(
-            f"grow: factor {factor!r} is read by modalities {missing}, whose windows are "
+            f"grow: state factor {state!r} is read by modalities {missing}, whose windows are "
             "missing from observations"
         )
     return system._params_out(_structure.grow_batch(system, params, obs, f, int(rounds), lr))

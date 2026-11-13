@@ -26,7 +26,7 @@ import pytest
 
 from hybrid_aif import Categorical, ConditionalCategorical
 from hybrid_aif.composition import joint_planner
-from hybrid_aif.composition.merge import Link, merge, subsystem, subsystem_factors
+from hybrid_aif.composition.merge import Link, merge, subsystem, subsystem_states
 from hybrid_aif.reference.envs.tmaze import CENTRE, CUE
 from hybrid_aif.system import System, SystemParams
 from tests.test_merge import (
@@ -58,7 +58,7 @@ def test_an_unbound_components_view_is_the_component_itself():
     view, vp = subsystem(composite, cp, "agent")
     agent, ap = tmaze_system()
 
-    assert subsystem_factors(composite, "agent") == (0, 1)  # no stubs at all
+    assert subsystem_states(composite, "agent") == (0, 1)  # no stubs at all
     assert view.names.states == ("agent.location", "agent.context")
     assert view.modality_names == ("agent.location_obs", "agent.reward", "agent.cue")
     for field in ("A_deps", "B_deps", "controlled", "policy_len", "gamma"):
@@ -118,7 +118,7 @@ def test_a_partners_control_node_becomes_an_exogenous_stub():
     declared prior* (the switching demo's ``ACTION_MODE_LOGW`` pattern), uniform by
     default — never a control node of ours."""
     composite, cp = merged()
-    assert subsystem_factors(composite, "world") == (0, 2, 3)
+    assert subsystem_states(composite, "world") == (0, 2, 3)
     view, vp = subsystem(composite, cp, "world")
     assert view.names.states == ("agent.location", "world.location", "world.context")
     assert view.controlled == (False, False, False)
@@ -229,13 +229,13 @@ def test_the_stub_set_closes_over_what_the_stubs_own_dynamics_need():
             Link(("y.y",), "x.see"),
         ],
     )
-    assert subsystem_factors(composite, "x") == (0, 1, 2)  # own, direct, closure
+    assert subsystem_states(composite, "x") == (0, 1, 2)  # own, direct, closure
     view, vp = subsystem(composite, cp, "x")
     assert view.node_names == ("x.x", "y.y", "z.z")
     assert view.B_deps == ((0,), (1, 2), (2,))
     assert view.controlled == (False, False, False)  # z's node is somebody else's
     view._validate(vp)  # well-formed: every parent index resolves inside the view
-    assert subsystem_factors(composite, "z") == (2,)  # nothing flows back the other way
+    assert subsystem_states(composite, "z") == (2,)  # nothing flows back the other way
 
 
 # ------------------------------------------------------------------- every face runs
@@ -331,7 +331,7 @@ def test_the_view_records_which_factors_are_its_own():
     view, _ = subsystem(composite, cp, "agent")
     meta = dict(view.subsystems)
     assert set(meta) == {"agent"}
-    assert meta["agent"].factors == (0, 1)  # world.location/context are stubs
+    assert meta["agent"].states == (0, 1)  # world.location/context are stubs
     assert meta["agent"].controls == ("agent.u_location",)
     world_view, _ = subsystem(composite, cp, "world")
     assert dict(world_view.subsystems)["world"].relayed == (("world.u_location", "agent.location"),)

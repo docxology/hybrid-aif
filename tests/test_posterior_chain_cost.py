@@ -47,12 +47,12 @@ CHANNELS = ("pose_fix", "nearest", "gps", "pile")
 # ------------------------------------------------------------------------ previous routes
 
 
-def _previous_condition_expected(q, cond, flag, R_chol=None):
+def _previous_condition_expected(q, cond, flag, noise=None):
     """Conditioning on the expected reading by the full update, which recomputes the mean from a
     zero innovation and reads the noise at the mean again."""
-    R_chol = cond.R_chol_at(q.loc)
+    noise = cond.noise_at(q.loc)
     y = (cond.H @ q.loc[..., None])[..., 0] + cond.c
-    posterior, _ = condition(q, cond.H, cond.c, R_chol, y)
+    posterior, _ = condition(q, cond.H, cond.c, noise, y)
     return posterior if flag is None else where_tree(flag, posterior, q)
 
 

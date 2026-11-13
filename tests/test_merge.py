@@ -564,13 +564,13 @@ def test_subsystems_metadata_records_the_control_nodes():
     composite, _ = merged()
     meta = dict(composite.subsystems)
     assert set(meta) == {"agent", "world"}
-    assert meta["agent"].factors == (0, 1) and meta["agent"].modalities == (0, 1, 2)
+    assert meta["agent"].states == (0, 1) and meta["agent"].modalities == (0, 1, 2)
     assert meta["agent"].controls == ("agent.u_location",)  # the composite plans it
     assert meta["agent"].actions == (("agent.u_location", "agent.a_location"),)
     assert meta["agent"].relayed == () and meta["agent"].terminated == ()
     assert meta["agent"].free_modalities == ()  # all three read across the boundary
     assert meta["agent"].bound_modalities == ((0, (2,)), (1, (2, 3)), (2, (2, 3)))
-    assert meta["world"].factors == (2, 3) and meta["world"].modalities == ()
+    assert meta["world"].states == (2, 3) and meta["world"].modalities == ()
     assert meta["world"].relayed == (("world.u_location", "agent.location"),)
     assert meta["world"].controls == ()
 
@@ -590,7 +590,7 @@ def test_merge_is_closed_and_qualifies_nested_metadata():
     assert outer.names.states[-1] == "sup.mode"
     meta = dict(outer.subsystems)
     assert set(meta) == {"pair", "sup", "pair.agent", "pair.world"}
-    assert meta["pair"].factors == (0, 1, 2, 3) and meta["pair.world"].factors == (2, 3)
+    assert meta["pair"].states == (0, 1, 2, 3) and meta["pair.world"].states == (2, 3)
     # still merged, still recorded
     assert meta["pair.world"].relayed == (("pair.world.u_location", "pair.agent.location"),)
     assert all(key.startswith("pair.") or key.startswith("obs:pair.") for key in outer.epistemic)

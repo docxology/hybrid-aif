@@ -46,8 +46,8 @@ parents' draws; emission ``e`` draws with ``split(keys[0], E)[e]``, from the dra
 null level of every control node an emission reads. ``step(key, state, action)``: when
 ``params.actuator`` is not empty the env face first draws action node ``k`` with
 ``split(fold_in(key, ACTUATOR_TAG), A)[k]``; then ``k_obs, k_state = split(key)``, state factor
-``f`` draws with ``split(k_state, F)[f]`` (a factor outside ``factors=`` keeps its value, the split
-unchanged; a hybrid linear-Gaussian factor reads the discrete parents drawn this step) and
+``f`` draws with ``split(k_state, F)[f]`` (a state factor outside ``states=`` keeps its value,
+the split unchanged; a hybrid linear-Gaussian factor reads the discrete parents drawn this step) and
 emission ``e`` with ``split(k_obs, E)[e]`` from the stepped state and the realised level of every
 control node an emission reads. A control node that is free (no input drives it) is drawn
 before all of these with ``split(fold_in(key, CONTROL_TAG), K)[k]``, so the process's own key

@@ -20,7 +20,7 @@ Making a composite
    ~hybrid_aif.composition.with_mirror
    ~hybrid_aif.composition.nested
    ~hybrid_aif.composition.subsystem
-   ~hybrid_aif.composition.subsystem_factors
+   ~hybrid_aif.composition.subsystem_states
    ~hybrid_aif.composition.write_back
 
 Bindings

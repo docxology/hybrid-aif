@@ -164,7 +164,7 @@ def _relocations(system: System, leaves, taken: dict[str, set[str]]):
     the state showing itself, and the state is the owner's, so it is an emission of the owner.
     ``taken`` holds each component's names, and gains the emission names."""
     n_states = system._table.num_states
-    owner_factor = {g: name for name, rec in leaves for g in rec.factors}
+    owner_factor = {g: name for name, rec in leaves for g in rec.states}
     out = {}
     for name, rec in leaves:
         for m in rec.modalities:
@@ -180,7 +180,7 @@ def _relocations(system: System, leaves, taken: dict[str, set[str]]):
 def _taken(system: System, leaves) -> dict[str, set[str]]:
     return {
         name: {
-            *(_local(system.node_names[g], name) for g in rec.factors),
+            *(_local(system.node_names[g], name) for g in rec.states),
             *(_local(u, name) for u, _ in rec.actions),
             *(_local(system.modality_names[m], name) for m in rec.modalities),
         }
@@ -259,7 +259,7 @@ def mirror_components(
             kernels[local] = Parameter(spec.homes[home])
         mirrored = SystemParams(
             transition=tuple(spec.transition),
-            initial_state_prior=tuple(lowered.initial_state_prior[g] for g in rec.factors),
+            initial_state_prior=tuple(lowered.initial_state_prior[g] for g in rec.states),
             likelihood=(),
             emission=kernels,
             control={
@@ -310,7 +310,7 @@ class _Components:
     def __init__(self, system: System, lowered: SystemParams, leaves, where: str, lower: bool):
         self.system, self.lowered, self.where = system, lowered, where
         self.table = system._table
-        self.owner_factor = {g: name for name, rec in leaves for g in rec.factors}
+        self.owner_factor = {g: name for name, rec in leaves for g in rec.states}
         self.node_owner = {u: name for name, rec in leaves for u, _ in rec.actions}
         stray = sorted(set(self.table.control_names) - set(self.node_owner))
         if stray:
@@ -363,7 +363,7 @@ class _Components:
         system, table, lowered, where = self.system, self.table, self.lowered, self.where
         n_states, n_nodes = table.num_states, len(system.B_deps)
         spec = self.leaves[name] = _Leaf()
-        own = list(rec.factors)
+        own = list(rec.states)
         own_nodes = [k for k, u in enumerate(table.control_names) if self.node_owner[u] == name]
         local_state = [_local(table.state_names[g], name) for g in own]
         local_nodes = [_local(table.control_names[k], name) for k in own_nodes]

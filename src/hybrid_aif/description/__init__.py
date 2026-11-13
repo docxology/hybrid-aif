@@ -5641,7 +5641,7 @@ class _Model:
                 (
                     name,
                     Subsystem(
-                        factors=facs,
+                        states=facs,
                         modalities=mods,
                         controls=chosen,
                         actions=tuple(

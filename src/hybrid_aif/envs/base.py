@@ -9,7 +9,7 @@ Conventions (chosen to compose with :func:`hybrid_aif.inference.discrete.fpi`):
 - observations: tuple of scalar ``int32`` indices, one per modality — the
   list-of-index-arrays form ``fpi`` consumes directly;
 - state: tuple of scalar ``int32`` indices, one per factor;
-- action: ``int32`` array of shape ``(num_factors,)``, one action level per
+- action: ``int32`` array of shape ``(num_states,)``, one action level per
   factor (uncontrolled factors expose a single no-op action).
 
 ``reset`` and ``step`` are pure and unjitted; callers jit/vmap/scan them.
@@ -36,22 +36,22 @@ class Env(eqx.Module):
     across a batch of parameter sets. :meth:`reset` and :meth:`step` are pure and unjitted
     (callers jit, vmap or scan them). In the positional convention an observation is a tuple of
     scalar ``int32`` indices, one per modality; a state a tuple of scalar ``int32`` indices, one
-    per state factor; and an action an ``int32`` ``(num_factors,)`` array, one level per state
+    per state factor; and an action an ``int32`` ``(num_states,)`` array, one level per state
     factor (an uncontrolled state factor exposes a single no-op action). A
     :class:`~hybrid_aif.envs.GenerativeEnv` speaks name-keyed mappings instead.
     """
 
     @property
     @abc.abstractmethod
-    def num_factors(self) -> int:
+    def num_states(self) -> int:
         """Number of state factors."""
 
     def null_action(self) -> Any:
         """The no-op action, with the structure and shape every action this env takes.
 
-        Default: the level-index action, ``(num_factors,)`` int32 zeros.
+        Default: the level-index action, ``(num_states,)`` int32 zeros.
         """
-        return jnp.zeros((self.num_factors,), jnp.int32)
+        return jnp.zeros((self.num_states,), jnp.int32)
 
     @abc.abstractmethod
     def reset(self, key: Array, params: Any) -> tuple[Obs, State]:

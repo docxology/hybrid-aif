@@ -404,7 +404,7 @@ def factor_actions_in(names: FaceNames, mapping: Any, face: str, lead_shape: tup
     """``{node: value}`` as a per-state-factor positional action, for an outside environment
     that speaks pymdp's convention.
 
-    Discrete controls give an int32 ``(..., num_factors)`` array (each control in its owning
+    Discrete controls give an int32 ``(..., num_states)`` array (each control in its owning
     factor's column), the other columns the no-op level 0; continuous ones the flat float
     ``(..., action_dim)`` vector. Leading axes are read off the entries; ``lead_shape`` sizes
     them when no factor is controlled (default ``()``). A level given as a non-integer dtype,

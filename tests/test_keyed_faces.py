@@ -338,7 +338,7 @@ def test_keyed_env_matches_its_positional_process_by_name_eagerly_and_under_jit_
     system, params = tmaze_system()
     assert system.names.states == ("location", "context")  # not alphabetical
     env, ep = system.as_env(params)
-    assert env.num_modalities == 3 and env.num_factors == 2
+    assert env.num_modalities == 3 and env.num_states == 2
     action = {"a_location": jnp.asarray(3, jnp.int32)}
 
     def keyed_steps(key):
@@ -572,7 +572,7 @@ class _Counter(Env):
     """A minimal pymdp-style positional env: one factor counting actions, one observation of it."""
 
     @property
-    def num_factors(self) -> int:
+    def num_states(self) -> int:
         return 1
 
     @property
@@ -614,7 +614,7 @@ def test_generative_env_wraps_an_outside_positional_env_given_a_system():
     assert int(obs["seen"]) == 20 and int(state["count"]) == 2
     traj = rollout(KEY, env, jnp.full((2,), 10), random_policy(system, params), 3, 2)
     assert traj.observations["seen"].shape == (2, 4) and list(traj.actions) == ["a_count"]
-    with pytest.raises(ValueError, match=r"has 1 factor\(s\), the System 2"):
+    with pytest.raises(ValueError, match=r"has 1 state factor\(s\), the System 2"):
         GenerativeEnv.wrap(_Counter(), tmaze_system()[0])
 
 

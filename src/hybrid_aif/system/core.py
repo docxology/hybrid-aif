@@ -559,8 +559,8 @@ class Subsystem(NamedTuple):
     """
 
     #: The composite state factor indices of the subsystem, in its declaration order (its block is
-    #: contiguous, so local index ``i`` is ``factors[i]``).
-    factors: tuple[int, ...]
+    #: contiguous, so local index ``i`` is ``states[i]``).
+    states: tuple[int, ...]
     #: The composite modality indices of the subsystem, in its declaration order.
     modalities: tuple[int, ...]
     #: The control nodes this subsystem still chooses (the composite plans them).
@@ -2758,14 +2758,14 @@ class System(eqx.Module, metaclass=_SystemMeta):
         params: SystemParams,
         state: Mapping[str, Array],
         inputs: Mapping[str, Array] | None = None,
-        factors: Iterable[str] | None = None,
+        states: Iterable[str] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """One round forward from ``state``: ``(emitted, next state)``, keyed by name.
 
         ``inputs`` gives the value of each control node an input drives (a level, or a float
         vector); a control node it does not name is free and is drawn first with
         ``fold_in(key, CONTROL_TAG)`` (:meth:`_free_controls`), so the key stream of the
-        process itself is the one it has when every node is driven. ``factors`` names the state
+        process itself is the one it has when every node is driven. ``states`` names the state
         factors to step; the others keep their values. Every emission is realised by its declared
         rule. For ``mirror(s, p)`` of a System ``s`` with no actuator kernel and every control node
         driven, the emissions and the state equal ``s.as_env(p).step`` under the same key.
@@ -2784,7 +2784,7 @@ class System(eqx.Module, metaclass=_SystemMeta):
             u if a is None else a: controls[u]
             for u, a in zip(self._table.control_names, self.action_names, strict=True)
         }
-        emitted, nxt = env.step(key, state, action, ep, factors)
+        emitted, nxt = env.step(key, state, action, ep, states)
         return {**emitted, **self._unsampled(key, params, nxt, controls)}, nxt
 
     def _sample_controls(
@@ -3379,41 +3379,41 @@ class System(eqx.Module, metaclass=_SystemMeta):
         self,
         params: SystemParams,
         prior: SystemParams,
-        factor: str | None = None,
+        state: str | None = None,
         n_pair: int | None = None,
     ) -> SystemParams:
-        """Bayesian model reduction on a growable state factor, or on every one when ``factor`` is
-        ``None``: two live levels are merged when the evidence of their pooled statistics, in
-        every slot the state factor is an axis of, is no lower than that of the separate levels. The
-        merged level keeps its own prior once and both levels' data; the other returns to dead,
-        its weight zero and its emissions at their prior. Candidate pairs are the ``n_pair``
-        (default ``reduction_pairs``) best by mutual expected log-likelihood, tested greedily.
-        ``prior`` is the params the posterior was learned from, which the evidence is relative
-        to. ``learn`` runs this every ``reduction_period``-th call.
+        """Bayesian model reduction on the growable state factor ``state`` names, or on every one
+        when ``state`` is ``None``: two live levels are merged when the evidence of their pooled
+        statistics, in every slot the state factor is an axis of, is no lower than that of the
+        separate levels. The merged level keeps its own prior once and both levels' data; the other
+        returns to dead, its weight zero and its emissions at their prior. Candidate pairs are the
+        ``n_pair`` (default ``reduction_pairs``) best by mutual expected log-likelihood, tested
+        greedily. ``prior`` is the params the posterior was learned from, which the evidence is
+        relative to. ``learn`` runs this every ``reduction_period``-th call.
 
         Design: docs/design/structure-learning.md S4
         """
-        return _learn_face.reduce(self, params, prior, factor, n_pair)
+        return _learn_face.reduce(self, params, prior, state, n_pair)
 
     def grow(
         self,
         params: SystemParams,
         observations: Mapping[str, Array],
-        factor: str,
+        state: str,
         rounds: int = 1,
         lr: float | Array = 1.0,
     ) -> SystemParams:
-        """The batch form of growth on a growable state factor: ``observations`` holds a window of
-        ``N`` data, ``(N, …)`` per modality over the state factor alone. Each of ``rounds`` rounds
-        scores every datum under every level, takes the worst-explained one and wakes the first
-        dead level for it while it falls below the growth threshold, seeding the level from that
-        datum; the window is then absorbed at rate ``lr`` under the responsibilities the woken
-        levels leave, into the state factor's weights and its modalities. ``learn`` is this with one
-        datum and one round.
+        """The batch form of growth on the growable state factor ``state`` names: ``observations``
+        holds a window of ``N`` data, ``(N, …)`` per modality over the state factor alone. Each of
+        ``rounds`` rounds scores every datum under every level, takes the worst-explained one and
+        wakes the first dead level for it while it falls below the growth threshold, seeding the
+        level from that datum; the window is then absorbed at rate ``lr`` under the
+        responsibilities the woken levels leave, into the state factor's weights and its
+        modalities. ``learn`` is this with one datum and one round.
 
         Design: docs/design/structure-learning.md S3
         """
-        return _learn_face.grow(self, params, observations, factor, rounds, lr)
+        return _learn_face.grow(self, params, observations, state, rounds, lr)
 
     def _gradient_slots(
         self, params: SystemParams

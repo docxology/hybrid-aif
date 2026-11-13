@@ -1977,7 +1977,7 @@ def _assemble(
             entries.append(
                 (
                     f"{name}{SEPARATOR}{child_name}",
-                    tuple(f + f_off for f in child.factors),
+                    tuple(f + f_off for f in child.states),
                     tuple(m + m_off for m in child.modalities),
                     {
                         namespaced_key(name, node): namespaced_key(name, state)
@@ -2029,7 +2029,7 @@ def _assemble(
             (
                 name,
                 Subsystem(
-                    factors=facs,
+                    states=facs,
                     modalities=mods,
                     controls=chosen,
                     actions=tuple((node, action_of[node]) for node in dict.fromkeys(named)),
@@ -2343,7 +2343,7 @@ def nested(composite: System, name: str) -> bool:
     return _subsystem_meta(composite, name).nested
 
 
-def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
+def subsystem_states(composite: System, name: str) -> tuple[int, ...]:
     """Composite state factor indices one mind's view carries, in composite order.
 
     Its own state factors, plus every other component's state factor that is a direct parent of
@@ -2356,9 +2356,9 @@ def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
     meta = _subsystem_meta(composite, name)
     D_deps, H_deps = composite._effective_D_deps(), composite._effective_H_deps()
     table = composite._table
-    needed = set(meta.factors)
+    needed = set(meta.states)
     stack: list[int] = []
-    for f in meta.factors:
+    for f in meta.states:
         stack.extend(composite._B[f] + D_deps[f] + H_deps[f])
     for m in meta.modalities:
         stack.extend(_state_deps(composite.A_deps[m], table.num_states))
@@ -2367,7 +2367,7 @@ def subsystem_factors(composite: System, name: str) -> tuple[int, ...]:
         stack.extend(
             table.state_names.index(p) for p in emitted[e].parents if p in table.state_names
         )
-    mine = {*(table.state_names[f] for f in meta.factors)}
+    mine = {*(table.state_names[f] for f in meta.states)}
     mine |= {composite.modality_names[m] for m in meta.modalities}
     for key, parents in composite._effective_C_deps().items():
         if key in mine:
@@ -2436,7 +2436,7 @@ def _view_nodes(
     c_mods, c_facs, c_nodes = composite.modality_names, table.state_names, table.control_names
     chosen = set(meta.controls)
     mods = meta.modalities
-    own = set(meta.factors)
+    own = set(meta.states)
     #  a node a modality of the view observes joins the view as one of its own nodes, whoever
     #  chose it in the composite: the observation reads the node's realised action, so the view
     #  carries the node (a partner's, clamped per round by the caller's policy set)
@@ -2472,7 +2472,7 @@ def _inputs_of(composite: System, name: str) -> dict[str, list[int]]:
     component chooses that the view reads, keyed by its action node, and a driven node of the
     component, keyed by the variable that drives it."""
     meta = _subsystem_meta(composite, name)
-    facs = subsystem_factors(composite, name)
+    facs = subsystem_states(composite, name)
     driven = set(_driven_nodes(composite, name))
     _, _, partners = _view_nodes(composite, meta, facs, name, driven)
     out: dict[str, list[int]] = {}
@@ -2524,7 +2524,7 @@ def subsystem(
 
     - its own state factors and modalities, under the composite's namespaced names, and the control
       nodes it still chooses (``Subsystem.controls``) with their action nodes;
-    - boundary stubs (:func:`subsystem_factors`) as ordinary latent state factors with their
+    - boundary stubs (:func:`subsystem_states`) as ordinary latent state factors with their
       declared dynamics;
     - for every control node another component chooses that a state factor of the view reads (a
       stub's own node, or a node a same-step ``Link`` made one with ours), that state factor's axis
@@ -2567,9 +2567,9 @@ def subsystem(
     """
     params = composite._params_in(params, "subsystem")
     meta = _subsystem_meta(composite, name)
-    facs = subsystem_factors(composite, name)
+    facs = subsystem_states(composite, name)
     mods = meta.modalities
-    own = set(meta.factors)
+    own = set(meta.states)
     if composite._is_amortized(params) and any(f not in own for f in facs):
         raise NotImplementedError(
             f"subsystem({name!r}) of an amortized composite with stubs: the view would carry "
@@ -2981,15 +2981,15 @@ def _view_metadata(
     for other, sub in composite.subsystems or ():
         if other != name and not other.startswith(f"{name}{SEPARATOR}"):
             continue
-        if not (set(sub.factors) <= set(index) and set(sub.modalities) <= set(mod_index)):
+        if not (set(sub.states) <= set(index) and set(sub.modalities) <= set(mod_index)):
             continue
-        facs = tuple(index[f] for f in sub.factors)
+        facs = tuple(index[f] for f in sub.states)
         mods = tuple(mod_index[m] for m in sub.modalities)
         out.append(
             (
                 other,
                 sub._replace(
-                    factors=facs,
+                    states=facs,
                     modalities=mods,
                     controls=tuple(n for n in sub.controls if n in chosen),
                     emissions=tuple(e for e in sub.emissions if e in emitted),

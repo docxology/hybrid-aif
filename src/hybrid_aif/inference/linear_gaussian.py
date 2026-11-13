@@ -240,12 +240,13 @@ def _condition_diagonal(
 
 
 def condition(
-    g: Gaussian, H: Array, c: Array, R_chol: Array | DiagonalNoise, y: Array
+    g: Gaussian, H: Array, c: Array, noise: Array | DiagonalNoise, y: Array
 ) -> tuple[Gaussian, Array]:
     """Bayesian update of ``g`` on ``y = H x + c + eps``, ``eps ~ N(0, R)``.
 
-    Returns ``(posterior, log_marginal)``, ``log_marginal = log p(y)``. ``R_chol`` is the noise:
-    a lower-triangular factor with ``R = R_chol R_cholᵀ``, or a :class:`DiagonalNoise`.
+    Returns ``(posterior, log_marginal)``, ``log_marginal = log p(y)``. ``noise`` is the noise:
+    a lower-triangular Cholesky factor ``R_chol`` with ``R = R_chol R_cholᵀ``, or a
+    :class:`DiagonalNoise`.
 
     - A Cholesky factor takes the update in observation space: ``log p(y)`` from the innovation
       covariance's Cholesky factor, and the covariance from the Joseph form in Gram factors, so the
@@ -255,28 +256,28 @@ def condition(
       the Woodbury identity. No ``d_obs`` by ``d_obs`` array is formed; ``O(d_obs n²)`` with
       ``n = d``, or ``d`` plus the number of columns of the noise's ``low_rank`` when it has one.
     """
-    if isinstance(R_chol, DiagonalNoise):
-        return _condition_diagonal(g, H, c, R_chol, y)
-    return _condition_dense(g, H, c, R_chol, y)
+    if isinstance(noise, DiagonalNoise):
+        return _condition_diagonal(g, H, c, noise, y)
+    return _condition_dense(g, H, c, noise, y)
 
 
-def condition_on_expected(g: Gaussian, H: Array, R_chol: Array | DiagonalNoise) -> Gaussian:
+def condition_on_expected(g: Gaussian, H: Array, noise: Array | DiagonalNoise) -> Gaussian:
     """``g`` conditioned on the reading ``H x + c + eps`` it is expected to give at its own mean:
     the innovation is zero, so the mean is ``g.loc`` itself and the covariance takes the same
-    update as :func:`condition`, from ``R_chol`` (the noise at that mean: a Cholesky factor, or
-    a :class:`DiagonalNoise` for the state-space form)."""
-    if isinstance(R_chol, DiagonalNoise):
-        _check_noise(R_chol, H)
+    update as :func:`condition`, from ``noise`` (the noise at that mean: a lower-triangular
+    Cholesky factor, or a :class:`DiagonalNoise` for the state-space form)."""
+    if isinstance(noise, DiagonalNoise):
+        _check_noise(noise, H)
         batch = jnp.broadcast_shapes(
             g.loc.shape[:-1],
             g.chol.shape[:-2],
             H.shape[:-2],
-            R_chol.scale.shape[:-1],
-            () if R_chol.low_rank is None else R_chol.low_rank.shape[:-2],
+            noise.scale.shape[:-1],
+            () if noise.low_rank is None else noise.low_rank.shape[:-2],
         )
-        chol = _information(g, H, R_chol, batch).chol
+        chol = _information(g, H, noise, batch).chol
     else:
-        _, _, chol, _ = _gain_and_factor(g, H, R_chol)
+        _, _, chol, _ = _gain_and_factor(g, H, noise)
     batch = jnp.broadcast_shapes(g.loc.shape[:-1], chol.shape[:-2])
     dim = g.loc.shape[-1]
     return Gaussian(

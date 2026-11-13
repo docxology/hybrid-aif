@@ -529,7 +529,7 @@ def test_the_batch_form_wakes_one_level_per_round_and_absorbs_the_window():
 
 def test_growth_refusals():
     system, params = _growable_system()
-    with pytest.raises(ValueError, match="not a growable factor"):
+    with pytest.raises(ValueError, match="not a growable state factor"):
         system.grow(params, {"y": jnp.zeros((3, 2))}, "w")
     with pytest.raises(ValueError, match="windows are missing"):
         system.grow(params, {}, "z")

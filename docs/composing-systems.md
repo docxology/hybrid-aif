@@ -199,7 +199,7 @@ converter: `system.to_positional(kind, mapping)` / `system.from_positional(kind,
 positional)`, with `kind` one of `"beliefs"`, `"observations"`, `"actions"`,
 `"detail"`, `"params"`; a complete `present` mapping has the observations'
 structure and converts as `"observations"`. The positional
-action is an int32 `(..., num_factors)` array with the no-op 0 on uncontrolled
+action is an int32 `(..., num_states)` array with the no-op 0 on uncontrolled
 factors (`from_positional` checks that they are 0), or the flat float
 `(..., action_dim)` vector under continuous controls. Inside,
 everything stays positional (tables, `A_deps`/`B_deps`, scan carries, the

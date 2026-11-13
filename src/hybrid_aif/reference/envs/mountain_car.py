@@ -52,7 +52,7 @@ class MountainCar(Env):
             raise ValueError(f"time_limit must be at least 1, got {self.time_limit}")
 
     @property
-    def num_factors(self) -> int:
+    def num_states(self) -> int:
         """One state factor: the ``(position, velocity)`` vector."""
         return 1
 

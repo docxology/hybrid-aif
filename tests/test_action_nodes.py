@@ -438,7 +438,7 @@ def test_a_composite_s_component_records_are_rebuilt_from_its_names():
     rebuilt = build(document, arrays=arrays)[0]
     agent, world = dict(rebuilt.subsystems)["agent"], dict(rebuilt.subsystems)["world"]
     assert agent == dict(relay.subsystems)["agent"]
-    assert world.factors == (2, 3) and world.controls == () and world.relayed == ()
+    assert world.states == (2, 3) and world.controls == () and world.relayed == ()
     (agent_s, ap), (world_s, wp) = agent_and_world()
     ended, ep = merge(
         {"agent": agent_s, "world": world_s},

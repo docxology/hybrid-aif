@@ -40,7 +40,7 @@ DATA = Path(__file__).parent / "data"
 def test_as_env_over_the_mirror_reproduces_the_recorded_forward_samples(name):
     case = mirror_cases.cases()[name]
     env, params = case.system.as_env(case.params, case.param_key)
-    got = mirror_cases.record(env, params, case.factors)
+    got = mirror_cases.record(env, params, case.states)
     want = np.load(DATA / f"as_env_{name}.npz")
     assert {k.replace("/", "__") for k in got} == set(want.files)
     for key, value in got.items():
@@ -202,7 +202,7 @@ def test_a_masked_sample_step_keeps_the_factors_it_is_not_told_to_step():
     system, params = pusher()
     world, wp = mirror(system, params)
     _, state = world.sample_initial(KEY, wp)
-    _, kept = world.sample_step(KEY, wp, state, {"u_push": jnp.asarray(2, jnp.int32)}, factors=())
+    _, kept = world.sample_step(KEY, wp, state, {"u_push": jnp.asarray(2, jnp.int32)}, states=())
     assert int(kept["x"]) == int(state["x"])
 
 

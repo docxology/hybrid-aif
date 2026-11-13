@@ -46,11 +46,11 @@ def test_discrete_override_expresses_prior_vs_true_start():
 
 def test_discrete_none_path_bitwise():
     """Without an override, reset must reproduce the pre-change sampling exactly:
-    split(key, num_factors + 1), factor draws from keys[1:], observations from
+    split(key, num_states + 1), factor draws from keys[1:], observations from
     keys[0] split per modality."""
     env, params = tmaze()
     obs, state = env.reset(KEY, params)
-    keys = jax.random.split(KEY, env.num_factors + 1)
+    keys = jax.random.split(KEY, env.num_states + 1)
     state_ref = tuple(
         Categorical.from_probs(d).sample(k).astype(jnp.int32)
         for k, d in zip(list(keys[1:]), params.initial_state_prior, strict=True)
@@ -104,7 +104,7 @@ def test_hybrid_none_path_bitwise():
     system, params = switching_system(), switching_params()
     env, env_params = system.as_env(params)
     _, state = env.reset(KEY, env_params)
-    keys = jax.random.split(KEY, env.num_factors + 1)
+    keys = jax.random.split(KEY, env.num_states + 1)
     priors = [env_params.initial_state_prior[n] for n in system.names.states]  # node order
     state_ref = tuple(d.sample(k) for k, d in zip(list(keys[1:]), priors, strict=True))
     for name, ref in zip(system.names.states, state_ref, strict=True):
@@ -115,7 +115,7 @@ def test_hybrid_none_path_observation_bitwise():
     system, params = hill_system(), hill_params()
     env, env_params = system.as_env(params)
     obs, state = env.reset(KEY, env_params)
-    keys = jax.random.split(KEY, env.num_factors + 1)
+    keys = jax.random.split(KEY, env.num_states + 1)
     (k_obs,) = tuple(jax.random.split(keys[0], env.num_modalities))
     ref = Gaussian(loc=(H @ state["state"]) + C, chol=R_CHOL).sample(k_obs)
     assert jnp.array_equal(obs["position"], ref)

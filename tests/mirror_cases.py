@@ -41,7 +41,7 @@ class Case(NamedTuple):
     system: System
     params: SystemParams
     param_key: object = None
-    factors: tuple[str, ...] | None = None
+    states: tuple[str, ...] | None = None
 
 
 def _switching_with_a_categorical_reading() -> tuple[System, SystemParams]:
@@ -128,7 +128,7 @@ def cases() -> dict[str, Case]:
         "param_key": Case(sense[0], sense[1], param_key=jax.random.PRNGKey(3)),
         "switching": Case(*_switching_with_a_categorical_reading()),
         "mlp": Case(*_mlp_likelihood()),
-        "masked": Case(*push, factors=()),
+        "masked": Case(*push, states=()),
     }
 
 
@@ -144,7 +144,7 @@ def action_for(env, t: int) -> dict:
     return out
 
 
-def record(env, env_params, factors=None, ticks: int = TICKS) -> dict[str, np.ndarray]:
+def record(env, env_params, states=None, ticks: int = TICKS) -> dict[str, np.ndarray]:
     """Reset and step ``env`` for ``ticks`` rounds under :func:`action_for`; every observation,
     state and realised action as one array per name per tick (``obs/<name>`` and so on, stacked
     over time)."""
@@ -153,7 +153,7 @@ def record(env, env_params, factors=None, ticks: int = TICKS) -> dict[str, np.nd
     seq = {"obs": [obs], "state": [state], "action": []}
     for t in range(ticks):
         act = action_for(env, t)
-        kw = {} if factors is None else {"factors": factors}
+        kw = {} if states is None else {"states": states}
         obs, state, realised = env.step_actuated(keys[t + 1], state, act, env_params, **kw)
         seq["obs"].append(obs)
         seq["state"].append(state)

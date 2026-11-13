@@ -51,7 +51,7 @@ from hybrid_aif.composition.merge import (
     nested,
     resolved_epistemic,
     subsystem,
-    subsystem_factors,
+    subsystem_states,
     write_back,
 )
 from hybrid_aif.composition.runner import MindCarry, Step, Trace, Trajectory, plan, run, sample
@@ -78,7 +78,7 @@ __all__ = [
     "run",
     "sample",
     "subsystem",
-    "subsystem_factors",
+    "subsystem_states",
     "with_mirror",
     "write_back",
 ]

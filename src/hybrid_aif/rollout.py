@@ -10,7 +10,7 @@ across ``batch_size`` agents, one row of ``params`` per agent.
 Observations, states and actions keep whatever structure the env gives them: the
 name-keyed mappings of :meth:`System.as_env <hybrid_aif.system.System.as_env>`
 (each modality buffered with its own dtype and shape, so continuous observations
-roll out too), or a positional env's tuples and ``(num_factors,)`` action.
+roll out too), or a positional env's tuples and ``(num_states,)`` action.
 """
 
 from collections.abc import Callable, Mapping
@@ -200,7 +200,7 @@ def random_policy(system_or_levels: "System | tuple[int, ...]", params=None) -> 
     live with the tables), returns the action keyed by the action nodes' names
     (``System.names.actions``) that its :meth:`~hybrid_aif.system.System.as_env` takes, one
     uniform level per action node. Given a tuple of levels per factor, returns the positional
-    ``(num_factors,)`` action a positional env takes. The draws are the same either way: one per
+    ``(num_states,)`` action a positional env takes. The draws are the same either way: one per
     state factor, a factor owning no control node drawing its single no-op level.
     """
     from hybrid_aif.system import System

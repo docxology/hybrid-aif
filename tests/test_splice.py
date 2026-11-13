@@ -292,8 +292,8 @@ def test_a_coupling_with_a_driven_node_is_described_and_rebuilt():
     assert _static(rebuilt) == _static(cs)
     assert rebuilt.action_names == ("agent.a_location", None)
     _same_leaves(rp, cp)
-    assert [(n, s.factors, s.modalities) for n, s in rebuilt.subsystems] == [
-        (n, s.factors, s.modalities) for n, s in cs.subsystems
+    assert [(n, s.states, s.modalities) for n, s in rebuilt.subsystems] == [
+        (n, s.states, s.modalities) for n, s in cs.subsystems
     ]
 
 

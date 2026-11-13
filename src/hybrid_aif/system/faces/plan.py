@@ -389,7 +389,7 @@ def _conditioners(
             )
             continue
         model = _continuous.lg_point(decl)
-        R_chol = (
+        noise_at = (
             model.R_chol_at if not nodes or model.noise_map else (lambda loc, R=model.R_chol: R)
         )
         out.append(
@@ -398,7 +398,7 @@ def _conditioners(
                 column=m,
                 H=model.H,
                 c=model.c,
-                R_chol_at=R_chol,
+                noise_at=noise_at,
                 nodes=nodes,
                 modality=system.modality_names[m],
                 factor_name=system._facs[deps[0]],

@@ -374,7 +374,7 @@ per move with "pass" a legal action. This replaces "one world step per
 mind" above, which made a mind's model of its own action depend on how
 many other minds were wired in, and keeps the spin-glass point: asynchrony
 is the random order of one sweep, not N steps of the world. Engine:
-`GenerativeEnv.step(factors=...)` steps the named factors and keeps the
+`GenerativeEnv.step(states=...)` steps the named state factors and keeps the
 rest; the driver uses it for the merged form's per-component turns.
 
 Two clarifications that dissolved apparent problems. (1) The

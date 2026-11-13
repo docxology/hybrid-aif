@@ -340,7 +340,7 @@ above, each a reading of the rulings rather than a change to them:
   `log((A + N)/A)` at its pseudo-count `A = 1`), so it can outlast the data's need for it; a
   starting level declared at weight `α`, as if woken, does not (`examples/growing_mixture.py`). (Corrected 2026-10-16:
   this note first said the first datum always goes to the live level.)
-- **S3, the batch form** (`System.grow(params, observations, factor, rounds)`): each round scores
+- **S3, the batch form** (`System.grow(params, observations, state, rounds)`): each round scores
   the window under the working copy, wakes the first dead level for the worst-explained datum
   while it falls below the threshold (seeded from that datum, which it takes hard), and absorbs
   the window into the pre-window params under the responsibilities the working copy assigns;

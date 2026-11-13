@@ -142,10 +142,10 @@ class GenerativeEnv(Env):
                 "hybrid_aif.composition.env_step(env, params)"
             )
         names = system._face_names(params)
-        if env.num_factors != len(names.factors):
+        if env.num_states != len(names.factors):
             raise ValueError(
-                f"GenerativeEnv.wrap: the environment has {env.num_factors} factor(s), the System "
-                f"{len(names.factors)} ({list(names.factors)})"
+                f"GenerativeEnv.wrap: the environment has {env.num_states} state factor(s), the "
+                f"System {len(names.factors)} ({list(names.factors)})"
             )
         num_modalities = getattr(env, "num_modalities", None)
         if num_modalities is not None and num_modalities != len(names.modalities):
@@ -156,8 +156,9 @@ class GenerativeEnv(Env):
         return cls(env, names, factor_actions=True)
 
     @property
-    def num_factors(self) -> int:
-        return self.inner.num_factors
+    def num_states(self) -> int:
+        """Number of state factors (the inner process's)."""
+        return self.inner.num_states
 
     @property
     def num_modalities(self) -> int:
@@ -199,12 +200,12 @@ class GenerativeEnv(Env):
         state: Mapping[str, Array],
         action: Mapping[str, Array],
         params: Any,
-        factors: Iterable[str] | None = None,
+        states: Iterable[str] | None = None,
     ) -> tuple[KeyedObs, KeyedState]:
         """Sample the next state under ``action`` and an observation of it (the intended action,
-        realised through ``params.actuator``; see :meth:`step_actuated`). ``factors`` names the
+        realised through ``params.actuator``; see :meth:`step_actuated`). ``states`` names the
         state factors to step; the others keep their values (see :meth:`step_actuated`)."""
-        obs, nxt, _ = self.step_actuated(key, state, action, params, factors)
+        obs, nxt, _ = self.step_actuated(key, state, action, params, states)
         return obs, nxt
 
     def step_actuated(
@@ -213,7 +214,7 @@ class GenerativeEnv(Env):
         state: Mapping[str, Array],
         action: Mapping[str, Array],
         params: Any,
-        factors: Iterable[str] | None = None,
+        states: Iterable[str] | None = None,
     ) -> tuple[KeyedObs, KeyedState, dict[str, Array]]:
         """:meth:`step`, also returning the realised action, keyed by action node.
 
@@ -222,13 +223,13 @@ class GenerativeEnv(Env):
         ``key``; any other is realised as given (and ``key`` is used as :meth:`step` always
         uses it). The world moves on the realised action.
 
-        ``factors`` names the state factors to step, by state factor name; the others keep their
+        ``states`` names the state factors to step, by state factor name; the others keep their
         values and the observation is of the state so made. It is the System's own process that
         steps in parts (the driver's sequential and async orders step each component's state factors
         at that component's turn); an outside environment wrapped by :meth:`wrap` has no parts
         to name, and is refused.
         """
-        mask = None if factors is None else self._factor_mask(factors)
+        mask = None if states is None else self._factor_mask(states)
         convert = keyed.factor_actions_in if self.factor_actions else keyed.actions_in
         positional = convert(self.names, action, "step")  # checks the intended action
         realised = self._actuate(key, action, params)
@@ -241,25 +242,25 @@ class GenerativeEnv(Env):
             obs, nxt = self.inner.step(key, state_in, positional, params_in, mask)
         return (*self._out(obs, nxt), realised)
 
-    def _factor_mask(self, factors: Iterable[str]) -> tuple[bool, ...]:
-        """``factors`` as one bool per state factor in node order; unknown names, and an
+    def _factor_mask(self, states: Iterable[str]) -> tuple[bool, ...]:
+        """``states`` as one bool per state factor in node order; unknown names, and an
         outside environment, are refused."""
         if self.factor_actions:
             raise ValueError(
-                "step(factors=...) steps part of the System's own process; an environment "
+                "step(states=...) steps part of the System's own process; an environment "
                 "wrapped by GenerativeEnv.wrap has no parts to name"
             )
-        if isinstance(factors, str):
+        if isinstance(states, str):
             raise TypeError(
-                f"step(factors=...) takes the factor names as a sequence, got the string "
-                f"{factors!r}; pass ({factors!r},)"
+                f"step(states=...) takes the state factor names as a sequence, got the string "
+                f"{states!r}; pass ({states!r},)"
             )
-        wanted = set(factors)
+        wanted = set(states)
         unknown = sorted(wanted - set(self.names.factors))
         if unknown:
             raise ValueError(
-                f"step(factors=...) names {unknown}, which are not state factors of this "
-                f"process; its factors are {list(self.names.factors)}"
+                f"step(states=...) names {unknown}, which are not state factors of this "
+                f"process; its state factors are {list(self.names.factors)}"
             )
         return tuple(n in wanted for n in self.names.factors)
 
