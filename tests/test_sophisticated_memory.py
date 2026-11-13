@@ -110,7 +110,7 @@ def _random_model(horizon: int, seed: int = 0, n_actions: int = 3):
         planner="sophisticated",
         branch_on=("o1", "o2"),
         modality_names=("o1", "o2"),
-        factor_names=("s", "c"),
+        state_names=("s", "c"),
     )
     params = SystemParams(
         likelihood={"o1": cc(table(3, 4, 2), 2), "o2": cc(table(2, 4), 1)},
@@ -138,7 +138,7 @@ def _gaussian_model(dim: int, horizon: int):
         controlled=(True, True),
         policy_len=horizon,
         modality_names=("cue", "gps"),
-        factor_names=("ctx", "x"),
+        state_names=("ctx", "x"),
         epistemic=True,
         planner="sophisticated",
         branch_on=("cue",),

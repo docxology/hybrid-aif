@@ -75,7 +75,7 @@ def lq_system(
             "planner": "cem",
             "gamma": 8.0,
             "epistemic": False,
-            "factor_names": ("x",),
+            "state_names": ("x",),
             **system_kwargs,
         }
     )
@@ -417,7 +417,7 @@ def _three_controls():
         controlled=(True, False, True),
         policy_len=1,
         epistemic=False,
-        factor_names=("a", "b", "c"),
+        state_names=("a", "b", "c"),
     )
     gauss = Gaussian(loc=jnp.zeros(1), chol=jnp.eye(1))
     params = SystemParams(

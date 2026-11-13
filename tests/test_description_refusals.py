@@ -1636,7 +1636,7 @@ def _with(params_or_system, **fields):
 
 def _one_state(transition, initial, **system):
     """One latent ``x`` reading its own previous value, no control node, no observation."""
-    s = H.System(B_deps=((0,),), policy_len=1, factor_names=("x",), **system)
+    s = H.System(B_deps=((0,),), policy_len=1, state_names=("x",), **system)
     p = H.SystemParams(transition={"x": transition}, initial_state_prior={"x": initial})
     return s, p
 
@@ -1652,7 +1652,7 @@ def _rssm():
 
 def _named_d():
     """A latent ``x`` beside a latent named ``D_x``: the letter name is taken."""
-    s = H.System(B_deps=((0,), (1,)), policy_len=1, factor_names=("x", "D_x"))
+    s = H.System(B_deps=((0,), (1,)), policy_len=1, state_names=("x", "D_x"))
     tables = {n: _table() for n in ("x", "D_x")}
     return s, H.SystemParams(
         transition=tables, initial_state_prior={n: H.Categorical(jnp.zeros(2)) for n in tables}
@@ -1758,7 +1758,7 @@ WRITER_CASES = [
     (
         "a bracket in a name",
         lambda: (
-            H.System(B_deps=((0,),), policy_len=1, factor_names=("x[0]",)),
+            H.System(B_deps=((0,),), policy_len=1, state_names=("x[0]",)),
             H.SystemParams(
                 transition={"x[0]": _table()},
                 initial_state_prior={"x[0]": H.Categorical(jnp.zeros(2))},

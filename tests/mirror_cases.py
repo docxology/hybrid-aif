@@ -55,7 +55,7 @@ def _switching_with_a_categorical_reading() -> tuple[System, SystemParams]:
         mixture_k=6,
         mixture_schedule="runnalls",
         modality_names=("y", "z"),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     x_innov = ConditionalGaussian(
         loc=jnp.zeros((1, 1)), chol=jnp.asarray([[[0.05]]]), parent_ndims=1
@@ -93,7 +93,7 @@ def _mlp_likelihood() -> tuple[System, SystemParams]:
         controlled=(True,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
     )
     kw = dict(width=8, depth=1)

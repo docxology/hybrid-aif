@@ -128,7 +128,7 @@ def test_a_collapse_that_makes_a_factor_read_one_node_twice_is_refused():
         B_control_deps=((0, 1), (1,)),
         policy_len=1,
         epistemic=False,
-        factor_names=("w0", "w1"),
+        state_names=("w0", "w1"),
     )
     wp = SystemParams(
         transition={
@@ -391,6 +391,14 @@ def test_couple_and_merge_of_the_same_ports_collapse_to_one_joint_problem():
     )
     a, ap_ = joint_planner(coupled, cp)
     b, bp = joint_planner(merged_, mp)
-    for field in ("A_deps", "B_deps", "controls", "action_names", "factor_names", "observes"):
+    for field in (
+        "A_deps",
+        "B_deps",
+        "controls",
+        "action_names",
+        "state_names",
+        "control_names",
+        "observes",
+    ):
         assert getattr(a, field) == getattr(b, field), field
     _leaves(ap_, bp)

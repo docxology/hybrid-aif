@@ -41,7 +41,7 @@ def zoo_world(policy_len=1):
     the agent's likelihood table as its kernel: the process an agent can be coupled to."""
     (agent, ap), (world, wp) = agent_and_world(policy_len)
     emissions = {
-        m: Emission(tuple(world.factor_names[g] for g in agent.A_deps[i]), "sample")
+        m: Emission(tuple(world.node_names[g] for g in agent.A_deps[i]), "sample")
         for i, m in enumerate(agent.modality_names)
     }
     world = dataclasses.replace(world, emissions=emissions)
@@ -333,7 +333,15 @@ def test_a_driven_slot_sliced_by_inputs_is_the_collapsed_links_sliced_view(level
     got, gp = subsystem(coupled, coupled_p, "rover", inputs={"mission.option": level})
     want, wp = subsystem(linked, linked_p, "rover", inputs={"mission.option": level})
     assert got.C_deps == () == want.C_deps
-    for field in ("A_deps", "B_deps", "factor_names", "modality_names", "action_names", "controls"):
+    for field in (
+        "A_deps",
+        "B_deps",
+        "state_names",
+        "control_names",
+        "modality_names",
+        "action_names",
+        "controls",
+    ):
         assert getattr(got, field) == getattr(want, field), field
     _same_leaves(gp.transition, wp.transition)
     _same_leaves(gp.state_targets, wp.state_targets)

@@ -391,7 +391,7 @@ def test_a_linear_gaussian_factor_with_a_foreign_discrete_parent_is_refused():
     mode = System(
         B_deps=((0,),),
         controlled=(False,),
-        factor_names=("mode",),
+        state_names=("mode",),
         modality_names=(),
         policy_len=1,
         epistemic=False,
@@ -410,7 +410,8 @@ def test_a_linear_gaussian_factor_with_a_foreign_discrete_parent_is_refused():
         A_deps=((0,),),
         controls=(1,),
         action_names=("a_unused",),
-        factor_names=("pos", "u_mode"),
+        state_names=("pos",),
+        control_names=("u_mode",),
         modality_names=("see",),
         policy_len=1,
         epistemic=False,

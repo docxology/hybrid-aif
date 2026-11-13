@@ -39,7 +39,8 @@ def _replanned(system: System, **overrides) -> System:
         gamma=system.gamma,
         epistemic=system.epistemic,
         modality_names=system.modality_names,
-        factor_names=system.factor_names,
+        state_names=system.state_names,
+        control_names=system.control_names,
     )
     return System(**{**kw, **overrides})
 
@@ -103,7 +104,7 @@ def test_without_branch_on_it_scores_a_state_target_as_enumeration_does():
             gamma=4.0,
             planner=planner,
             modality_names=("o",),
-            factor_names=("s",),
+            state_names=("s",),
         )
         q[planner], _ = system.infer_policies(params, system.initial_priors(params))
     np.testing.assert_array_equal(np.asarray(q["sophisticated"].probs), q["enumeration"].probs)
@@ -235,7 +236,7 @@ def _two_rooms(policy_len: int = 3, terminal: bool = False, **overrides):
         planner="sophisticated",
         branch_on=("sign",),
         modality_names=("sign",),
-        factor_names=("room", "looking"),
+        state_names=("room", "looking"),
     )
     system = System(**{**kw, **overrides})
 
@@ -368,7 +369,7 @@ def _one_shot_sign(policy_len: int, terminal: bool):
         planner="sophisticated",
         branch_on=("sign",),
         modality_names=("sign",),
-        factor_names=("room", "looking", "clock"),
+        state_names=("room", "looking", "clock"),
     )
 
     def table(p, parents):

@@ -45,7 +45,7 @@ def _lg_system():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
     )
 
@@ -97,7 +97,7 @@ def test_a_joint_emission_is_one_block():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z",),
+        state_names=("z",),
         epistemic=False,
     )
     conc = jnp.ones(k)
@@ -184,7 +184,7 @@ def test_a_growable_factors_blocks_move_together():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z",),
+        state_names=("z",),
         epistemic=False,
     )
     weights = jnp.zeros(k).at[0].set(1.0)

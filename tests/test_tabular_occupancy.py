@@ -133,7 +133,7 @@ def _both_carriers(B, action):
         B_deps,
         1,
         modality_names=("o",),
-        factor_names=names,
+        state_names=names,
         **terms,
     )((probs,), action, jnp.asarray(0), (probs,))
     objects = _hybrid.make_step_terms(
@@ -145,7 +145,7 @@ def _both_carriers(B, action):
         {},
         {},
         modality_names=("o",),
-        factor_names=names,
+        state_names=names,
         **terms,
     )(
         (Categorical.from_probs(probs),),

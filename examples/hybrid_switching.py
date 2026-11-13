@@ -120,7 +120,7 @@ def make_system(k: int = K_BUDGET) -> System:
         controlled=(True, False),
         policy_len=HORIZON,
         mixture_k=k,
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         terms=("uncertainty:x",),
     )
 

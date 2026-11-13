@@ -143,7 +143,7 @@ def make_step_terms(
     param_infogain_modalities: tuple[int, ...],
     param_infogain_factors: tuple[int, ...],
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     mounts: tuple[registry.Mount, ...] = (),
     channel_selection: tuple[tuple[bool, ...] | None, ...] = (),
     control_deps: ControlDeps | None = None,
@@ -189,7 +189,7 @@ def make_step_terms(
     c_deps = dict(c_deps or {})
     obs_c_deps = {k: v for k, v in c_deps.items() if k in tables.obs_target_logs}
     state_c_deps = {k: v for k, v in c_deps.items() if k in tables.state_targets}
-    facs = _block_names("factor", num_factors, factor_names)
+    facs = _block_names("factor", num_factors, state_names)
 
     obs_idx = tuple(m for m, name in enumerate(mods) if name in tables.obs_target_logs)
     ig_decomposition = decomposition == "utility_infogain"
@@ -209,7 +209,7 @@ def make_step_terms(
     statics = registry.Statics(
         index=(),
         modality_names=mods,
-        factor_names=facs,
+        state_names=facs,
         A_deps=A_deps,
         B_deps=B_deps,
         B_control_deps=control_deps,
@@ -310,7 +310,7 @@ def make_step_terms(
 def make_terminal_terms(
     tables: CompiledTables,
     num_factors: int,
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     h_deps: tuple[tuple[int, ...], ...] | None = None,
     branching: bool = False,
 ):
@@ -324,7 +324,7 @@ def make_terminal_terms(
     """
     if not tables.terminal_targets:
         return None
-    facs = _block_names("factor", num_factors, factor_names)
+    facs = _block_names("factor", num_factors, state_names)
     idx = tuple(f for f in range(num_factors) if facs[f] in tables.terminal_targets)
     deps = h_deps if h_deps is not None else ((),) * num_factors
     conditional = any(deps[f] for f in idx)

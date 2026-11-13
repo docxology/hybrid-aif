@@ -832,7 +832,7 @@ def test_a_crspp_with_an_action_parent_is_refused(agent):
     broken = dataclasses.replace(
         agent.crspp,
         B_deps=((1, 2), (0,), ()),
-        factor_names=(*agent.crspp.names.states, "u_deter"),
+        control_names=("u_deter",),
         controls=(2,),
         action_names=("a_deter",),
     )

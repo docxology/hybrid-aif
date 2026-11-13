@@ -77,7 +77,7 @@ def test_system_a_deps_defaults_to_empty():
         policy_len=HORIZON,
         mixture_k=K_BUDGET,
         modality_names=(),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         terms=("uncertainty:x",),  # as the fixture it is compared with
     )
     assert no_a_deps.A_deps == ()

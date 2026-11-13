@@ -273,7 +273,7 @@ def test_names_a_document_carries_are_declared_names(models):
     system, params = models["hybrid_switching"]
     assert system.modality_names == ()
     s2, p2 = _round_trip(system, params)
-    assert s2 == system and s2.factor_names == ("mode", "x", "u_mode")
+    assert s2 == system and s2.node_names == ("mode", "x", "u_mode")
     unnamed = H.System(B_deps=((0,),), controlled=(True,), A_deps=((0,),), policy_len=1)
     up = H.SystemParams(
         transition={"factor_0": H.ConditionalCategorical(jnp.zeros((2, 2, 2)), 2)},
@@ -839,7 +839,7 @@ def test_a_state_and_an_observation_of_one_name_is_refused_by_the_system():
             B_deps=((0,),),
             A_deps=((0,),),
             policy_len=1,
-            factor_names=("x",),
+            state_names=("x",),
             modality_names=("x",),
         )
 
@@ -854,7 +854,7 @@ def _lg_model(likelihood):
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=("x",),
     )
     params = H.SystemParams(
@@ -1072,7 +1072,8 @@ def _pusher():
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("push",),
-        factor_names=("x", "v"),
+        state_names=("x",),
+        control_names=("v",),
         modality_names=("fix",),
         policy_len=1,
     )

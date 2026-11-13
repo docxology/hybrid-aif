@@ -91,7 +91,7 @@ def hand_flattened(policy_len=2):
         gamma=16.0,
         epistemic=True,
         modality_names=("agent.location_obs", "agent.reward", "agent.cue"),
-        factor_names=("agent.location", "agent.context", "world.location", "world.context"),
+        state_names=("agent.location", "agent.context", "world.location", "world.context"),
     )
     params = SystemParams(
         likelihood={f"agent.{m}": a for m, a in ap.likelihood.items()},
@@ -327,7 +327,7 @@ def test_default_positional_names_are_namespaced_too():
         {"a": anon_params, "world": wp},
         [Link("a.factor_0", "world.u_location")],
     )
-    assert composite.factor_names[:2] == ("a.factor_0", "a.factor_1")
+    assert composite.node_names[:2] == ("a.factor_0", "a.factor_1")
     assert composite.modality_names[:1] == ("a.modality_0",)
 
 
@@ -586,7 +586,7 @@ def test_merge_is_closed_and_qualifies_nested_metadata():
     inner, ip = merged()
     sup, sp = _high(policy_len=inner.policy_len)
     outer, op = merge({"pair": inner, "sup": sup}, {"pair": ip, "sup": sp}, [])
-    assert outer.factor_names[0] == "pair.agent.location"
+    assert outer.node_names[0] == "pair.agent.location"
     assert outer.names.states[-1] == "sup.mode"
     meta = dict(outer.subsystems)
     assert set(meta) == {"pair", "sup", "pair.agent", "pair.world"}

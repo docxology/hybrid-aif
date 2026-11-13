@@ -180,7 +180,7 @@ def _relocations(system: System, leaves, taken: dict[str, set[str]]):
 def _taken(system: System, leaves) -> dict[str, set[str]]:
     return {
         name: {
-            *(_local(system.factor_names[g], name) for g in rec.factors),
+            *(_local(system.node_names[g], name) for g in rec.factors),
             *(_local(u, name) for u, _ in rec.actions),
             *(_local(system.modality_names[m], name) for m in rec.modalities),
         }
@@ -518,7 +518,8 @@ class _Components:
             B_deps=(*B_deps, *(() for _ in range(len(own_nodes) + len(foreign_nodes)))),
             D_deps=d_deps,
             controls=tuple(range(len(own), len(own) + len(own_nodes) + len(foreign_nodes))),
-            factor_names=(*local_state, *local_nodes, *foreign_nodes),
+            state_names=tuple(local_state),
+            control_names=(*local_nodes, *foreign_nodes),
             action_names=tuple(actions),
             emissions=spec.emissions,
             dims=tuple((_local(f, name), d) for f, d in system.dims if f in own_names),

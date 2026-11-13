@@ -177,7 +177,8 @@ def _rate_turn(kind):
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("w",),
-        factor_names=("pose", "u_w"),
+        state_names=("pose",),
+        control_names=("u_w",),
         planner="gradient",
     )
     if kind == "nonlinear":

@@ -47,7 +47,7 @@ def model():
         controlled=(False, False),
         policy_len=1,
         modality_names=("obs_x", "obs_kind", *READS),
-        factor_names=("x", "kind"),
+        state_names=("x", "kind"),
         epistemic=False,
         emissions={
             "x_mean": Emission(("x",), realise="mode", kernel="identity"),

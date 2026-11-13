@@ -104,7 +104,7 @@ def _mixture_system(k=3, d=2, point=False, extra_tabular=False, levels_type=2):
         controlled=(False,),
         policy_len=1,
         modality_names=mods,
-        factor_names=("z",),
+        state_names=("z",),
         decomposition="risk_ambiguity",
         epistemic=False,
     )
@@ -292,7 +292,7 @@ def test_refusals_name_the_emission():
         controlled=(False, False),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z", "x"),
+        state_names=("z", "x"),
     )
     from hybrid_aif import Gaussian as G
     from hybrid_aif.distributions import ConditionalGaussian
@@ -361,7 +361,7 @@ def _growable_system(k_max=6, d=2, alpha=1.0, strength=0.1, prior_scale=1.0, **k
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z",),
+        state_names=("z",),
         epistemic=False,
         **kwargs,
     )
@@ -745,7 +745,7 @@ def _own_read_system(emissions=None, observes=None):
         controlled=(False, False, False),
         policy_len=1,
         modality_names=("obs_x", "obs_kind", "prev_x", "prev_type"),
-        factor_names=("x", "kind", "z"),
+        state_names=("x", "kind", "z"),
         epistemic=False,
         emissions=emissions,
         observes=observes,
@@ -1139,7 +1139,7 @@ def test_unbuilt_readers_of_a_growable_factor_are_refused():
         controlled=(False, False),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z", "x"),
+        state_names=("z", "x"),
         epistemic=False,
         mixture_k=6,
     )
@@ -1201,7 +1201,7 @@ def test_an_emission_over_two_parents_is_the_mean_field_fixed_point():
         controlled=(False, False),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z", "g"),
+        state_names=("z", "g"),
         epistemic=False,
         num_iters=64,
     )
@@ -1268,7 +1268,7 @@ def test_a_structural_zero_round_trips_without_growth():
         controlled=(False,),
         policy_len=1,
         modality_names=("o",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     conc = jnp.asarray([[4.0, 0.0, 1.0], [0.0, 2.0, 1.0]])  # a hard zero in each column but one
     params = SystemParams(

@@ -79,7 +79,7 @@ def build(img=True, recognition=(), modules=None, lg_rec=None, extra_likelihood=
         mixture_k=K,
         mixture_schedule="mode_aligned",
         modality_names=tuple(mods),
-        factor_names=("terrain", "x"),
+        state_names=("terrain", "x"),
         recognition=tuple(recognition),
     )
     params = SystemParams(
@@ -423,7 +423,7 @@ def test_a_statically_absent_categorical_entry_has_a_zero_normaliser_on_every_br
         controlled=(False,),
         policy_len=1,
         modality_names=("cue", "img"),
-        factor_names=("terrain",),
+        state_names=("terrain",),
         recognition=(Recognition("terrain", ("obs:img",)),),
     )
     tab_params = SystemParams(
@@ -526,7 +526,8 @@ def test_an_entry_named_like_a_control_node_is_refused():
         B_deps=((0, 1), ()),
         controls=(1,),
         action_names=("go",),
-        factor_names=("terrain", "u_go"),
+        state_names=("terrain",),
+        control_names=("u_go",),
         modality_names=("cue",),
         policy_len=1,
         recognition=(Recognition("u_go", ("external:e",)),),

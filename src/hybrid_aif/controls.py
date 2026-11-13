@@ -525,16 +525,16 @@ def parent_levels(
 def validate_control_deps(
     control_deps: ControlDeps | None,
     controlled: tuple[bool, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
 ) -> None:
     """Check ``System.B_control_deps`` against the control declaration (no tables needed).
 
-    One entry per factor; each names distinct, controlled factors (``factor_names``, one per
-    factor, for the sentences).
+    One entry per state factor; each names distinct, controlled state factors (``state_names``,
+    one per state factor, for the sentences).
     """
     if control_deps is None:
         return
-    facs = factor_names
+    facs = state_names
     if not isinstance(control_deps, tuple) or len(control_deps) != len(controlled):
         raise ValueError(
             f"B_control_deps must be a tuple with one entry per factor ({len(controlled)}), "
@@ -644,19 +644,19 @@ def _check_index_tuple(value: object, what: str) -> None:
 def control_table(
     B_deps: tuple[tuple[int, ...], ...],
     A_deps: tuple[tuple[int, ...], ...],
-    factor_names: tuple[str, ...],
+    node_names: tuple[str, ...],
     controls: tuple[int, ...],
     D_deps: tuple[tuple[int, ...], ...] | None,
     H_deps: tuple[tuple[int, ...], ...] | None,
 ) -> ControlTable:
     """Validate a System's control declaration and derive its :class:`ControlTable`.
 
-    Takes the System's stored node-form fields (``factor_names`` one per node). Raises, with a
+    Takes the System's node-form fields (``node_names`` one per node). Raises, with a
     sentence, on a control node that is not after every state node, that has parents of its own,
     or that is an ``A_deps`` / ``D_deps`` / ``H_deps`` parent. A node no factor reads is admitted
     here; :func:`control_space` sizes it from the other declarations that name it.
     """
-    names = factor_names
+    names = node_names
     n = len(B_deps)
     _check_index_tuple(controls, "controls")
     if len(set(controls)) != len(controls) or tuple(sorted(controls)) != controls:
@@ -1036,7 +1036,7 @@ def control_space(
     table: ControlTable,
     transition: tuple,
     control: Mapping[str, object] | None,
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     *,
     targets: Sequence[tuple[str, tuple[str, ...], object]] | None = None,
     observations: Sequence[tuple[str, tuple[int, ...], object]] | None = None,
@@ -1088,7 +1088,7 @@ def control_space(
             kinds.append(declared[name][0])
             boxes.append(None)
             continue
-        admits = {factor_names[f]: _admits(transition[f]) for f, _ in readers}
+        admits = {state_names[f]: _admits(transition[f]) for f, _ in readers}
         if box is None:
             floats_only = [r for r, a in admits.items() if LEVEL not in a]
             if floats_only:
@@ -1107,7 +1107,7 @@ def control_space(
         box = _fenced_box(name, box)
         levels_only = [r for r, a in admits.items() if FLOAT not in a]
         if levels_only:
-            readers_by = {factor_names[f]: _reader_name(transition[f]) for f, _ in readers}
+            readers_by = {state_names[f]: _reader_name(transition[f]) for f, _ in readers}
             raise ValueError(
                 f"control node {name!r} has a box in params.control, so it is continuous, and "
                 f"{ {r: readers_by[r] for r in levels_only} } read it as a level: the readers of "
@@ -1132,7 +1132,7 @@ def control_space(
                 )
             dim = boxes[k].dim
             widths = {
-                factor_names[f]: w
+                state_names[f]: w
                 for f, _ in readers
                 if (w := _float_width(table, transition[f], f, k, kinds)) is not None
             }
@@ -1146,7 +1146,7 @@ def control_space(
             sizes.append(dim)
             continue
         found = {
-            factor_names[f]: size
+            state_names[f]: size
             for f, pos in readers
             if (size := _level_axis(table, transition[f], f, pos, kinds)) is not None
         }
@@ -1160,7 +1160,7 @@ def control_space(
             if readers:
                 raise ValueError(
                     f"control node {name!r}: none of its readers "
-                    f"{[factor_names[f] for f, _ in readers]} carries an axis for it, so its "
+                    f"{[state_names[f] for f, _ in readers]} carries an axis for it, so its "
                     "level count is unknown"
                 )
             raise ValueError(

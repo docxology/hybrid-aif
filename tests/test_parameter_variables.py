@@ -57,7 +57,7 @@ def _system(**kwargs) -> System:
         controlled=(False, False),
         policy_len=2,
         modality_names=("oa", "ob"),
-        factor_names=("a", "b"),
+        state_names=("a", "b"),
         **kwargs,
     )
 
@@ -518,7 +518,7 @@ def _mission(sites: int = GRID.n_cells):
     system = System(
         A_deps=((0,),),
         B_deps=((), (0,)),
-        factor_names=("visit", "map"),
+        state_names=("visit", "map"),
         modality_names=("zone",),
         policy_len=2,
         planner="gradient",
@@ -577,7 +577,7 @@ def test_a_reader_whose_parents_do_not_match_the_homes_axes_names_reader_and_hom
         A_deps=((0,),),
         B_deps=((0, 1), (1,)),
         controlled=(False, False),
-        factor_names=("a", "b"),
+        state_names=("a", "b"),
         modality_names=("oa",),
         policy_len=1,
     )
@@ -883,7 +883,7 @@ def test_a_growable_factor_cannot_read_a_variable():
         A_deps=((0,),),
         B_deps=((),),
         controlled=(False,),
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=("o",),
         policy_len=1,
     )
@@ -909,7 +909,7 @@ def test_a_binding_that_rewrites_a_readers_control_axis_is_refused_not_applied()
         A_deps=((0,),),
         B_deps=((0,),),
         controlled=(True,),
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=("o",),
         policy_len=1,
     )
@@ -940,7 +940,7 @@ def _shared_across_kinds(order=("u", "v")):
         B_deps=((0,), (0,)),
         controlled=(False, False),
         policy_len=1,
-        factor_names=("s", "t"),
+        state_names=("s", "t"),
         modality_names=("os",),
     )
     params_t = SystemParams(
@@ -954,7 +954,7 @@ def _shared_across_kinds(order=("u", "v")):
         B_deps=((0,),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("z",),
+        state_names=("z",),
         modality_names=("o",),
     )
     params_o = SystemParams(
@@ -1033,7 +1033,7 @@ def test_a_variables_price_does_not_depend_on_the_order_of_its_readers():
             B_deps=tuple(deps[n] for n in names),
             controlled=(False,) * 3,
             policy_len=1,
-            factor_names=names,
+            state_names=names,
             modality_names=("o0", "o1", "o2"),
         )
         params = SystemParams(

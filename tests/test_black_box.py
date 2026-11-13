@@ -99,7 +99,8 @@ def test_a_black_box_is_a_system_of_ports_alone_with_its_types_marked():
     #  the types are held in-ports first, in node order, then out-ports, whatever the order given
     given = System(
         B_deps=((),),
-        factor_names=("u",),
+        state_names=(),
+        control_names=("u",),
         controls=(0,),
         action_names=(None,),
         emissions={"o": Emission((), "sample", BLACK_BOX)},
@@ -125,7 +126,8 @@ def test_the_constructor_refuses_what_is_not_a_set_of_typed_ports():
     with pytest.raises(ValueError, match="a black box states nothing but its ports"):
         System(
             B_deps=((), ()),
-            factor_names=("x", "u"),
+            state_names=("x",),
+            control_names=("u",),
             controls=(1,),
             action_names=(None,),
             black_box={"u": (LEVEL, 2)},
@@ -136,7 +138,8 @@ def test_the_constructor_refuses_what_is_not_a_set_of_typed_ports():
     with pytest.raises(ValueError, match="has no record|names parents"):
         System(
             B_deps=((),),
-            factor_names=("u",),
+            state_names=(),
+            control_names=("u",),
             controls=(0,),
             action_names=(None,),
             emissions={"o": Emission(("u",), "sample", BLACK_BOX)},
@@ -424,7 +427,7 @@ def test_env_step_is_the_wrapped_environment_bitwise_on_the_same_keys():
         A_deps=((0,),),
         B_deps=((0,),),
         controlled=(True,),
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("see",),
         policy_len=1,
     )

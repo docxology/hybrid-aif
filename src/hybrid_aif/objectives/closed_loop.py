@@ -167,7 +167,7 @@ def coverage(
     obs_targets: Mapping[str, object],
     control_targets: tuple[ControlTarget, ...],
     decomposition: str,
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     modality_names: tuple[str, ...],
     space: ControlSpace,
     c_deps: Mapping[str, tuple[tuple[str, int], ...]] | None = None,
@@ -182,7 +182,7 @@ def coverage(
     not covered and keep their scoring. A per-step target conditional on control nodes
     (``c_deps``, a :class:`~hybrid_aif.distributions.ConditionalGaussian`) is covered with a
     precision per level, taken at each step's level."""
-    facs, mods = factor_names, modality_names
+    facs, mods = state_names, modality_names
     where = 'System(feedback="linear_quadratic")'
     targets: list[_Target] = []
     covered: set[int] = set()

@@ -38,7 +38,8 @@ def _tmaze_native(**kw) -> System:
     return System(
         A_deps=((0,), (0, 1), (0, 1)),
         B_deps=((0, 2), (1,), ()),
-        factor_names=("location", "context", "u_location"),
+        state_names=("location", "context"),
+        control_names=("u_location",),
         modality_names=("location_obs", "reward", "cue"),
         controls=(2,),
         action_names=("a_location",),
@@ -60,7 +61,8 @@ def test_shared_control_toys_twins():
         policy_len=2,
         epistemic=True,
         modality_names=("who_obs",),
-        factor_names=("help", "who", "pose", "u_help"),
+        state_names=("help", "who", "pose"),
+        control_names=("u_help",),
         controls=(3,),
         action_names=("a_help",),
     )
@@ -72,7 +74,8 @@ def test_shared_control_toys_twins():
         policy_len=2,
         epistemic=True,
         modality_names=("who_obs",),
-        factor_names=("help", "mode", "who", "u_help", "u_mode"),
+        state_names=("help", "mode", "who"),
+        control_names=("u_help", "u_mode"),
         controls=(3, 4),
         action_names=("a_help", "a_mode"),
     )
@@ -85,7 +88,8 @@ def test_mlp_transition_twin():
         A_deps=(),
         B_deps=((1,), ()),
         policy_len=1,
-        factor_names=("x", "u_x"),
+        state_names=("x",),
+        control_names=("u_x",),
         epistemic=False,
         controls=(1,),
         action_names=("a_x",),
@@ -97,19 +101,20 @@ def test_continuous_control_twin():
     sugar, params = tiny_rssm(
         2, 1, key=jax.random.PRNGKey(0), units=4, deter=8, num_vars=3, num_classes=4
     )
-    names = (*sugar.factor_names[:2], "u_" + sugar.factor_names[0])
+    names = (*sugar.state_names[:2], "u_" + sugar.state_names[0])
     assert set(params.control) == {names[2]}  # the box lives in params, keyed by the node
-    assert sugar.factor_names == names
+    assert sugar.node_names == names
     native = System(
         A_deps=sugar.A_deps,
         B_deps=((1, 2), (0,), ()),
         policy_len=sugar.policy_len,
         planner="cem",
         epistemic=False,
-        factor_names=names,
+        state_names=names[:2],
+        control_names=names[2:],
         modality_names=sugar.modality_names,
         controls=(2,),
-        action_names=("a_" + sugar.factor_names[0],),
+        action_names=("a_" + sugar.state_names[0],),
         recognition=sugar.recognition,
     )
     _same(sugar, native)
@@ -145,9 +150,10 @@ def test_shared_wiring_reads_back():
 
 def test_generated_names():
     s = System(B_deps=((), ()), controlled=(True, False), policy_len=1)
-    assert s.factor_names == ("factor_0", "factor_1", "u_factor_0")
+    assert s.node_names == ("factor_0", "factor_1", "u_factor_0")
+    assert s.state_names == ("factor_0", "factor_1") and s.control_names == ("u_factor_0",)
     assert s.modality_names == ()
-    assert dataclasses.replace(s, gamma=2.0).factor_names == s.factor_names
+    assert dataclasses.replace(s, gamma=2.0).node_names == s.node_names
 
 
 def test_replace_with_sugar_on_nodes_raises():
@@ -155,8 +161,8 @@ def test_replace_with_sugar_on_nodes_raises():
     assert dataclasses.replace(s, planner="sophisticated", branch_on=("cue",)).controls == (2,)
     with pytest.raises(ValueError, match="construct the System afresh"):
         dataclasses.replace(s, controlled=(True, False))
-    with pytest.raises(ValueError, match="factor_names=None on a System with control nodes"):
-        dataclasses.replace(s, factor_names=None)
+    with pytest.raises(ValueError, match="control_names=None on a System with control nodes"):
+        dataclasses.replace(s, control_names=None)
 
 
 def test_sugar_validation_sentences():
@@ -164,7 +170,7 @@ def test_sugar_validation_sentences():
         System(
             B_deps=((), ()),
             controlled=(True, False),
-            factor_names=("a", "u_a"),
+            state_names=("a", "u_a"),
             policy_len=1,
         )
     with pytest.raises(ValueError, match="give one declaration or the other"):
@@ -172,7 +178,7 @@ def test_sugar_validation_sentences():
             B_deps=((1,), ()),
             controlled=(True, False),
             controls=(1,),
-            factor_names=("a", "u_a"),
+            state_names=("a", "u_a"),
             policy_len=1,
         )
     #  a node no factor reads is admitted at construction, since a target, a modality over its
@@ -180,7 +186,8 @@ def test_sugar_validation_sentences():
     unread = System(
         B_deps=((), ()),
         controls=(1,),
-        factor_names=("a", "u_go"),
+        state_names=("a",),
+        control_names=("u_go",),
         action_names=("go",),
         policy_len=1,
     )
@@ -296,7 +303,8 @@ def _tmaze_variant(B_deps, location_table, context_table):
     native = System(
         A_deps=sugar.A_deps,
         B_deps=B_deps,
-        factor_names=sugar.factor_names,
+        state_names=sugar.state_names,
+        control_names=sugar.control_names,
         modality_names=sugar.modality_names,
         controls=(2,),
         action_names=sugar.action_names,
@@ -381,12 +389,13 @@ def _shared_pair():
         B_deps=((0,), (1,)),
         controlled=(True, False),
         B_control_deps=((0,), (0,)),
-        factor_names=("a", "b"),
+        state_names=("a", "b"),
         **common,
     )
     native = System(
         B_deps=((0, 2), (2, 1), ()),
-        factor_names=("a", "b", "u_u"),
+        state_names=("a", "b"),
+        control_names=("u_u",),
         controls=(2,),
         action_names=("u",),
         **common,
@@ -458,7 +467,8 @@ def test_timing_a_control_parent_moves_its_reader_next_step_an_echo_a_tick_later
     copy_state = jnp.log(jnp.eye(2) + 1e-9)  # (child, parent)
     system = System(
         B_deps=((3,), (3,), (1,), ()),
-        factor_names=("x", "echo", "y", "u_u"),
+        state_names=("x", "echo", "y"),
+        control_names=("u_u",),
         controls=(3,),
         action_names=("u",),
         policy_len=1,
@@ -529,7 +539,7 @@ def test_composite_control_nodes_are_namespaced_like_any_node():
 
     composite, cp = merged()
     assert composite.names.controls == ("agent.u_location",)
-    assert "agent.u_location" in composite.factor_names
+    assert "agent.u_location" in composite.node_names
     action, _, _ = composite.act(jax.random.PRNGKey(0), cp, composite.initial_priors(cp))
     assert list(action) == ["agent.a_location"]
     native, q = _tmaze_variant(((2, 0), (1,), ()), lambda t: jnp.swapaxes(t, 1, 2), lambda t: t)[2:]
@@ -634,22 +644,24 @@ def test_a_controlled_factor_whose_control_nobody_reads_is_refused_in_sugar_term
             B_deps=((), ()),
             controlled=(True, True),
             B_control_deps=((0,), (0,)),
-            factor_names=("a", "b"),
+            state_names=("a", "b"),
             policy_len=1,
         )
 
 
 def test_sugar_sentences_name_counts_and_the_face():
-    with pytest.raises(ValueError, match=r"factor_names has 1 name\(s\) for the 2 factor\(s\)"):
+    with pytest.raises(
+        ValueError, match=r"state_names has 1 name\(s\) for the 2 state factor\(s\)"
+    ):
         System(
             B_deps=((), ()),
             controlled=(True, True),
             B_control_deps=((0, 3), (1,)),
-            factor_names=("a",),
+            state_names=("a",),
             policy_len=1,
         )
     s, _ = tmaze_system(policy_len=2)
-    with pytest.raises(ValueError, match="construct the System afresh with one name per node"):
+    with pytest.raises(ValueError, match=r"state_names has 2 name\(s\) for 1 state factor\(s\)"):
         dataclasses.replace(s, B_deps=((0,), (1,)))
     native, q = _tmaze_variant(((2, 0), (1,), ()), lambda t: jnp.swapaxes(t, 1, 2), lambda t: t)[2:]
     with pytest.raises(NotImplementedError, match="^describe: |^random_policy: "):

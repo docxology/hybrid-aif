@@ -123,7 +123,7 @@ def test_a_nonlinear_factor_marks_its_readers_and_their_modalities():
         A=(_lgo(), _lgo()),
         B_deps=((), (0,), ()),
         A_deps=((1,), (2,)),
-        factor_names=("x", "y", "w"),
+        state_names=("x", "y", "w"),
         modality_names=("sees_y", "sees_w"),
     )
     assert amap.factors == {"x": True, "y": True, "w": False}
@@ -138,7 +138,7 @@ def test_the_status_follows_a_chain_in_any_declaration_order():
         A=(),
         B_deps=((1,), (2,), ()),
         A_deps=(),
-        factor_names=("a", "b", "c"),
+        state_names=("a", "b", "c"),
         modality_names=(),
     )
     assert amap.factors == {"a": True, "b": True, "c": True}
@@ -151,7 +151,7 @@ def test_a_neural_modality_over_a_linear_factor_is_approximate_alone():
         A=(neural, _lgo()),
         B_deps=((),),
         A_deps=((0,), (0,)),
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("image", "gps"),
     )
     assert amap.factors == {"x": False}
@@ -166,7 +166,7 @@ def _two_factor(pose_decl):
     system = System(
         B_deps=((), ()),
         controlled=(True, False),
-        factor_names=("pose", "z"),
+        state_names=("pose", "z"),
         A_deps=((0,), (1,)),
         modality_names=("gps", "alt"),
         policy_len=2,
@@ -298,7 +298,7 @@ def test_a_neural_modality_over_categorical_parents_alone_is_not_approximate():
         A=(neural, MLPConditional.from_shapes((1,), 2, key=KEY, width=4, depth=1)),
         B_deps=((0,), ()),
         A_deps=((0,), (1,)),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         modality_names=("over_mode", "over_x"),
     )
     assert amap.modalities == {"over_mode": False, "over_x": True}

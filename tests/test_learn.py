@@ -53,7 +53,7 @@ def _sense_system(ns=3, no=4, nu=2, seed=5, conc=2.0, **system_kwargs):
         controlled=(True,),
         policy_len=1,
         modality_names=("sense", "ident"),
-        factor_names=("s",),
+        state_names=("s",),
         **system_kwargs,
     )
     params = SystemParams(
@@ -179,7 +179,7 @@ def test_transition_kernel_parity():
         B_deps=((0,),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={},
@@ -457,7 +457,7 @@ def test_tick_zero_traced_rate_in_scan():
         controlled=(True,),
         policy_len=1,
         modality_names=("ident",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={"ident": _near_identity(ns)},
@@ -543,7 +543,7 @@ def test_active_learnable_transition_requires_prev_beliefs_and_action():
         controlled=(True,),
         policy_len=1,
         modality_names=("ident",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={"ident": _near_identity(ns)},
@@ -576,7 +576,7 @@ def _d_slot_system(ns=3):
         controlled=(False,),
         policy_len=1,
         modality_names=("ident",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={"ident": _near_identity(ns)},
@@ -626,7 +626,7 @@ def test_hierarchical_learnable_prior_validates_but_update_is_step_4():
         policy_len=1,
         D_deps=((), (0,)),
         modality_names=("m0", "m1"),
-        factor_names=("ctx", "s"),
+        state_names=("ctx", "s"),
     )
     params = SystemParams(
         likelihood={"m0": _near_identity(ns0), "m1": _near_identity(ns1)},

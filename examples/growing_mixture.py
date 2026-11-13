@@ -73,7 +73,7 @@ def _model(loc, weights, growth=None, scale: float = 1.0, strength: float = 0.1)
         controlled=(False,),
         policy_len=1,
         modality_names=("point",),
-        factor_names=("z",),
+        state_names=("z",),
         epistemic=False,
     )
     k = len(weights)

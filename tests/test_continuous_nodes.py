@@ -62,7 +62,8 @@ def _native_continuous():
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("u",),
-        factor_names=("x", "u_u"),
+        state_names=("x",),
+        control_names=("u_u",),
         policy_len=2,
         planner="gradient",
         epistemic=False,
@@ -104,7 +105,8 @@ def test_readers_that_disagree_on_kind_or_dimension_are_refused():
         B_deps=((2,), (2,), ()),
         controls=(2,),
         action_names=("u",),
-        factor_names=("s", "x", "u_u"),
+        state_names=("s", "x"),
+        control_names=("u_u",),
         policy_len=1,
         epistemic=False,
     )
@@ -123,7 +125,8 @@ def test_readers_that_disagree_on_kind_or_dimension_are_refused():
         B_deps=((2,), (2,), ()),
         controls=(2,),
         action_names=("u",),
-        factor_names=("a", "b", "u_u"),
+        state_names=("a", "b"),
+        control_names=("u_u",),
         policy_len=1,
         epistemic=False,
     )
@@ -220,7 +223,8 @@ def test_a_factor_reads_a_discrete_mode_node_and_a_continuous_input():
         B_deps=((1, 2), (), ()),
         controls=(1, 2),
         action_names=("d", "c"),
-        factor_names=("x", "u_d", "u_c"),
+        state_names=("x",),
+        control_names=("u_d", "u_c"),
         policy_len=1,
         epistemic=False,
     )
@@ -284,7 +288,7 @@ def test_a_discrete_control_shared_with_an_lg_factor():
         B_deps=((0,), (0,)),
         controlled=(True, False),
         B_control_deps=((0,), (0,)),
-        factor_names=("s", "x"),
+        state_names=("s", "x"),
         policy_len=1,
         epistemic=False,
         mixture_k=4,
@@ -322,7 +326,8 @@ def test_a_native_discrete_node_read_by_an_lg_factor_at_any_position():
         B_deps=((0,), (2, 0), ()),
         controls=(2,),
         action_names=("u",),
-        factor_names=("s", "x", "u_u"),
+        state_names=("s", "x"),
+        control_names=("u_u",),
         policy_len=1,
         epistemic=False,
         mixture_k=4,
@@ -358,7 +363,8 @@ def _two_readers():
         B_deps=((2,), (2,), ()),
         controls=(2,),
         action_names=("u",),
-        factor_names=("x", "y", "u_u"),
+        state_names=("x", "y"),
+        control_names=("u_u",),
         policy_len=2,
         planner="gradient",
         epistemic=False,
@@ -421,7 +427,8 @@ def test_a_neural_transition_reads_a_discrete_node_as_its_one_hot_anywhere(wirin
             B_deps=((2,), (2,), ()),
             controls=(2,),
             action_names=("u",),
-            factor_names=("s", "y", "u_u"),
+            state_names=("s", "y"),
+            control_names=("u_u",),
             policy_len=1,
             epistemic=False,
         )
@@ -430,7 +437,7 @@ def test_a_neural_transition_reads_a_discrete_node_as_its_one_hot_anywhere(wirin
             B_deps=((), ()),
             controlled=(True, False),
             B_control_deps=((0,), (0,)),
-            factor_names=("s", "y"),
+            state_names=("s", "y"),
             policy_len=1,
             epistemic=False,
         )
@@ -563,7 +570,8 @@ def test_a_net_reading_a_discrete_and_a_continuous_node_finds_each_slot(order):
         B_deps=((2,), ((3, 2) if cont_first else (2, 3)), (), ()),
         controls=(2, 3),
         action_names=("d", "c"),
-        factor_names=("s", "y", "u_d", "u_c"),
+        state_names=("s", "y"),
+        control_names=("u_d", "u_c"),
         policy_len=1,
         epistemic=False,
     )
@@ -595,7 +603,7 @@ def test_a_net_reading_a_discrete_and_a_continuous_node_finds_each_slot(order):
 def test_an_undeclared_table_axis_is_refused_at_every_face():
     """A table carrying a parent axis its factor does not declare would be read at level 0;
     prediction and the generative process refuse it, as validation does."""
-    system = System(B_deps=((),), factor_names=("s",), policy_len=1)
+    system = System(B_deps=((),), state_names=("s",), policy_len=1)
     params = SystemParams(
         transition={"s": ConditionalCategorical(log_table=jnp.zeros((2, 2)), parent_ndims=1)},
         initial_state_prior={"s": Categorical(logits=jnp.zeros(2))},

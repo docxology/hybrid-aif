@@ -92,7 +92,7 @@ def shared_model(
         A_deps=A_deps,
         epistemic=epistemic,
         modality_names=("who_obs",),
-        factor_names=names,
+        state_names=names,
         B_control_deps=control_deps,
     )
     if flat:  # the same model the pymdp way: who owns a second control, kept equal to help's
@@ -119,7 +119,7 @@ def _redeclared(**overrides) -> System:
         A_deps=((WHO,),),
         epistemic=False,
         modality_names=("who_obs",),
-        factor_names=("help", "who"),
+        state_names=("help", "who"),
         B_control_deps=((HELP,), (HELP,)),
     )
     return System(**{**declared, **overrides})
@@ -301,7 +301,7 @@ def test_the_default_is_bitwise_the_explicit_own_control_entry():
         gamma=16.0,
         epistemic=True,
         modality_names=("location_obs", "reward", "cue"),
-        factor_names=("location", "context"),
+        state_names=("location", "context"),
         B_control_deps=((0,), ()),
     )
     beliefs = _kb(system, _initial_beliefs(system, params))
@@ -541,7 +541,7 @@ def two_control_model(
         epistemic=epistemic,
         terms=terms,
         modality_names=("who_obs",),
-        factor_names=("help", "mode", "who"),
+        state_names=("help", "mode", "who"),
         B_control_deps=((0,), (MODE,), (0, MODE)),
     )
     params = SystemParams(
@@ -741,7 +741,7 @@ def _hybridize(declared, params, beliefs):
             "controlled": (*declared["controlled"], False),
             "A_deps": (*declared["A_deps"], (n,)),
             "modality_names": (*declared["modality_names"], "drift_obs"),
-            "factor_names": (*declared["factor_names"], "drift"),
+            "state_names": (*declared["state_names"], "drift"),
             "B_control_deps": None if bcd is None else (*bcd, ()),
         }
     )

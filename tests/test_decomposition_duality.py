@@ -189,7 +189,7 @@ def _switching():
         policy_len=2,
         mixture_k=2,
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     x0 = MixtureGaussian(
         log_weights=jnp.log(jnp.asarray([0.4, 0.6])),
@@ -247,7 +247,7 @@ def _two_sensors(**overrides):
         controlled=(True,),
         policy_len=2,
         modality_names=("gps", "range", "tilt"),
-        factor_names=("pos",),
+        state_names=("pos",),
     )
     system = System(**{**defaults, **overrides})
     params = SystemParams(
@@ -710,7 +710,7 @@ def test_a_neural_channel_carries_an_information_gain_leaf():
         controlled=(True,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=("x",),
     )
     params = SystemParams(

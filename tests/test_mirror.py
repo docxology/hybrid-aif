@@ -58,9 +58,18 @@ def test_every_modality_becomes_an_emission_of_the_same_name_and_the_dynamics_ar
     assert world.modality_names == () and world.A_deps == ()
     assert world.names.emissions == system.modality_names
     for m, deps in zip(system.modality_names, system.A_deps, strict=True):
-        parents = tuple(system.factor_names[g] for g in deps)
+        parents = tuple(system.node_names[g] for g in deps)
         assert dict(world.emissions)[m] == Emission(parents, "sample")
-    for name in ("B_deps", "D_deps", "controls", "factor_names", "action_names", "dims", "cells"):
+    for name in (
+        "B_deps",
+        "D_deps",
+        "controls",
+        "state_names",
+        "control_names",
+        "action_names",
+        "dims",
+        "cells",
+    ):
         assert getattr(world, name) == getattr(system, name)
     for m in system.modality_names:
         np.testing.assert_array_equal(
@@ -108,7 +117,7 @@ def _shared_table_system():
         controlled=(True,),
         policy_len=1,
         modality_names=("a", "b"),
-        factor_names=("s",),
+        state_names=("s",),
         epistemic=False,
     )
     home = ConditionalDirichlet(

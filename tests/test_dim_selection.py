@@ -49,7 +49,7 @@ def _system(**overrides):
         controlled=(True,),
         policy_len=2,
         modality_names=("gps", "pile"),
-        factor_names=("pose",),
+        state_names=("pose",),
         dims={"pose": NAMES},
         planning_belief="posterior",
         epistemic=("pose:b1",),
@@ -260,7 +260,7 @@ def _two_factor_system(**overrides):
         controlled=(True, False),
         policy_len=2,
         modality_names=("gps", "pile", "alt"),
-        factor_names=("pose", "z"),
+        state_names=("pose", "z"),
         dims={"pose": NAMES},
         decomposition="risk_ambiguity",
     )
@@ -411,7 +411,7 @@ def test_dims_on_a_control_node_is_refused():
 @pytest.mark.parametrize("name", ["likelihood", "obs", "transition"])
 def test_a_factor_named_after_a_kind_word_is_refused(name):
     with pytest.raises(ValueError, match="reserved"):
-        _system(factor_names=(name,), dims={}, epistemic=True)
+        _system(state_names=(name,), dims={}, epistemic=True)
 
 
 def test_dims_are_stored_hashably_in_factor_order():
@@ -513,7 +513,8 @@ def test_a_belief_valued_control_beside_a_constant_plans_finitely():
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("u",),
-        factor_names=("x", "u_u"),
+        state_names=("x",),
+        control_names=("u_u",),
         policy_len=2,
         planner="gradient",
         epistemic=False,

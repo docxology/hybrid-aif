@@ -53,7 +53,7 @@ def _model(shared_noise=False, **overrides):
         controlled=(True, True, False),
         policy_len=4,
         modality_names=("cue", "gps", "alt", "speed"),
-        factor_names=("ctx", "pos", "vel"),
+        state_names=("ctx", "pos", "vel"),
         epistemic=True,
         **overrides,
     )

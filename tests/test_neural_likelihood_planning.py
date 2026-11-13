@@ -119,7 +119,8 @@ def _unit_system(planner="gradient", **overrides):
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("u",),
-        factor_names=("x", "u_x"),
+        state_names=("x",),
+        control_names=("u_x",),
         modality_names=("y",),
         policy_len=4,
         planner=planner,
@@ -220,7 +221,7 @@ def _mixture_system(**overrides):
         mixture_k=K,
         mixture_schedule="mode_aligned",
         modality_names=("img",),
-        factor_names=("terrain", "x"),
+        state_names=("terrain", "x"),
         **overrides,
     )
 
@@ -481,7 +482,7 @@ def test_a_neural_modality_over_two_continuous_factors_is_refused_by_name():
         controlled=(True, False),
         policy_len=1,
         modality_names=("img",),
-        factor_names=("pose", "light"),
+        state_names=("pose", "light"),
     )
     transition = {
         "pose": LinearGaussianTransition(
@@ -538,7 +539,7 @@ def _categorical_model(likelihood, decomposition):
         controlled=(True,),
         policy_len=2,
         modality_names=("img",),
-        factor_names=("z",),
+        state_names=("z",),
         decomposition=decomposition,
     )
     params = SystemParams(

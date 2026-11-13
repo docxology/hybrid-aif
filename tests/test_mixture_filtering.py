@@ -71,7 +71,7 @@ def make_system(**overrides):
         mixture_k=4,
         mixture_schedule="mode_aligned",
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     return System(**{**defaults, **overrides})
 
@@ -289,7 +289,7 @@ def test_default_schedule_is_runnalls_and_still_raises():
         policy_len=1,
         mixture_k=4,
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     assert default.mixture_schedule == "runnalls"
     with pytest.raises(NotImplementedError, match="mode_aligned"):
@@ -332,7 +332,7 @@ def test_mixture_factor_without_mode_parent_conditions_but_no_message():
         mixture_k=4,
         mixture_schedule="mode_aligned",
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
     )
     # uncontrolled parentless LG transition: trivial (1,) innovation parent axis.
     innov = ConditionalGaussian(loc=jnp.zeros((1, 1)), chol=jnp.asarray([[[0.3]]]), parent_ndims=1)

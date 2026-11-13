@@ -173,7 +173,8 @@ def _two_node_model():
         B_deps=((2,), (3,), (), ()),
         controls=(2, 3),
         action_names=("a", "b"),
-        factor_names=("x", "z", "u", "v"),
+        state_names=("x", "z"),
+        control_names=("u", "v"),
     )
     likelihood = dataclasses.replace(
         params.likelihood["y"],

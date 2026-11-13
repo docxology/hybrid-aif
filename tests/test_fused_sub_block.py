@@ -58,7 +58,7 @@ def _model(**overrides):
         controlled=(True, False),
         policy_len=STEPS,
         modality_names=CHANNELS,
-        factor_names=("pose", "z"),
+        state_names=("pose", "z"),
         dims={"pose": NAMES},
         epistemic=("pose:x", "pose:y", "pose:yaw", "z"),
         **overrides,

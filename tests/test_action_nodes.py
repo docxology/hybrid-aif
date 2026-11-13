@@ -60,7 +60,8 @@ def pusher(kernel=None, feel=None, noise: float = 0.05):
         B_deps=((0, 1), ()),
         controls=(1,),
         action_names=("push",),
-        factor_names=("x", "u_push"),
+        state_names=("x",),
+        control_names=("u_push",),
         modality_names=("see", "feel") if sensed else ("see",),
         policy_len=1,
         epistemic=False,
@@ -98,23 +99,26 @@ def test_action_nodes_sit_in_names_beside_their_control_nodes():
 def test_a_native_control_node_and_its_action_node_are_named_freely():
     common = dict(B_deps=((0, 1), ()), controls=(1,), policy_len=1)
     with pytest.raises(ValueError, match=r"declared without action nodes: pass action_names="):
-        System(**common, factor_names=("x", "u_push"))
-    free = System(**common, factor_names=("x", "go"), action_names=("move",))
+        System(**common, state_names=("x",), control_names=("u_push",))
+    free = System(**common, state_names=("x",), control_names=("go",), action_names=("move",))
     assert free.names.controls == ("go",) and free.names.actions == ("move",)
     with pytest.raises(ValueError, match=r"action_names has 2 name\(s\) for 1 control node"):
-        System(**common, factor_names=("x", "u_push"), action_names=("push", "pull"))
+        System(
+            **common, state_names=("x",), control_names=("u_push",), action_names=("push", "pull")
+        )
     with pytest.raises(ValueError, match=r"action_names \['x'\] are also factor or modality"):
-        System(**common, factor_names=("x", "u_x"), action_names=("x",))
+        System(**common, state_names=("x",), control_names=("u_x",), action_names=("x",))
     with pytest.raises(ValueError, match="for a System with no control nodes"):
         System(B_deps=((),), action_names=("push",), policy_len=1)
     with pytest.raises(ValueError, match="the sugar names each controlled factor's action node"):
         System(B_deps=((),), controlled=(True,), action_names=("push",), policy_len=1)
     #  the sugar's pair is a native declaration too: the built Systems are one
-    sugar = System(B_deps=((0,),), controlled=(True,), factor_names=("x",), policy_len=1)
+    sugar = System(B_deps=((0,),), controlled=(True,), state_names=("x",), policy_len=1)
     twin = System(
         B_deps=((0, 1), ()),
         controls=(1,),
-        factor_names=("x", "u_x"),
+        state_names=("x",),
+        control_names=("u_x",),
         action_names=("a_x",),
         policy_len=1,
     )
@@ -349,7 +353,7 @@ def test_a_modality_on_the_action_node_updates_its_belief_by_the_likelihood():
 
 def _source():
     """An uncontrolled three-level state ``s`` that cycles."""
-    system = System(B_deps=((0,),), controlled=(False,), factor_names=("s",), policy_len=1)
+    system = System(B_deps=((0,),), controlled=(False,), state_names=("s",), policy_len=1)
     table = jnp.roll(jnp.eye(3), 1, axis=0)[..., None] * 0.9 + 0.1 / 3
     params = SystemParams(
         transition={"s": ConditionalCategorical(log_table=jnp.log(table), parent_ndims=2)},
@@ -550,22 +554,28 @@ def test_a_declared_kernel_leaves_every_planning_face_unchanged():
 def test_malformed_action_names_are_refused():
     common = dict(B_deps=((0, 1, 2), (), ()), controls=(1, 2), policy_len=1)
     with pytest.raises(ValueError, match=r"action_names repeats \['go'\]"):
-        System(**common, factor_names=("x", "u_go", "u_stop"), action_names=("go", "go"))
+        System(
+            **common,
+            state_names=("x",),
+            control_names=("u_go", "u_stop"),
+            action_names=("go", "go"),
+        )
     one = dict(B_deps=((0, 1), ()), controls=(1,), policy_len=1)
     with pytest.raises(ValueError, match=r"action_names \['see'\] are also factor or modality"):
         System(
             **one,
             A_deps=((0,),),
             modality_names=("see",),
-            factor_names=("x", "u_see"),
+            state_names=("x",),
+            control_names=("u_see",),
             action_names=("see",),
         )
     with pytest.raises(ValueError, match=r"action_names \[''\] have an empty name"):
-        System(**one, factor_names=("x", "u_"), action_names=("",))
+        System(**one, state_names=("x",), control_names=("u_",), action_names=("",))
     #  a native pair is named freely; the u_ prefix is the sugar's convention only
-    assert System(**one, factor_names=("x", "q_x"), action_names=("a_x",)).names.controls == (
-        "q_x",
-    )
+    assert System(
+        **one, state_names=("x",), control_names=("q_x",), action_names=("a_x",)
+    ).names.controls == ("q_x",)
 
 
 def _hybrid_sensed():
@@ -578,7 +588,8 @@ def _hybrid_sensed():
         B_deps=((0, 2), (), ()),
         controls=(2,),
         action_names=("go",),
-        factor_names=("s", "x", "u_go"),
+        state_names=("s", "x"),
+        control_names=("u_go",),
         modality_names=("feel",),
         policy_len=1,
         epistemic=False,

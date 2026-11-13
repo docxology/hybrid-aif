@@ -329,7 +329,8 @@ def test_a_code_declared_before_its_within_step_parent_is_refused():
     system, params = _tiny()
     reversed_system = dataclasses.replace(
         system,
-        factor_names=("stoch", "deter", "u_deter"),
+        state_names=("stoch", "deter"),
+        control_names=("u_deter",),
         #  stoch <- deter_t, deter <- stoch_{t-1} and its control node: now stoch is first
         B_deps=((1,), (0, 2), ()),
         controls=(2,),
@@ -569,7 +570,7 @@ def test_a_half_amortized_declaration_fails_at_the_declaration():
         B_deps=((),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("stoch",),
+        state_names=("stoch",),
         recognition=(Recognition("stoch", ()),),
     )
     with pytest.raises(ValueError, match="parent_dims"):
@@ -592,7 +593,7 @@ def test_a_half_amortized_declaration_fails_at_the_declaration():
             B_deps=((),),
             controlled=(False,),
             policy_len=1,
-            factor_names=("x",),
+            state_names=("x",),
             recognition=(Recognition("x", ()),),
         )._validate(
             SystemParams(
@@ -632,7 +633,7 @@ def _tabular_system(recognition=(), **kwargs):
         B_deps=((),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         recognition=recognition,
         **kwargs,
     )
@@ -652,7 +653,7 @@ def test_routing_is_decided_by_carries_and_codes_only():
     params = dataclasses.replace(params, recognition={"x": module})
     assert not system._is_amortized(params)
     assert not System(
-        A_deps=(), B_deps=((),), controlled=(False,), policy_len=1, factor_names=("x",)
+        A_deps=(), B_deps=((),), controlled=(False,), policy_len=1, state_names=("x",)
     )._is_amortized(params)
 
 
@@ -678,7 +679,7 @@ def test_the_mixed_case_keeps_its_refusal_and_points_to_r1():
         B_deps=((), ()),
         controlled=(False, False),
         policy_len=1,
-        factor_names=("c", "x"),
+        state_names=("c", "x"),
     )
     _, tab = _tabular_system()
     params = SystemParams(

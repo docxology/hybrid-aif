@@ -51,7 +51,7 @@ def switching(**system_overrides):
                 policy_len=2,
                 mixture_k=4,
                 modality_names=(),
-                factor_names=("mode", "x"),
+                state_names=("mode", "x"),
             ),
             **system_overrides,
         }
@@ -88,7 +88,7 @@ def test_declaration_order_error_prints_a_valid_order():
         policy_len=2,
         mixture_k=4,
         modality_names=(),
-        factor_names=("x", "mode"),
+        state_names=("x", "mode"),
     )
     with pytest.raises(ValueError, match=r"valid declaration order is: \('mode', 'x'\)"):
         system.planner_context(params, beliefs(system, params))
@@ -187,7 +187,7 @@ def _lg_targeted(target):
         policy_len=2,
         mixture_k=4,
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     params = SystemParams(
         likelihood={

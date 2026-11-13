@@ -633,13 +633,32 @@ class Ports(NamedTuple):
     outs: dict[str, tuple[str, int]]
 
 
-class System(eqx.Module):
+class _SystemMeta(type(eqx.Module)):
+    """The System's metaclass: a call that names the nodes with one combined keyword is refused
+    with a sentence naming the keywords that declare the nodes' names."""
+
+    def __call__(cls, *args, **kwargs):
+        if "factor_names" in kwargs:
+            raise TypeError(
+                "System() got the keyword factor_names, which is not a System keyword: the "
+                "nodes' names are declared as state_names= (the state factors', in order) and "
+                "control_names= (the control nodes', in controls order), beside modality_names=. "
+                "A factor_names tuple splits in two: its first len(B_deps) - len(controls) "
+                "entries are state_names, and the control nodes' names after them are "
+                "control_names"
+            )
+        return super().__call__(*args, **kwargs)
+
+
+class System(eqx.Module, metaclass=_SystemMeta):
     """Static structure of a System: discrete, continuous or mixed.
 
     Every field is static; a table with field defaults and meanings is in
     ``docs/composing-systems.md``. A System's variables are its *nodes*: the state factors first,
     then the **control nodes**, which the System sets by decision (``controls`` gives their node
-    indices). ``B_deps``, ``factor_names``, ``D_deps`` and ``H_deps`` have one entry per node;
+    indices). ``state_names`` names the state factors and ``control_names`` the control nodes;
+    :attr:`node_names` is the two in node order. ``B_deps``, ``D_deps`` and ``H_deps`` have one
+    entry per node;
     ``A_deps`` has one entry per modality, listing the state factors it observes. A transition
     reads its state parents from the previous step and its control parents at the step the control
     is chosen; a control node's levels are its readers' table axes. ``epistemic`` names variables:
@@ -662,7 +681,7 @@ class System(eqx.Module):
     - the graph: ``B_deps``, ``A_deps``, ``D_deps``, ``H_deps``, ``C_deps``, ``cells``,
       ``controls``, ``action_names``, ``emissions``, ``observes``, ``black_box``, and the sugar
       ``controlled`` and ``B_control_deps``;
-    - names: ``factor_names``, ``modality_names``, ``dims``;
+    - names: ``state_names``, ``control_names``, ``modality_names``, ``dims``;
     - planning and the objective: ``policy_len``, ``planner``, ``gamma``, ``decomposition``,
       ``epistemic``, ``terms``, ``scoring``, ``branch_on``, ``planning_belief``, ``feedback``;
     - inference: ``num_iters``, ``mixture_k``, ``mixture_schedule``, ``recognition``,
@@ -770,12 +789,18 @@ class System(eqx.Module):
     #: ``modality_{m}``. These are the keys of ``SystemParams.likelihood``, ``obs_targets`` and the
     #: term tree.
     modality_names: tuple[str, ...] = eqx.field(static=True, default=None)
-    #: One name per node (state factors, then control nodes), in node order; ``None`` at
-    #: construction fills in ``factor_{i}`` (and ``u_factor_{i}`` for the sugar's nodes). With
-    #: ``modality_names``, the single source of names and order: keys in ``SystemParams``, targets
-    #: and rate maps refer to them and are validated at every face. No node is named after a
-    #: reserved first segment of the key grammar (``obs`` or a slot word).
-    factor_names: tuple[str, ...] = eqx.field(static=True, default=None)
+    #: One name per state factor, in node order; ``None`` at construction fills in ``factor_{i}``
+    #: for state factor ``i``. With ``control_names`` and ``modality_names``, the single source of
+    #: names and order: keys in ``SystemParams``, targets and rate maps refer to them and are
+    #: validated at every face. No node is named after a reserved first segment of the key
+    #: grammar (``obs`` or a slot word).
+    state_names: tuple[str, ...] = eqx.field(static=True, default=None)
+    #: One name per control node, in ``controls`` order; ``None`` at construction fills in the
+    #: sugar's ``u_<f>`` per controlled state factor ``f`` (``u_factor_{i}`` under generated state
+    #: names) and is refused on a System that declares its control nodes natively
+    #: (``controls=``), whose nodes need names of their own. Under the sugar, a given tuple must
+    #: equal the generated one.
+    control_names: tuple[str, ...] = eqx.field(static=True, default=None)
     #: Names for the dimensions of continuous state factors: ``{factor: (name, ...)}`` at
     #: construction (``{"pose": ("x", "y", "yaw", "b1", "b2")}``), stored as pairs in node order.
     #: ``epistemic`` selects a dimension as ``<factor>:<name>``; a state factor declared without
@@ -932,16 +957,17 @@ class System(eqx.Module):
         hold the node form, and the sugar is gone. Values that a ``dataclasses.replace`` passes
         back from the derived properties are recognised and ignored; sugar given explicitly to a
         System that already has control nodes raises (construct afresh from the sugar, or edit
-        the nodes). Names: ``None`` fills in the generated names (``factor_{i}`` per state
-        factor, ``u_<f>`` per sugar node), so the name tuples are always present, the single
-        source of names and node order."""
+        the nodes). Names: ``state_names=None`` fills in ``factor_{i}`` per state factor and
+        ``control_names=None`` the sugar's ``u_<f>`` per sugar node, so the name tuples are always
+        present, the single source of names and node order."""
         sugar = {"controlled": controlled, "B_control_deps": B_control_deps}
         given = {k: v for k, v in sugar.items() if v is not None and not isinstance(v, _Derived)}
         if given:
             if self.controls:
+                named = self.control_names or self.controls
                 raise ValueError(
                     f"{sorted(given)} declare controls the pymdp way, and this System already "
-                    f"has control nodes {[self.factor_names[c] for c in self.controls]} "
+                    f"has control nodes {list(named)} "
                     "(controls=...): give one declaration or the other. A dataclasses.replace "
                     "with sugar keywords on a System that has control nodes cannot re-translate "
                     "them: construct the System afresh from the sugar, or edit B_deps/controls"
@@ -950,20 +976,25 @@ class System(eqx.Module):
         elif not self.controls and type(controlled) is _Derived and any(controlled):
             raise ValueError(
                 "controlled= was read back off a System with control nodes and passed to a "
-                "System declaring none (controls=()): the node-form B_deps and factor_names "
+                "System declaring none (controls=()): the node-form B_deps and control_names "
                 "already hold the control nodes, so pass controls= with them, or declare the "
                 "sugar afresh with controlled="
             )
-        elif self.factor_names is None and self.controls:
+        elif self.control_names is None and self.controls:
             raise ValueError(
-                "factor_names=None on a System with control nodes "
-                f"(controls={self.controls}): regenerating names would rename its control "
-                "nodes; name every node, or construct the System afresh from the sugar"
+                "control_names=None on a System with control nodes "
+                f"(controls={self.controls}): a natively declared control node has no generated "
+                "name; pass control_names=(...), one name per control node in controls order, "
+                "or construct the System afresh from the sugar"
             )
         else:
             self._derive_control_names()
-        if self.factor_names is None:
-            self.factor_names = keyed.generated_names("factor", len(self.B_deps))
+        if self.state_names is None:
+            self.state_names = keyed.generated_names(
+                "factor", len(self.B_deps) - len(self.controls)
+            )
+        if self.control_names is None:
+            self.control_names = ()
         if self.modality_names is None:
             self.modality_names = keyed.generated_names("modality", len(self.A_deps))
         self.dims = self._normalized_dims()
@@ -972,6 +1003,13 @@ class System(eqx.Module):
         self.emissions = self._normalized_emissions()
         self.observes = self._normalized_observes()
         self.black_box = self._normalized_black_box()
+
+    @property
+    def node_names(self) -> tuple[str, ...]:
+        """Every node's name in node order: ``state_names``, then ``control_names``. The
+        index-based fields (``B_deps``, ``A_deps``, ``D_deps``, ``H_deps``, ``controls``) index
+        into this tuple."""
+        return (*(self.state_names or ()), *(self.control_names or ()))
 
     def _normalized_black_box(self) -> tuple:
         """``black_box`` as ``(port, (kind, size))`` pairs (a mapping, or pairs), the in-ports in
@@ -990,7 +1028,7 @@ class System(eqx.Module):
             ]
         except (TypeError, ValueError):
             return given
-        names = self.factor_names or ()
+        names = self.node_names
         nodes = [names[c] for c in self.controls if 0 <= c < len(names)]
         try:
             emitted = [e for e, _ in self.emissions]
@@ -1052,7 +1090,7 @@ class System(eqx.Module):
             pairs = [(name, grid) for name, grid in pairs]
         except (TypeError, ValueError):
             return cells
-        order = {name: i for i, name in enumerate(self.factor_names or ())}
+        order = {name: i for i, name in enumerate(self.node_names)}
         return tuple(sorted(pairs, key=lambda pair: order.get(pair[0], len(order))))
 
     def _check_cells(self) -> None:
@@ -1074,7 +1112,7 @@ class System(eqx.Module):
         repeated = sorted({n for n in names if names.count(n) > 1})
         if repeated:
             raise ValueError(f"cells names {repeated} twice: one Grid per factor")
-        states = self.factor_names[: len(self.B_deps) - len(self.controls)]
+        states = self.state_names
         unknown = sorted(set(names) - set(states))
         if unknown:
             raise ValueError(
@@ -1085,7 +1123,7 @@ class System(eqx.Module):
     @property
     def _cell_grids(self) -> dict[int, Grid]:
         """The declared grids by state factor index."""
-        index = {name: i for i, name in enumerate(self.factor_names)}
+        index = {name: i for i, name in enumerate(self.node_names)}
         return {index[name]: grid for name, grid in self.cells}
 
     def _cell_parents(self) -> dict[int, Grid]:
@@ -1122,7 +1160,7 @@ class System(eqx.Module):
             ]
         except (TypeError, ValueError):
             return dims
-        order = {name: i for i, name in enumerate(self.factor_names or ())}
+        order = {name: i for i, name in enumerate(self.node_names)}
         return tuple(sorted(pairs, key=lambda pair: order.get(pair[0], len(order))))
 
     def _derive_control_names(self) -> None:
@@ -1138,9 +1176,8 @@ class System(eqx.Module):
             self.action_names = ()
             return
         if self.action_names is None:
-            names = self.factor_names
             raise ValueError(
-                f"control node(s) {[names[c] for c in self.controls if c < len(names)]} are "
+                f"control node(s) {list(self.control_names)} are "
                 "declared without action nodes: pass action_names=(...), one action name per "
                 "control node in controls order"
             )
@@ -1162,13 +1199,13 @@ class System(eqx.Module):
                 "names the controlled factors with controlled= (one entry per factor); a "
                 "controlled factor's level count is its transition table's trailing axis"
             )
-        generated = self.factor_names is None
-        names = keyed.generated_names("factor", n) if generated else tuple(self.factor_names)
+        generated = self.state_names is None
+        names = keyed.generated_names("factor", n) if generated else tuple(self.state_names)
         if len(names) != n:
             raise ValueError(
-                f"factor_names has {len(names)} name(s) for the {n} factor(s) B_deps declares: "
-                "with the pymdp-style control keywords, name each declared factor (the control "
-                "nodes they create are named u_<factor>)"
+                f"state_names has {len(names)} name(s) for the {n} state factor(s) B_deps "
+                "declares: with the pymdp-style control keywords, name each declared state factor "
+                "(the control nodes they create are named u_<state factor>)"
             )
         if not isinstance(controlled, tuple | list) or len(controlled) != n:
             raise ValueError(f"controlled must have one entry per factor ({n}), got {controlled!r}")
@@ -1192,11 +1229,18 @@ class System(eqx.Module):
         clash = [c for c in created if c in names]
         if clash:
             raise ValueError(
-                f"factor_names declares {clash}, the name(s) the control sugar gives the "
+                f"state_names declares {clash}, the name(s) the control sugar gives the "
                 "control node(s) it creates (u_<factor>); rename the state factor(s), or "
                 "declare the control nodes natively to choose their names"
             )
-        self.factor_names = (*names, *created)
+        if self.control_names is not None and tuple(self.control_names) != tuple(created):
+            raise ValueError(
+                f"control_names={self.control_names!r} with the pymdp-style control keywords: "
+                f"the sugar names each controlled state factor's control node u_<factor> "
+                f"({created}); declare the control nodes natively to choose their names"
+            )
+        self.state_names = names
+        self.control_names = tuple(created)
         actions = tuple(keyed.action_name(names[f]) for f in owners)
         if self.action_names is not None and tuple(self.action_names) != actions:
             raise ValueError(
@@ -1213,36 +1257,43 @@ class System(eqx.Module):
 
     def __check_init__(self) -> None:
         """Validate the name counts, the control nodes, ``epistemic`` and ``branch_on``."""
-        for what, names, count in (
-            ("factor_names", self.factor_names, len(self.B_deps)),
-            ("modality_names", self.modality_names, len(self.A_deps)),
+        n_controls = len(self.controls)
+        for what, names, count, kind in (
+            ("state_names", self.state_names, len(self.B_deps) - n_controls, "state factor"),
+            ("control_names", self.control_names, n_controls, "control node"),
+            ("modality_names", self.modality_names, len(self.A_deps), "modality"),
         ):
             if not isinstance(names, tuple) or not all(isinstance(n, str) for n in names):
                 raise TypeError(f"{what} must be a tuple of str, got {type(names).__name__}")
             if len(names) != count:
                 fix = (
-                    "construct the System afresh with one name per node (its state factors, "
-                    "then its control nodes)"
-                    if what == "factor_names" and self.controls
+                    "one name per control node, in controls order"
+                    if what == "control_names"
                     else f"pass {what}=None to regenerate them, or give new names"
                 )
                 raise ValueError(
-                    f"{what} has {len(names)} name(s) for {count} "
-                    f"{'node' if what == 'factor_names' else 'modality'}(s): one name per node "
-                    f"is required; {fix}"
+                    f"{what} has {len(names)} name(s) for {count} {kind}(s) (B_deps declares "
+                    f"{len(self.B_deps)} node(s), {n_controls} of them control nodes): one name "
+                    f"per {kind} is required; {fix}"
+                    if what != "modality_names"
+                    else f"{what} has {len(names)} name(s) for {count} {kind}(s): one name per "
+                    f"{kind} is required; {fix}"
                 )
-        if len(set(self.factor_names)) != len(self.factor_names):
-            dup = sorted({n for n in self.factor_names if self.factor_names.count(n) > 1})
-            raise ValueError(f"factor_names repeats {dup}: every node needs its own name")
-        reserved = sorted(set(self.factor_names) & set(_KEY_KINDS))
+        nodes = self.node_names
+        if len(set(nodes)) != len(nodes):
+            dup = sorted({n for n in nodes if nodes.count(n) > 1})
+            raise ValueError(
+                f"state_names and control_names repeat {dup}: every node needs its own name"
+            )
+        reserved = sorted(set(nodes) & set(_KEY_KINDS))
         if reserved:
             raise ValueError(
-                f"factor_names {reserved} are reserved: a key's first segment is one of "
-                f"{list(_KEY_KINDS)} or a factor's name ('pose:b1', a dimension of 'pose'), so a "
-                "factor named after one would be ambiguous; rename it"
+                f"node names {reserved} are reserved: a key's first segment is one of "
+                f"{list(_KEY_KINDS)} or a state factor's name ('pose:b1', a dimension of 'pose'), "
+                "so a node named after one would be ambiguous; rename it"
             )
         self._check_dims()
-        shared = sorted(set(self.factor_names) & set(self.modality_names))
+        shared = sorted(set(nodes) & set(self.modality_names))
         if shared:
             raise ValueError(
                 f"{shared} name both a node and a modality: a System has one namespace of "
@@ -1462,11 +1513,10 @@ class System(eqx.Module):
         repeated = sorted({f for f in factors if factors.count(f) > 1})
         if repeated:
             raise ValueError(f"dims names {repeated} twice: one tuple of names per factor")
-        unknown = sorted(set(factors) - set(self.factor_names))
+        unknown = sorted(set(factors) - set(self.node_names))
         if unknown:
             raise ValueError(
-                f"dims names unknown factor(s) {unknown}; the factors are "
-                f"{sorted(self.factor_names)}"
+                f"dims names unknown factor(s) {unknown}; the factors are {sorted(self.node_names)}"
             )
         for factor, names in dims:
             validation._check_dim_names(factor, names)
@@ -1567,7 +1617,7 @@ class System(eqx.Module):
                 "one mind with joint_planner(system, params, node)"
             )
         driven = [
-            self.factor_names[c]
+            self.node_names[c]
             for c, a in zip(self.controls, self.action_names or (), strict=True)
             if a is None
         ]
@@ -1599,14 +1649,14 @@ class System(eqx.Module):
             )
         driven = {slot for slot, _ in self.observes if isinstance(slot, str)}
         for c, a in zip(self.controls, actions, strict=True):
-            node = self.factor_names[c]
+            node = self.node_names[c]
             if node in driven and a is not None:
                 raise ValueError(
                     f"control node {node!r} is a slot in observes, driven by a variable, and its "
                     f"action node {a!r} is named: a driven node's action_names entry is None "
                     "(nothing chooses it, so nothing realises it)"
                 )
-        clash = sorted(set(named) & (set(self.factor_names) | set(self.modality_names)))
+        clash = sorted(set(named) & (set(self.node_names) | set(self.modality_names)))
         if clash:
             raise ValueError(
                 f"action_names {clash} are also factor or modality names: every node needs its "
@@ -1643,7 +1693,7 @@ class System(eqx.Module):
             raise ValueError(f"emissions repeats {repeated}: every emission needs its own name")
         table = self._table
         taken = {
-            "a state factor or control node": set(self.factor_names),
+            "a state factor or control node": set(self.node_names),
             "a modality": set(self.modality_names),
             "an action node": set(self.action_names or ()),
         }
@@ -1732,7 +1782,7 @@ class System(eqx.Module):
         return control_table(
             self.B_deps,
             self.A_deps,
-            self.factor_names,
+            self.node_names,
             self.controls,
             self.D_deps,
             self.H_deps,
@@ -2155,8 +2205,9 @@ class System(eqx.Module):
     def names(self) -> keyed.Names:
         """A read-only view of the System's names, every tuple in node-index order.
 
-        ``names.states`` are the state factors' names (the belief keys), ``names.controls`` the
-        control nodes', both from ``factor_names``; ``names.modalities`` is ``modality_names``;
+        ``names.states`` are the state factors' names (the belief keys, ``state_names``),
+        ``names.controls`` the control nodes' (``control_names``); ``names.modalities`` is
+        ``modality_names``;
         ``names.actions`` the action nodes' (the action keys), one per control node in the same
         order, from ``action_names``. Node-index order is the order of every positional
         structure (tables, policy columns, what the converters produce); iterating a mapping

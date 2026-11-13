@@ -131,7 +131,7 @@ def _mniw_system_and_params(likelihood, anchor_sensor=False):
         controlled=(False,),
         policy_len=1,
         modality_names=mods,
-        factor_names=("x",),
+        state_names=("x",),
     )
     anchor = LinearGaussianObservation(
         H=jnp.asarray([[1.0]]), c=jnp.zeros(1), noise=jnp.asarray([[0.1]])

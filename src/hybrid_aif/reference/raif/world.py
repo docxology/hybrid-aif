@@ -205,7 +205,7 @@ def tiny_rssm(
         policy_len=policy_len,
         planner="cem",  # continuous actions (A9); "habit" once an actor is declared
         epistemic=False,  # no epistemic row over these beliefs yet (2b)
-        factor_names=(CARRY_NAME, CODE_NAME),
+        state_names=(CARRY_NAME, CODE_NAME),
         modality_names=(STATE_MODALITY, REWARD_MODALITY, CONT_MODALITY),
         recognition=(
             Recognition(variable=EMBED_VARIABLE, parents=(f"obs:{STATE_MODALITY}",)),
@@ -269,7 +269,7 @@ def crspp_rssm(
         controlled=(False, False),  # the whole point: no action in the transition prior
         policy_len=policy_len,
         epistemic=False,
-        factor_names=(CARRY_NAME, CODE_NAME),
+        state_names=(CARRY_NAME, CODE_NAME),
         modality_names=(),
         external_inputs=((EMBED_VARIABLE, int(embed)),),
         recognition=(

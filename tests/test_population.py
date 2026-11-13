@@ -159,7 +159,7 @@ def _tabular(seed: int = 5, conc: float = 2.0):
         controlled=(True,),
         policy_len=2,
         modality_names=("sense", "ident"),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={
@@ -278,7 +278,7 @@ def _gradient_system(**system_kwargs):
         B_deps=((),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
         **system_kwargs,
     )

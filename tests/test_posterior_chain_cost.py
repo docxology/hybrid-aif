@@ -138,14 +138,15 @@ def e5_model(
     if present is None:
         present = {"pose_fix": False, "gps": jnp.asarray([False, True] * 3)} if fix_absent else {}
     gps_map, pile_map = _noise_maps()
-    facs = ("pose", "gap", "u_u")
+    facs, nodes = ("pose", "gap"), ("u_u",)
     A_deps = ((0,), (1,), (0,), (0,))
     system = System(
         A_deps=A_deps,
         B_deps=((2,), (2,), ()),
         controls=(2,),
         action_names=("u",),
-        factor_names=facs,
+        state_names=facs,
+        control_names=nodes,
         dims={"pose": ("x", "y", "yaw", "b")},
         modality_names=CHANNELS,
         policy_len=HORIZON,

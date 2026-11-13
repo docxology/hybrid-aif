@@ -295,7 +295,7 @@ def test_a_plain_lg_factor_beside_a_categorical_one_adds_its_evidence():
         controlled=(False, False),
         policy_len=1,
         modality_names=("o", "y"),
-        factor_names=("s", "x"),
+        state_names=("s", "x"),
     )
     params = H.SystemParams(
         likelihood={"o": report, "y": emission},

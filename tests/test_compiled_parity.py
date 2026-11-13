@@ -250,7 +250,7 @@ def synthetic_system(decomposition, epistemic, policy_len=2):
         decomposition=decomposition,
         epistemic=epistemic,
         modality_names=("m0", "m1"),
-        factor_names=("f0", "f1"),
+        state_names=("f0", "f1"),
     )
     params = system.from_positional(
         "params",

@@ -117,7 +117,8 @@ def black_box(
         )
     system = System(
         B_deps=((),) * len(ins_t),
-        factor_names=tuple(ins_t),
+        state_names=(),
+        control_names=tuple(ins_t),
         controls=tuple(range(len(ins_t))),
         action_names=(None,) * len(ins_t),
         emissions={o: Emission((), "sample", BLACK_BOX) for o in outs_t},

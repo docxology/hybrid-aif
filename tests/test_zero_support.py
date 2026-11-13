@@ -200,7 +200,7 @@ def _disjunction_model():
         controlled=(False,),
         policy_len=1,
         A_deps=((0,), (0,)),
-        factor_names=("target",),
+        state_names=("target",),
         modality_names=("distance", "size"),
     )
     near_only_t0 = jnp.log(jnp.asarray([[1.0, 0.0], [0.0, 1.0]]))  # near <-> target 0
@@ -274,7 +274,7 @@ def test_a_state_that_produces_no_observation_is_tempered_and_refused_at_build()
         controlled=(False,),
         policy_len=1,
         A_deps=((0,),),
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=("o",),
     )
     params = SystemParams(
@@ -296,7 +296,7 @@ def test_many_noisy_modalities_do_not_flag_a_supported_tick():
         controlled=(False,),
         policy_len=1,
         A_deps=((0,),) * n,
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=tuple(f"o{i}" for i in range(n)),
     )
     noisy = H.ConditionalCategorical(jnp.log(jnp.asarray([[0.4, 0.4], [0.6, 0.6]])), 1)

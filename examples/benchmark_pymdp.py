@@ -85,7 +85,7 @@ def build_workload(policy_len: int = POLICY_LEN) -> Workload:
         gamma=GAMMA,
         epistemic=True,
         modality_names=("location_obs", "reward", "cue"),
-        factor_names=("location", "context"),
+        state_names=("location", "context"),
     )
     # Designate all three modalities (reward informative, others uniform) so both
     # libraries evaluate utility + info gain over the same three modalities.

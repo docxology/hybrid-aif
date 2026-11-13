@@ -58,7 +58,7 @@ def make_model(cue_reads_context: bool = True) -> tuple[System, SystemParams]:
         controlled=(True, False),
         policy_len=2,
         modality_names=MODALITIES,
-        factor_names=FACTORS,
+        state_names=FACTORS,
     )
     tables = list(_TABLES.likelihood)
     if not cue_reads_context:

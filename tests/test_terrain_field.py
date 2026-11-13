@@ -97,7 +97,8 @@ def _rover(policy_len=2, planner="gradient", epistemic=("transition:terrain",), 
         controls=(2,),
         action_names=("a",),
         modality_names=("tex", "fix"),
-        factor_names=("terrain", "x", "u"),
+        state_names=("terrain", "x"),
+        control_names=("u",),
         cells={"x": cells},
         policy_len=policy_len,
         epistemic=epistemic,
@@ -306,7 +307,7 @@ def test_a_prior_parent_that_is_a_continuous_factor_is_refused_as_non_categorica
     #  x is declared first, so the ordering rule passes and the family rule is what fires
     system = System(
         B_deps=((), (0,)),
-        factor_names=("x", "terrain"),
+        state_names=("x", "terrain"),
         D_deps=((), (0,)),
         cells={"x": Grid(shape=3, low=-3.0, high=3.0, axes=(0,))},
         policy_len=1,
@@ -341,7 +342,7 @@ def test_a_grid_on_an_all_tabular_system_is_refused_by_every_face():
     system = System(
         A_deps=((0,),),
         B_deps=((0,), (0,)),
-        factor_names=("s", "t"),
+        state_names=("s", "t"),
         cells={"s": Grid(shape=4, low=0.0, high=1.0)},
         policy_len=1,
     )
@@ -398,7 +399,7 @@ def test_an_amortized_system_refuses_cells():
     from hybrid_aif.reference.raif.world import tiny_rssm
 
     system, params = tiny_rssm(2, 1, key=jax.random.PRNGKey(0), policy_len=2)
-    system = dataclasses.replace(system, cells={system.factor_names[0]: GRID})
+    system = dataclasses.replace(system, cells={system.node_names[0]: GRID})
     with pytest.raises(NotImplementedError, match="cells on an amortized"):
         system._validate(params)
 
@@ -436,7 +437,7 @@ def test_a_merged_field_and_its_subsystem_view_keep_the_grid_and_plan():
     tab = System(
         A_deps=((0,),),
         B_deps=((),),
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=("o",),
         policy_len=2,
         planner="gradient",

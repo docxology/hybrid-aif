@@ -70,7 +70,7 @@ def make_system(**overrides):
         policy_len=HORIZON,
         mixture_k=K_BUDGET,
         modality_names=(),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         terms=("uncertainty:x",),  # x is unobserved: its entropy is the uncertainty row
     )
     return System(**{**defaults, **overrides})

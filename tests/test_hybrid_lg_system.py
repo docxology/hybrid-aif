@@ -38,7 +38,7 @@ def make_system(**overrides):
         controlled=(True,),
         policy_len=4,
         modality_names=("position",),
-        factor_names=("state",),
+        state_names=("state",),
     )
     return System(**{**defaults, **overrides})
 

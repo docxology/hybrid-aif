@@ -43,7 +43,7 @@ def make_system() -> System:
         mixture_k=4,
         mixture_schedule="runnalls",
         modality_names=("cell", "pose"),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
 
 
@@ -121,7 +121,7 @@ def recover_table(key, n_ticks: int = 400):
         controlled=(False,),
         policy_len=1,
         modality_names=("sense",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     prior = ConditionalDirichlet.from_table(
         jnp.asarray([[0.7, 0.3], [0.3, 0.7]]), parent_ndims=1, strength=2.0

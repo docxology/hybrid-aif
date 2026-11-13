@@ -170,7 +170,7 @@ def _gauge_world():
         A_deps=(),
         B_deps=((0,), ()),
         controls=(),
-        factor_names=("g", "p"),
+        state_names=("g", "p"),
         modality_names=(),
         emissions=(
             ("gauge", Emission(("g",), "mode", "identity")),

@@ -160,7 +160,7 @@ def _two_slot_system():
         B_deps=((),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
     )
     both = System(
@@ -308,7 +308,7 @@ def test_a_document_refuses_a_malformed_observes_or_static_kernel():
 def test_a_slot_the_map_names_is_no_variable_of_its_own_in_the_description_length():
     system, params = model()
     dl = description_length(system, 100.0, params=params)
-    f, u = len(system.factor_names), 0
+    f, u = len(system.node_names), 0
     named = {slot for slot, _ in system.observes}
     modalities = len(system.modality_names) - len(named)
     emissions = len(system.emissions)
@@ -445,7 +445,7 @@ def test_the_mirror_drops_an_emission_only_its_own_system_observes_with_its_entr
 
 
 def _parents(system, m):
-    return [system.factor_names[g] for g in system.A_deps[m]]
+    return [system.node_names[g] for g in system.A_deps[m]]
 
 
 # --------------------------------------------------------------------------------- replay

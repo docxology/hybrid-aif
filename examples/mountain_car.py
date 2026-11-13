@@ -213,7 +213,7 @@ def make_agent(
         gamma=gamma,
         epistemic=False,  # see the module docstring: no estimator for a neural slot
         modality_names=("state_obs",),
-        factor_names=("state",),
+        state_names=("state",),
     )
     params = SystemParams(
         likelihood={

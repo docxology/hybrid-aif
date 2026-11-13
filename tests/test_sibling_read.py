@@ -74,7 +74,7 @@ def _rover(
     system = System(
         A_deps=((0,),),
         B_deps=((),) * len(names),
-        factor_names=names,
+        state_names=names,
         modality_names=("obs",),
         epistemic=False,
         policy_len=1,
@@ -112,7 +112,7 @@ def _scheduler(shared: bool = False):
     system = System(
         A_deps=((0,),),
         B_deps=((),) * len(names),
-        factor_names=names,
+        state_names=names,
         modality_names=("cell_obs",),
         epistemic=False,
         policy_len=1,
@@ -567,7 +567,7 @@ def test_an_own_read_in_one_system_round_trips():
         system,
         A_deps=((0,), (1,)),
         B_deps=((), ()),
-        factor_names=("visit", "kind"),
+        state_names=("visit", "kind"),
         modality_names=("cell_obs", "prev_kind"),
         emissions={"kind_vector": Emission(("kind",), "stats", kernel="identity")},
         observes={"prev_kind": "kind_vector"},

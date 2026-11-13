@@ -92,7 +92,7 @@ def make_model(
         controlled=(False,),
         policy_len=1,
         modality_names=("motion", "move", "reward"),
-        factor_names=("z",),
+        state_names=("z",),
         epistemic=False,
         reduction_period=reduction_period,
         reduction_pairs=16,

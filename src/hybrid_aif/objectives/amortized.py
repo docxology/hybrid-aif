@@ -111,7 +111,7 @@ def _occupancy(st: registry.Statics) -> registry.Step:
     the post-transition belief itself, closed form over the factored categorical.
     Stored as the entropy under a −1 term. Design: docs/design/objective-terms.md
     """
-    index, names = st.index, tuple(st.factor_names[f] for f in st.index)
+    index, names = st.index, tuple(st.state_names[f] for f in st.index)
 
     def step(ctx: registry.StepContext) -> dict[str, Interval]:
         # ``qs_dist`` is the distribution the belief came from, and differs from it on
@@ -141,11 +141,11 @@ def _ensemble_disagreement(st: registry.Statics) -> registry.Step:
     if len(st.index) != 1:
         raise ValueError(
             "the ensemble_disagreement row scores ONE code variable (the scoring slot holds "
-            f"one ensemble), but epistemic selects {[st.factor_names[f] for f in st.index]}. "
+            f"one ensemble), but epistemic selects {[st.state_names[f] for f in st.index]}. "
             "Name a single variable."
         )
     (code,) = st.index
-    name = st.factor_names[code]
+    name = st.state_names[code]
     members = st.scoring
     if not isinstance(members, tuple) or not members:
         raise ValueError(
@@ -163,7 +163,7 @@ def _ensemble_disagreement(st: registry.Statics) -> registry.Step:
     if len(carries) != 1:
         raise ValueError(
             f"the ensemble reads [deter, flat stoch, action] and so needs exactly one carry "
-            f"node; this System declares {[st.factor_names[f] for f in carries]}"
+            f"node; this System declares {[st.state_names[f] for f in carries]}"
         )
     (carry,) = carries
     flat = structure.widths[code]

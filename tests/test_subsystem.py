@@ -192,7 +192,7 @@ def _binary(name, controlled, modality=False):
         policy_len=1,
         epistemic=False,
         modality_names=("see",) if modality else (),
-        factor_names=(name,),
+        state_names=(name,),
     )
     params = SystemParams(
         likelihood={"see": ConditionalCategorical(log_table=jnp.log(jnp.eye(2)), parent_ndims=1)}
@@ -231,7 +231,7 @@ def test_the_stub_set_closes_over_what_the_stubs_own_dynamics_need():
     )
     assert subsystem_factors(composite, "x") == (0, 1, 2)  # own, direct, closure
     view, vp = subsystem(composite, cp, "x")
-    assert view.factor_names == ("x.x", "y.y", "z.z")
+    assert view.node_names == ("x.x", "y.y", "z.z")
     assert view.B_deps == ((0,), (1, 2), (2,))
     assert view.controlled == (False, False, False)  # z's node is somebody else's
     view._validate(vp)  # well-formed: every parent index resolves inside the view
@@ -341,7 +341,7 @@ def test_a_view_of_a_nested_composite_keeps_its_children():
     inner, ip = merged()
     outer, op = merge({"pair": inner, "sup": _mode()[0]}, {"pair": ip, "sup": _mode()[1]}, [])
     view, vp = subsystem(outer, op, "pair")
-    assert view.factor_names[0] == "pair.agent.location"
+    assert view.node_names[0] == "pair.agent.location"
     assert set(dict(view.subsystems)) == {"pair", "pair.agent", "pair.world"}
     view._validate(vp)
 

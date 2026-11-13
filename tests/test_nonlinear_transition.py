@@ -164,7 +164,8 @@ def _affine_pair(carry: str, propagation: str):
         B_deps=((1, 2), (), ()),
         controls=(1, 2),
         action_names=("m", "u"),
-        factor_names=("x", "u_m", "u_u"),
+        state_names=("x",),
+        control_names=("u_m", "u_u"),
         modality_names=("y",),
         policy_len=3,
         mixture_k=2 if carry == "mixture" else None,
@@ -253,7 +254,7 @@ def monte_carlo():
 
 
 def _turn(decl, heading_sd: float) -> Gaussian:
-    system = System(B_deps=((),), factor_names=("pose",), policy_len=1, epistemic=False)
+    system = System(B_deps=((),), state_names=("pose",), policy_len=1, epistemic=False)
     params = SystemParams(
         transition={"pose": decl},
         initial_state_prior={
@@ -345,7 +346,7 @@ RATES = jnp.asarray([-PLAN_W, 0.0, PLAN_W])
 
 
 def _steered(decl, **overrides):
-    wiring = {"B_deps": ((),), "controlled": (True,), "factor_names": ("pose",)}
+    wiring = {"B_deps": ((),), "controlled": (True,), "state_names": ("pose",)}
     if "controls" in overrides:
         wiring = {}
     system = System(**{**wiring, "policy_len": 4, "epistemic": False, **overrides})
@@ -400,7 +401,8 @@ def test_the_gradient_plan_turns_toward_a_target_behind():
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("w",),
-        factor_names=("pose", "u_w"),
+        state_names=("pose",),
+        control_names=("u_w",),
         planner="gradient",
     )
     nl = NonlinearGaussianTransition(
@@ -437,7 +439,8 @@ def _driven(propagation: str):
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("u",),
-        factor_names=("pose", "u_u"),
+        state_names=("pose",),
+        control_names=("u_u",),
         policy_len=1,
         planner="gradient",
         epistemic=False,
@@ -573,7 +576,7 @@ def test_planning_belief_posterior_steps_the_epistemic_chain_through_f():
 
 
 def test_switching_dynamics_are_refused():
-    system = System(B_deps=((1,), ()), factor_names=("pose", "mode"), policy_len=1)
+    system = System(B_deps=((1,), ()), state_names=("pose", "mode"), policy_len=1)
     params = SystemParams(
         transition={
             "pose": NonlinearGaussianTransition(
@@ -591,7 +594,7 @@ def test_switching_dynamics_are_refused():
         system.update_empirical_prior(params, system.initial_priors(params), {})
     # with a control node of its own too, the switching refusal is the one raised
     controlled = System(
-        B_deps=((1,), ()), controlled=(True, False), factor_names=("pose", "mode"), policy_len=1
+        B_deps=((1,), ()), controlled=(True, False), state_names=("pose", "mode"), policy_len=1
     )
     with pytest.raises(NotImplementedError, match="switching dynamics"):
         controlled.update_empirical_prior(params, controlled.initial_priors(params), {})
@@ -640,7 +643,7 @@ class NeedsTwo(eqx.Module):
 
 
 def test_a_map_of_the_wrong_shape_or_layout_is_refused():
-    system = System(B_deps=((),), factor_names=("pose",), policy_len=1)
+    system = System(B_deps=((),), state_names=("pose",), policy_len=1)
 
     def params(f):
         return SystemParams(
@@ -659,7 +662,7 @@ def test_a_map_of_the_wrong_shape_or_layout_is_refused():
     with pytest.raises(ValueError, match="propagation='sigma'"):
         NonlinearGaussianTransition(Flat(), _noise(jnp.zeros((1, 3)), jnp.eye(3)), "sigma")
     #  the innovations carry one axis per discrete control node
-    controlled = System(B_deps=((),), controlled=(True,), factor_names=("pose",), policy_len=1)
+    controlled = System(B_deps=((),), controlled=(True,), state_names=("pose",), policy_len=1)
     bad = dataclasses.replace(
         params(Unicycle(0.1, 0.5, 0.0)),
         transition={
@@ -677,7 +680,7 @@ def test_zero_process_noise_is_refused():
     noiseless = NonlinearGaussianTransition(
         Unicycle(0.1, 0.5, 0.0), _noise(jnp.zeros((1, 3)), jnp.diag(jnp.asarray([0.1, 0.1, 0.0])))
     )
-    system = System(B_deps=((),), factor_names=("pose",), policy_len=1)
+    system = System(B_deps=((),), state_names=("pose",), policy_len=1)
     params = SystemParams(
         transition={"pose": noiseless},
         initial_state_prior={"pose": Gaussian(loc=jnp.zeros(3), chol=jnp.eye(3))},
@@ -761,7 +764,7 @@ class Tabled(eqx.Module):
 
 def test_description_length_counts_the_maps_fields():
     f = Tabled(0.1, jnp.ones((4, 3)), jnp.asarray(2, jnp.int32))
-    system = System(B_deps=((),), factor_names=("pose",), policy_len=1)
+    system = System(B_deps=((),), state_names=("pose",), policy_len=1)
     params = SystemParams(
         transition={"pose": NonlinearGaussianTransition(f, _noise(jnp.zeros((1, 3)), jnp.eye(3)))},
         initial_state_prior={"pose": Gaussian(loc=jnp.zeros(3), chol=jnp.eye(3))},

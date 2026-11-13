@@ -32,7 +32,7 @@ def component(propagation="first_order", target=True):
         B_deps=((),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("y",),
     )
     params = SystemParams(

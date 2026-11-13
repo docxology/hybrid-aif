@@ -169,7 +169,7 @@ def _system(**overrides):
         controlled=(True,),
         policy_len=2,
         modality_names=("gps", "pile"),
-        factor_names=("pose",),
+        state_names=("pose",),
         planning_belief="posterior",
     )
     return System(**{**defaults, **overrides})
@@ -251,7 +251,7 @@ def test_an_emission_with_discrete_parents_is_refused():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("z",),
+        state_names=("z",),
     )
     params = SystemParams(
         likelihood={
@@ -277,7 +277,7 @@ def test_an_emission_with_discrete_parents_is_refused():
         controlled=(True, False),
         policy_len=1,
         modality_names=("gps", "pile"),
-        factor_names=("pose", "z"),
+        state_names=("pose", "z"),
         epistemic=("likelihood:pile",),
     )
     switching_params = dataclasses.replace(

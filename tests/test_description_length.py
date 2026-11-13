@@ -324,7 +324,7 @@ def _tabular_system(ns=(3,), no=(4,), nu=2, learned=(), seed=5):
         controlled=tuple(f == 0 for f in range(f_count)),
         policy_len=1,
         modality_names=tuple(f"o{m}" for m in range(len(no))),
-        factor_names=tuple(f"s{f}" for f in range(f_count)),
+        state_names=tuple(f"s{f}" for f in range(f_count)),
     )
     likelihood = {}
     for m, levels in enumerate(no):
@@ -452,7 +452,7 @@ def test_the_cap_rule_prices_declared_room_and_the_family_prices_live_levels():
             controlled=(True,),
             policy_len=1,
             modality_names=("o",),
-            factor_names=("z",),
+            state_names=("z",),
         )
         params = SystemParams(
             likelihood={
@@ -627,7 +627,7 @@ def _lg_system(decl, dx: int):
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
     )
     params = SystemParams(
         likelihood={"y": decl},
@@ -661,7 +661,7 @@ def test_a_matrix_normal_inverse_wishart_prior_is_priced_from_the_reference(mode
                 controlled=(False, False),
                 policy_len=1,
                 modality_names=("y",),
-                factor_names=("x", "m"),
+                state_names=("x", "m"),
             )
             params = dataclasses.replace(
                 params,
@@ -940,7 +940,7 @@ def test_a_gaussian_emission_prices_the_live_levels_of_its_parent_only():
             controlled=(False,),
             policy_len=1,
             modality_names=("y",),
-            factor_names=("z",),
+            state_names=("z",),
             epistemic=False,
         )
         conc = jnp.asarray(weights, jnp.float32)
@@ -1047,7 +1047,7 @@ def test_a_switching_emission_prices_the_live_modes_only():
             controlled=(False, False),
             policy_len=1,
             modality_names=("y",),
-            factor_names=("mode", "x"),
+            state_names=("mode", "x"),
             mixture_k=2,
             epistemic=False,
         )
@@ -1114,7 +1114,7 @@ def test_a_replay_that_learns_only_the_noise_keeps_the_point_heads_family_link()
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
     )
     params = SystemParams(
@@ -1155,7 +1155,7 @@ def test_a_level_a_replay_wakes_is_priced_from_its_declared_head():
             controlled=(False,),
             policy_len=1,
             modality_names=("y",),
-            factor_names=("z",),
+            state_names=("z",),
             epistemic=False,
         )
         conc = jnp.asarray(weights, jnp.float32)

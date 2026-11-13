@@ -272,7 +272,7 @@ def _two_continuous():
         policy_len=2,
         planner="cem",
         epistemic=False,
-        factor_names=("z", "a"),
+        state_names=("z", "a"),
     )
     params = SystemParams(
         transition={
@@ -454,7 +454,7 @@ def raif_agent():
     return raif_mountain_car(jax.random.PRNGKey(0), **tiny)
 
 
-def test_aux_beliefs_are_keyed_by_the_nested_systems_factor_names(raif_agent):
+def test_aux_beliefs_are_keyed_by_the_nested_systems_state_names(raif_agent):
     system, params = raif_agent.system, raif_agent.params
     row = "cosine_sim_to_pref_rollout"
     nested = dict(system.scoring)[row]
@@ -596,7 +596,7 @@ def test_generative_env_wraps_an_outside_positional_env_given_a_system():
         B_deps=((0,),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("count",),
+        state_names=("count",),
         modality_names=("seen",),
     )
     #  the control's levels live with the tables: three, read by the one transition
@@ -651,7 +651,8 @@ def test_names_is_a_view_of_the_systems_name_tuples():
     assert names._fields == ("states", "controls", "modalities", "actions", "emissions")
     assert names.emissions == ()
     assert names.actions == system.action_names == ("a_location",)
-    assert names.states + names.controls == system.factor_names
+    assert names.states + names.controls == system.node_names
+    assert names.states == system.state_names and names.controls == system.control_names
     assert names.modalities is system.modality_names
     assert names.states == ("location", "context") and names.controls == ("u_location",)
     #  construction fills the generated names in, so the tuples are never absent
@@ -661,7 +662,7 @@ def test_names_is_a_view_of_the_systems_name_tuples():
         controlled=(True, False),
         policy_len=2,
     )
-    assert unnamed.factor_names == ("factor_0", "factor_1", "u_factor_0")
+    assert unnamed.node_names == ("factor_0", "factor_1", "u_factor_0")
     assert unnamed.names.states == ("factor_0", "factor_1")
     assert unnamed.modality_names == ("modality_0", "modality_1", "modality_2")
 
@@ -696,7 +697,7 @@ def test_wrap_checks_counts_and_refuses_a_double_wrap():
         B_deps=((0,), (1,)),
         controlled=(True, False),
         policy_len=1,
-        factor_names=("location", "context"),
+        state_names=("location", "context"),
         modality_names=("seen",),
     )
     with pytest.raises(ValueError, match=r"has 3 modality/ies, the System 1 \(\['seen'\]\)"):
@@ -719,7 +720,7 @@ def test_an_int_action_from_an_outside_env_cannot_become_a_continuous_nodes_valu
         controlled=(True,),
         policy_len=1,
         planner="cem",
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("seen",),
     )
     params = SystemParams(
@@ -750,17 +751,17 @@ def test_a_replace_that_grows_the_factors_must_regenerate_or_rename():
     from hybrid_aif import System
 
     s = _unnamed()
-    assert s.factor_names == ("factor_0", "u_factor_0")
+    assert s.state_names == ("factor_0",) and s.control_names == ("u_factor_0",)
     #  a node form that grows a state factor (the control node moves to index 2)
     grow = dict(B_deps=((0, 2), (1,), ()), controls=(2,))
     with pytest.raises(
         ValueError,
-        match=r"factor_names has 2 name\(s\) for 3 node\(s\).*construct the System afresh",
+        match=r"state_names has 1 name\(s\) for 2 state factor\(s\) \(B_deps declares 3 node",
     ):
         dataclasses.replace(s, **grow)
     #  regenerating the names of a System that has control nodes would rename them: refused
-    with pytest.raises(ValueError, match=r"factor_names=None on a System with control nodes"):
-        dataclasses.replace(s, **grow, factor_names=None)
+    with pytest.raises(ValueError, match=r"control_names=None on a System with control nodes"):
+        dataclasses.replace(s, **grow, control_names=None)
     #  so a grown System is declared afresh from the sugar, which generates every name
     grown = System(
         B_deps=((0,), (1,)),
@@ -768,11 +769,13 @@ def test_a_replace_that_grows_the_factors_must_regenerate_or_rename():
         policy_len=1,
         A_deps=((0,),),
     )
-    assert grown.factor_names == ("factor_0", "factor_1", "u_factor_0")
+    assert grown.node_names == ("factor_0", "factor_1", "u_factor_0")
     assert grown.modality_names == ("modality_0",)
-    assert dataclasses.replace(s, policy_len=2).factor_names == s.factor_names
-    renamed = dataclasses.replace(s, **grow, factor_names=("a", "b", "u_a"), action_names=("a_a",))
-    assert renamed.factor_names == ("a", "b", "u_a")
+    assert dataclasses.replace(s, policy_len=2).node_names == s.node_names
+    renamed = dataclasses.replace(
+        s, **grow, state_names=("a", "b"), control_names=("u_a",), action_names=("a_a",)
+    )
+    assert renamed.node_names == ("a", "b", "u_a")
     assert renamed.modality_names == ("modality_0",)
 
 
@@ -787,8 +790,10 @@ def test_a_wrong_count_of_declared_names_raises():
             A_deps=((0,),),
             modality_names=("a", "b"),
         )
-    with pytest.raises(ValueError, match=r"factor_names has 3 name\(s\) for 2 node\(s\)"):
-        dataclasses.replace(_unnamed(), factor_names=("a", "b", "c"))
+    with pytest.raises(ValueError, match=r"state_names has 3 name\(s\) for 1 state factor\(s\)"):
+        dataclasses.replace(_unnamed(), state_names=("a", "b", "c"))
+    with pytest.raises(ValueError, match=r"control_names has 2 name\(s\) for 1 control node\(s\)"):
+        dataclasses.replace(_unnamed(), control_names=("u", "v"))
 
 
 # ------------------------------------------------------- dtype symmetry and env/policy forms
@@ -809,7 +814,7 @@ def test_an_outside_envs_float_action_on_an_int_system_is_refused_before_any_ste
         B_deps=((0,),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("count",),
+        state_names=("count",),
         modality_names=("seen",),
     )
     env = GenerativeEnv.wrap(_FloatCounter(), system)
@@ -902,7 +907,7 @@ def test_wrapping_a_continuous_system_without_its_params_points_at_params():
         B_deps=((),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("seen",),
     )
     env = GenerativeEnv.wrap(_FloatCounter(), system)

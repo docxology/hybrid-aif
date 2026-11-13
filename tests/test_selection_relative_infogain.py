@@ -258,7 +258,7 @@ def _two_channel_discrete(decomposition, epistemic):
         decomposition=decomposition,
         epistemic=epistemic,
         modality_names=("m0", "m1"),
-        factor_names=("f0", "f1"),
+        state_names=("f0", "f1"),
     )
     params = system.from_positional(
         "params",

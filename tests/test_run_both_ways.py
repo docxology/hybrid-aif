@@ -174,7 +174,7 @@ def _arena(policy_len=3):
             policy_len=policy_len,
             epistemic=False,
             modality_names=("see", "watch"),
-            factor_names=("hand",),
+            state_names=("hand",),
         )
         exact = ConditionalCategorical(log_table=jnp.log(jnp.eye(3)), parent_ndims=1)
         params = SystemParams(
@@ -194,7 +194,7 @@ def _arena(policy_len=3):
         policy_len=policy_len,
         epistemic=False,
         modality_names=(),
-        factor_names=("token_a", "lock_b", "token_b", "lock_a"),
+        state_names=("token_a", "lock_b", "token_b", "lock_a"),
     )
     arena_params = SystemParams(
         likelihood={},

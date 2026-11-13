@@ -89,7 +89,7 @@ system = System(
     A_deps=((0,), (0,), (0, 1)),  # distance/size see target; answer sees both
     planner="enumeration",
     gamma=4.0,
-    factor_names=("target", "mode"),
+    state_names=("target", "mode"),
     modality_names=("distance", "size", "answer"),
     epistemic=("target",),  # mount an infogain leaf per channel observing `target`
 )

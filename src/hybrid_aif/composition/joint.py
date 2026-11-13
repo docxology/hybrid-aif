@@ -320,7 +320,7 @@ def _collapse(
         D_deps=repad(system.D_deps),
         H_deps=repad(system.H_deps),
         C_deps=C_deps,
-        factor_names=(*table.state_names, *(names[k] for k in live)),
+        control_names=tuple(names[k] for k in live),
         readings=readings,
         observes=observes,
         emissions=tuple(emissions),

@@ -14,12 +14,13 @@ Which control nodes are continuous, and how wide, is read off the params (a cont
 box is in ``SystemParams.control``), so converting a continuous node's value takes them: the
 System's converters accept ``params=``, and without them every node reads as discrete.
 
-Names are ``System.factor_names`` / ``modality_names``, or the generated ``factor_{i}`` /
-``modality_{m}``. Entries are addressed by name, never by position: a face builds its mapping in
-node order, but one that has passed through ``jax.jit``, ``vmap``, ``lax.scan`` or ``tree_map``
-comes back with its keys sorted. A mapping with a missing or unknown key raises, naming both; a
-tuple, list or bare array raises too, pointing at :meth:`System.from_positional`, which (with
-:meth:`System.to_positional`) is the one way positional data enters or leaves.
+Names are ``System.state_names`` / ``control_names`` / ``modality_names``, or the generated
+``factor_{i}`` / ``u_factor_{i}`` / ``modality_{m}``. Entries are addressed by name, never by
+position: a face builds its mapping in node order, but one that has passed through ``jax.jit``,
+``vmap``, ``lax.scan`` or ``tree_map`` comes back with its keys sorted. A mapping with a missing
+or unknown key raises, naming both; a tuple, list or bare array raises too, pointing at
+:meth:`System.from_positional`, which (with :meth:`System.to_positional`) is the one way
+positional data enters or leaves.
 
 Mappings that supply values (beliefs, observations, actions, params) are complete: a missing key
 raises. Mappings that restrict or select are partial, an absent key meaning unrestricted:
@@ -77,8 +78,9 @@ def generated_names(prefix: str, count: int) -> tuple[str, ...]:
 class Names(NamedTuple):
     """A System's names (``System.names``): a view of its name tuples, in node-index order.
 
-    ``states`` are the state factors' names and ``controls`` the control nodes', both from
-    ``System.factor_names`` (declared, or the generated ``factor_{i}`` / ``u_factor_{i}``);
+    ``states`` are the state factors' names (``System.state_names``, declared or the generated
+    ``factor_{i}``) and ``controls`` the control nodes' (``System.control_names``, declared or
+    the generated ``u_factor_{i}``);
     ``modalities`` is ``System.modality_names``; ``actions`` the action nodes' (the action
     keys), one per control node in the same order, from ``System.action_names``;
     ``emissions`` the outputs drawn from the state factors (``System.emissions``), in declaration

@@ -96,6 +96,8 @@ bare name is a state *variable*, an `obs:` prefix an observation *variable*
 (`per-variable-infogain.md` V1/V8) — so the document adopts it. The runtime
 field names (`factor_names`, `modality_names`, `A_deps`, `B_deps`) are
 unchanged; `describe`/`build` translate.
+*2026-11-13: the node names are the fields `state_names` and `control_names`; the document's
+format is unaffected.*
 *2026-11-06: precisely, a lower level's belief about its states, realised as a value, is the datum
 of an upper level's modality (`nesting-and-coupling.md` N1, N3).*
 

@@ -223,7 +223,7 @@ def make_switch_system(**overrides):
         mixture_k=6,
         mixture_schedule="runnalls",  # no mode-owned slots needed (Guidance)
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     return System(**{**defaults, **overrides})
 
@@ -371,7 +371,7 @@ def test_error_non_categorical_switching_parent():
         policy_len=1,
         mixture_k=4,
         modality_names=("y",),
-        factor_names=("x0", "x1"),
+        state_names=("x0", "x1"),
     )
     innov = ConditionalGaussian(loc=jnp.zeros((1, 1)), chol=jnp.asarray([[[0.3]]]), parent_ndims=1)
     params = SystemParams(
@@ -495,7 +495,7 @@ def make_planning_system(**overrides):
         mixture_k=2,
         mixture_schedule="runnalls",
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     return System(**{**defaults, **overrides})
 

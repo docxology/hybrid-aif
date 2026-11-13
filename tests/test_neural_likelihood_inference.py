@@ -68,7 +68,7 @@ def gaussian_system(decl, recognition=(), modules=None, names=("o",)):
         controlled=(False,),
         policy_len=1,
         modality_names=names,
-        factor_names=("x",),
+        state_names=("x",),
         recognition=tuple(recognition),
     )
     params = SystemParams(
@@ -299,7 +299,7 @@ def test_a_neural_modality_over_two_continuous_factors_is_refused_by_name():
         controlled=(False, False),
         policy_len=1,
         modality_names=("o",),
-        factor_names=("a", "b"),
+        state_names=("a", "b"),
     )
     transition = LinearGaussianTransition(F=0.9 * jnp.eye(2), innovations=INNOV0)
     params = SystemParams(

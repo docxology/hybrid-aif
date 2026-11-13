@@ -127,7 +127,7 @@ def ctrl_system_and_params(F=F_CTRL):
         B_deps=((),),
         controlled=(True,),
         policy_len=2,
-        factor_names=("state",),
+        state_names=("state",),
         modality_names=(),
     )
     params = SystemParams(

@@ -123,12 +123,12 @@ MIXTURE = "mixture"
 Belief = Categorical | Gaussian | MixtureGaussian
 
 
-def refuse_switching_nonlinear(B_f, parents: tuple[int, ...], factor_names, f: int) -> None:
+def refuse_switching_nonlinear(B_f, parents: tuple[int, ...], state_names, f: int) -> None:
     """Raise for a :class:`NonlinearGaussianTransition` with discrete state parents."""
     if isinstance(B_f, NonlinearGaussianTransition) and parents:
         raise NotImplementedError(
-            f"factor {factor_names[f]!r}: a NonlinearGaussianTransition with discrete "
-            f"state parent(s) {[factor_names[g] for g in parents]} is switching "
+            f"factor {state_names[f]!r}: a NonlinearGaussianTransition with discrete "
+            f"state parent(s) {[state_names[g] for g in parents]} is switching "
             "dynamics, which would need f to take the mode, or one f per mode; that is "
             "not built (design: nonlinear-transitions.md N4). Drop the state parents, "
             "read the mode through a discrete control node, or declare a "
@@ -140,7 +140,7 @@ def factor_families(
     B: tuple,
     D: tuple,
     B_deps: tuple[tuple[int, ...], ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Belief family per factor, derived from the declaration types.
 
@@ -154,15 +154,15 @@ def factor_families(
         if isinstance(B_f, MLPConditional):
             if B_deps[f]:
                 raise NotImplementedError(
-                    f"factor {factor_names[f]!r}: a neural (MLPConditional) transition with "
-                    f"discrete parent(s) {[factor_names[g] for g in B_deps[f]]} would grow the "
+                    f"factor {state_names[f]!r}: a neural (MLPConditional) transition with "
+                    f"discrete parent(s) {[state_names[g] for g in B_deps[f]]} would grow the "
                     "belief through one mode-conditioned net per mode; P1's prediction row is "
                     "the parentless linearized one (design: amortization.md A1(a), build plan "
                     "P1). Drop the parents, or declare a LinearGaussianTransition."
                 )
             if not isinstance(D_f, Gaussian):
                 raise ValueError(
-                    f"factor {factor_names[f]!r}: MLPConditional transition requires a "
+                    f"factor {state_names[f]!r}: MLPConditional transition requires a "
                     f"Gaussian prior (D), got {type(D_f).__name__} (the linearized prediction "
                     "row carries a single Gaussian; mixture-carried neural factors are not "
                     "built — design: amortization.md A1(a))"
@@ -171,21 +171,21 @@ def factor_families(
         elif isinstance(B_f, TabularTransition):
             if not isinstance(D_f, TabularPrior):
                 raise ValueError(
-                    f"factor {factor_names[f]!r}: tabular transition (B) requires a "
+                    f"factor {state_names[f]!r}: tabular transition (B) requires a "
                     f"tabular prior (D) — Categorical/Dirichlet, or a conditional form "
                     f"with a System D_deps entry for hierarchical priors — got "
                     f"{type(D_f).__name__}"
                 )
             fams.append(CATEGORICAL)
         elif isinstance(B_f, NonlinearGaussianTransition):
-            refuse_switching_nonlinear(B_f, B_deps[f], factor_names, f)
+            refuse_switching_nonlinear(B_f, B_deps[f], state_names, f)
             if isinstance(D_f, MixtureGaussian):
                 fams.append(MIXTURE)
             elif isinstance(D_f, Gaussian):
                 fams.append(GAUSSIAN)
             else:
                 raise ValueError(
-                    f"factor {factor_names[f]!r}: NonlinearGaussianTransition requires a "
+                    f"factor {state_names[f]!r}: NonlinearGaussianTransition requires a "
                     f"Gaussian or MixtureGaussian prior (D), got {type(D_f).__name__}"
                 )
         elif isinstance(B_f, LinearGaussianTransition):
@@ -195,12 +195,12 @@ def factor_families(
                 fams.append(MIXTURE if B_deps[f] else GAUSSIAN)
             else:
                 raise ValueError(
-                    f"factor {factor_names[f]!r}: LinearGaussianTransition requires a "
+                    f"factor {state_names[f]!r}: LinearGaussianTransition requires a "
                     f"Gaussian or MixtureGaussian prior (D), got {type(D_f).__name__}"
                 )
         else:
             raise ValueError(
-                f"factor {factor_names[f]!r}: unknown transition declaration type "
+                f"factor {state_names[f]!r}: unknown transition declaration type "
                 f"{type(B_f).__name__}"
             )
     return tuple(fams)
@@ -387,7 +387,7 @@ def validate_structure(
     space: ControlSpace,
     mixture_k: int | None,
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     mixture_schedule: str = "runnalls",
     sensed: "SensedNodes | None" = None,
     cells: dict[int, Grid] | None = None,
@@ -406,7 +406,7 @@ def validate_structure(
     and discrete control nodes) in declared order, and ``G`` reads its continuous control
     nodes, concatenated in declared order.
     """
-    facs, mods = factor_names, modality_names
+    facs, mods = state_names, modality_names
     families = factor_families(B, D, B_deps, facs)
     kinds, sizes = space.kinds, space.sizes
     for f, fam in enumerate(families):
@@ -1708,7 +1708,7 @@ def make_step_terms(
     param_infogain_modalities: tuple[int, ...],
     param_infogain_factors: tuple[int, ...],
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     mounts: tuple[registry.Mount, ...] = (),
     channel_selection: tuple[tuple[bool, ...] | None, ...] = (),
     factor_dims: tuple[tuple[int, ...] | None, ...] = (),
@@ -1791,7 +1791,7 @@ def make_step_terms(
         param_infogain_modalities=param_infogain_modalities,
         param_infogain_factors=param_infogain_factors,
         modality_names=modality_names,
-        factor_names=factor_names,
+        state_names=state_names,
         mounts=mounts,
         channel_selection=channel_selection,
         factor_dims=factor_dims,
@@ -1841,7 +1841,7 @@ def make_step_terms(
                     sensed.columns[g - sensed.offset],
                     sensed,
                     modality_names[m],
-                    factor_names[A_deps[m][0]],
+                    state_names[A_deps[m][0]],
                     families[A_deps[m][0]] == MIXTURE,
                 )
                 for g in selecting[m]
@@ -1879,7 +1879,7 @@ def _make_step_terms(
     param_infogain_modalities: tuple[int, ...],
     param_infogain_factors: tuple[int, ...],
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     mounts: tuple[registry.Mount, ...] = (),
     channel_selection: tuple[tuple[bool, ...] | None, ...] = (),
     factor_dims: tuple[tuple[int, ...] | None, ...] = (),
@@ -1894,7 +1894,7 @@ def _make_step_terms(
     pooled: Pooled | None = None,
 ):
     """:func:`make_step_terms` over declarations every channel reads whole."""
-    mods, facs = modality_names, factor_names
+    mods, facs = modality_names, state_names
     # the channels no plan step observes: their leaves are zeros, with nothing computed for them
     absent = static_absent(present)
     c_deps = dict(c_deps or {})
@@ -2026,7 +2026,7 @@ def _make_step_terms(
     statics = registry.Statics(
         index=(),
         modality_names=mods,
-        factor_names=facs,
+        state_names=facs,
         A=A,
         B=B,
         A_deps=A_deps,
@@ -2361,7 +2361,7 @@ def _make_step_terms(
 
 def make_terminal_terms(
     terminal_targets: dict[str, Distribution],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     h_deps: tuple[tuple[int, ...], ...] | None = None,
     branching: bool = False,
     cross_entropy_targets: frozenset[str] = frozenset(),
@@ -2386,23 +2386,23 @@ def make_terminal_terms(
 
     ce_targets = {k: v for k, v in terminal_targets.items() if k in cross_entropy_targets}
     terminal_targets = {k: v for k, v in terminal_targets.items() if k not in cross_entropy_targets}
-    deps = h_deps if h_deps is not None else ((),) * len(factor_names)
-    conditional = any(deps[f] for f, name in enumerate(factor_names) if name in terminal_targets)
+    deps = h_deps if h_deps is not None else ((),) * len(state_names)
+    conditional = any(deps[f] for f, name in enumerate(state_names) if name in terminal_targets)
 
     def terminal_terms(qs_final: tuple[Belief, ...]) -> TermTree:
         qs_final = predictive_beliefs(qs_final)
         if branching:
             every = {**terminal_targets, **ce_targets}
-            return stamped(terminal_cross_entropy_risk(qs_final, every, deps, factor_names))
+            return stamped(terminal_cross_entropy_risk(qs_final, every, deps, state_names))
         targets = (
-            resolve_conditional_targets(terminal_targets, deps, qs_final, factor_names)
+            resolve_conditional_targets(terminal_targets, deps, qs_final, state_names)
             if conditional
             else terminal_targets
         )
-        tree = terminal_risk(qs_final, targets, factor_names)
+        tree = terminal_risk(qs_final, targets, state_names)
         if ce_targets:
-            no_deps = ((),) * len(factor_names)
-            covered = terminal_cross_entropy_risk(qs_final, ce_targets, no_deps, factor_names)
+            no_deps = ((),) * len(state_names)
+            covered = terminal_cross_entropy_risk(qs_final, ce_targets, no_deps, state_names)
             tree = {"terminal_risk": {**tree["terminal_risk"], **covered["terminal_risk"]}}
         return stamped(tree)
 

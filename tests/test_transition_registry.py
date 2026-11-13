@@ -114,7 +114,7 @@ class Inverted(eqx.Module):
 
 def _single(f, propagation="first_order"):
     """An uncontrolled 3-d factor through ``f``."""
-    system = System(B_deps=((),), factor_names=("pose",), policy_len=2)
+    system = System(B_deps=((),), state_names=("pose",), policy_len=2)
     params = SystemParams(
         transition={
             "pose": NonlinearGaussianTransition(
@@ -235,7 +235,8 @@ def test_a_continuous_control_round_trips(propagation):
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("w",),
-        factor_names=("pose", "u_w"),
+        state_names=("pose",),
+        control_names=("u_w",),
         planner="gradient",
     )
     params = dataclasses.replace(

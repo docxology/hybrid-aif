@@ -168,7 +168,7 @@ def _coverage_like_system_and_params():
         mixture_k=4,
         mixture_schedule="runnalls",
         modality_names=("cell", "y"),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     ident = jnp.log(jnp.asarray([[0.95, 0.05], [0.05, 0.95]]))
     cell_obs = ConditionalCategorical(log_table=ident, parent_ndims=1)
@@ -306,7 +306,7 @@ def test_novelty_selector_on_lg_noise_raises_deferral():
         policy_len=1,
         mixture_k=4,
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     params = _learnable_switch_params()
     with pytest.raises(NotImplementedError, match="deferred"):
@@ -368,7 +368,7 @@ def test_switching_noise_learning_with_a_head_per_parent_config():
         mixture_k=6,
         mixture_schedule="runnalls",
         modality_names=("y",),
-        factor_names=("a", "b", "x"),
+        state_names=("a", "b", "x"),
     )
     ig = InverseGamma.from_R_chol(jnp.full((2, 3, 1, 1), 0.6), strength=2.0)
     stick2 = ConditionalCategorical(log_table=jnp.log(jnp.full((2, 1), 0.5)), parent_ndims=1)
@@ -430,7 +430,7 @@ def test_switching_noise_stats_lay_the_heads_out_as_inference_does():
         mixture_k=6,
         mixture_schedule="runnalls",
         modality_names=("y",),
-        factor_names=("a", "b", "x"),
+        state_names=("a", "b", "x"),
     )
     one = System(
         A_deps=((1, 0),),
@@ -440,7 +440,7 @@ def test_switching_noise_stats_lay_the_heads_out_as_inference_does():
         mixture_k=6,
         mixture_schedule="runnalls",
         modality_names=("y",),
-        factor_names=("ab", "x"),
+        state_names=("ab", "x"),
     )
     lg_x = LinearGaussianTransition(F=jnp.asarray([[1.0]]), innovations=x_innov)
     params_two = dataclasses.replace(

@@ -759,7 +759,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
     # -------------------------------------------------- concatenate the frames
     fac_offset: dict[str, int] = {}
     mod_offset: dict[str, int] = {}
-    factor_names: list[str] = []
+    state_names: list[str] = []
     modality_names: list[str] = []
     A_deps: list[tuple[int, ...]] = []
     parents: list[list[tuple[str, int]]] = []  # per state factor, ("state", g) / ("control", k)
@@ -815,9 +815,9 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
                 "with kernel=None take a kernel in the params): the pair is mismatched"
             )
         table = system._table
-        f_off, m_off, k_off = len(factor_names), len(modality_names), len(nodes)
+        f_off, m_off, k_off = len(state_names), len(modality_names), len(nodes)
         fac_offset[name], mod_offset[name] = f_off, m_off
-        factor_names.extend(f"{name}{SEPARATOR}{f}" for f in facs)
+        state_names.extend(f"{name}{SEPARATOR}{f}" for f in facs)
         modality_names.extend(f"{name}{SEPARATOR}{m}" for m in mods)
         #  a state factor shifts by the component's offset; an action node a modality observes
         #  (index at or above the component's node count) is held as -(node + 1) until the
@@ -933,7 +933,7 @@ def _splice(subsystems: Mapping[str, System], params: Mapping[str, SystemParams]
         params=params,
         fac_offset=fac_offset,
         mod_offset=mod_offset,
-        factor_names=factor_names,
+        state_names=state_names,
         modality_names=modality_names,
         A_deps=A_deps,
         parents=parents,
@@ -981,8 +981,8 @@ def merge(
     composite's node order: every component's state factors in turn, then every component's
     control nodes in turn (each followed by its action node), hence the action keys' and policy
     set's layout. ``bindings`` are applied in the order given. The composite always carries
-    explicit ``factor_names``/``modality_names``/``action_names``: a component's generated names
-    are namespaced.
+    explicit ``state_names``/``control_names``/``modality_names``/``action_names``: a
+    component's generated names are namespaced.
 
     - Planner fields (``policy_len``, ``planner``, ``gamma``, ``num_iters``, ``decomposition``,
       ``planning_belief``, ``feedback``) are the leaves' value where every leaf has one and
@@ -1047,8 +1047,8 @@ def _assemble(
     sp = _splice(subsystems, params)
     params = sp.params
     fac_offset, mod_offset = sp.fac_offset, sp.mod_offset
-    factor_names, modality_names, A_deps, parents = (
-        sp.factor_names,
+    state_names, modality_names, A_deps, parents = (
+        sp.state_names,
         sp.modality_names,
         sp.A_deps,
         sp.parents,
@@ -1088,7 +1088,7 @@ def _assemble(
         sp.emission_reads,
         sp.terms,
     )
-    factor_index = {name: i for i, name in enumerate(factor_names)}
+    factor_index = {name: i for i, name in enumerate(state_names)}
     modality_index = {name: i for i, name in enumerate(modality_names)}
     node_index = {node.name: k for k, node in enumerate(nodes)}
     owner = {
@@ -1140,7 +1140,7 @@ def _assemble(
             )
         return ValueError(
             f"Link({state!r} -> {node!r}) merges a state with {node!r}, which "
-            f"{[factor_names[g] for g in sorted(readers)]} read ({source}); a relay re-reads "
+            f"{[state_names[g] for g in sorted(readers)]} read ({source}); a relay re-reads "
             f"one factor's control axis, so bind from {same_step_node} for a same-step read, or "
             "relay into a node one factor reads"
         )
@@ -1158,7 +1158,7 @@ def _assemble(
             if nodes[k].live:
                 return k
             if k in relayed:
-                to = [factor_names[relayed[k]]]
+                to = [state_names[relayed[k]]]
             elif k in terminations:
                 to = "a Clamp"
             else:
@@ -1207,7 +1207,7 @@ def _assemble(
         is the variable's, shared by every reader, and one reader's axes cannot change alone."""
         if ("transition", g) in reads:
             raise NotImplementedError(
-                f"{what} rewrites the control axis of factor {factor_names[g]!r}'s transition "
+                f"{what} rewrites the control axis of factor {state_names[g]!r}'s transition "
                 f"table, which is the parameter variable {reads[('transition', g)]!r} that other "
                 "readers share; declare the factor's own table (not a Parameter reference) "
                 "where a binding changes its axes"
@@ -1220,7 +1220,7 @@ def _assemble(
             floats = [p for p, i in control_parents(g) if nodes[i].kind == FLOAT]
             transition[g] = _cut_axes(
                 transition[g],
-                factor_names[g],
+                state_names[g],
                 len(control_parents(g)),
                 [(pos, keep, weights)],
                 floats,
@@ -1330,7 +1330,7 @@ def _assemble(
             d = None if driver is None else node_index[driver]
             if d is not None and d in relayed:
                 raise relay_refusal(
-                    factor_names[relayed[d]],
+                    state_names[relayed[d]],
                     nodes[d].name,
                     [relay_reader[d], *(g for g, _ in readers_of(c))],
                     [*(nodes[k].name for k, v in driven_by.items() if v == nodes[d].action), slot],
@@ -1455,7 +1455,7 @@ def _assemble(
                 if H_deps[f]:
                     raise ValueError(
                         f"factor {factor!r} already declares H_deps parent(s) "
-                        f"{[factor_names[g] for g in H_deps[f]]} of its own; a terminal link "
+                        f"{[state_names[g] for g in H_deps[f]]} of its own; a terminal link "
                         "declares the parents of an as-yet-unconditioned terminal target, it "
                         "does not override a component's own declaration"
                     )
@@ -1504,7 +1504,7 @@ def _assemble(
                 if source not in factor_index:
                     raise ValueError(
                         f"{label}: the source is {classify(source)}; a belief read takes a state "
-                        f"factor of another component, one of {list(factor_names)}"
+                        f"factor of another component, one of {list(state_names)}"
                     )
                 if target.split(SEPARATOR)[0] == source.split(SEPARATOR)[0]:
                     raise ValueError(
@@ -1602,7 +1602,7 @@ def _assemble(
                         f"{label}: the source is {kind}; a link into a control node comes from "
                         "an action node (read at the same step), one of "
                         f"{sorted(action_to_node)}, or a state factor (read a step later), one "
-                        f"of {list(factor_names)}"
+                        f"of {list(state_names)}"
                     )
                 if binding.realise is not None:
                     raise ValueError(
@@ -1649,7 +1649,7 @@ def _assemble(
                 kernel_not_dropped(c, label)
                 g, pos = readers[0]
                 table_is_owned(g, label)
-                transition[g] = _drop_control_axis(transition[g], factor_names[g], None, None)
+                transition[g] = _drop_control_axis(transition[g], state_names[g], None, None)
                 parents[g][pos] = ("state", d)
                 nodes[c].live = False
                 relayed[c] = d
@@ -1794,7 +1794,7 @@ def _assemble(
                 k = node_index[final]
                 if not nodes[k].live:
                     how = (
-                        f"merged with the state {factor_names[relayed[k]]!r} by a relay"
+                        f"merged with the state {state_names[relayed[k]]!r} by a relay"
                         if k in relayed
                         else "terminated by a Clamp"
                     )
@@ -1879,7 +1879,7 @@ def _assemble(
                 "or drop the binding"
             )
         pooled_over.append((table, final))
-    n_states = len(factor_names)
+    n_states = len(state_names)
     n_columns = n_states + len(live_nodes)
     for m, deps in enumerate(A_deps):
         if all(g >= 0 for g in deps):
@@ -1910,7 +1910,7 @@ def _assemble(
             k = node_index.get(key)
             if k in relayed or k in terminations:
                 how = (
-                    f"merged with the state {factor_names[relayed[k]]!r}"
+                    f"merged with the state {state_names[relayed[k]]!r}"
                     if k in relayed
                     else "terminated with a Clamp"
                 )
@@ -1934,7 +1934,7 @@ def _assemble(
             if k in relayed:
                 raise ValueError(
                     f"merge: the target on {key!r} is conditional on the control node {p!r}, "
-                    f"which a relay identified with the state {factor_names[relayed[k]]!r}; a "
+                    f"which a relay identified with the state {state_names[relayed[k]]!r}; a "
                     "relay reads the state a step later while a per-step target reads the "
                     "step's own belief, so condition the target on the driver or drop the "
                     "relay"
@@ -1965,7 +1965,7 @@ def _assemble(
             for node, action in sub.actions:
                 action_of.setdefault(namespaced_key(name, node), namespaced_key(name, action))
     boxed = dict(sp.black_box)
-    this_relayed = {nodes[k].name: factor_names[d] for k, d in relayed.items()}
+    this_relayed = {nodes[k].name: state_names[d] for k, d in relayed.items()}
     this_terminated = [nodes[k].name for k in terminations]
     entries: list[tuple[str, tuple[int, ...], tuple[int, ...], dict, list, list]] = []
     for name, system in subsystems.items():
@@ -2021,8 +2021,8 @@ def _assemble(
             if crossing[name]
             else "none"
         )
-        relays = dict(sorted(relays.items(), key=lambda kv: _node_order(kv[0], factor_names)))
-        ended = sorted(ended, key=lambda node: _node_order(node, factor_names))
+        relays = dict(sorted(relays.items(), key=lambda kv: _node_order(kv[0], state_names)))
+        ended = sorted(ended, key=lambda node: _node_order(node, state_names))
         #  an in-port of a black box has no action node, so no pair of its own
         named = [*chosen, *relays, *ended, *(node for node, _ in pairs if node not in boxed)]
         metadata.append(
@@ -2119,7 +2119,8 @@ def _assemble(
         H_deps=None if all(not h for h in H_deps) else (*H_deps, *pad),
         C_deps=tuple(C_deps),
         modality_names=tuple(modality_names),
-        factor_names=(*factor_names, *(nodes[k].name for k in live)),
+        state_names=tuple(state_names),
+        control_names=tuple(nodes[k].name for k in live),
         dims=tuple(dims),
         cells=tuple(cells),
         readings=tuple(pooled_over),
@@ -2301,14 +2302,14 @@ def _state_deps(deps: tuple[int, ...], n_states: int) -> tuple[int, ...]:
     return tuple(g for g in deps if g < n_states)
 
 
-def _node_order(node: str, factor_names: Sequence[str]) -> tuple[int, str]:
+def _node_order(node: str, state_names: Sequence[str]) -> tuple[int, str]:
     """Sort key for a record's node names: the state a sugar-named node ``u_<f>`` belongs to,
     by factor index, before any other node, by name."""
     space, sep, leaf = node.rpartition(SEPARATOR)
     state = f"{space}{sep}{leaf[2:]}" if leaf.startswith("u_") else None
-    if state in factor_names:
-        return (list(factor_names).index(state), "")
-    return (len(factor_names), node)
+    if state in state_names:
+        return (list(state_names).index(state), "")
+    return (len(state_names), node)
 
 
 # ------------------------------------------------------- the subjective-view constructor
@@ -2847,7 +2848,8 @@ def subsystem(
         recognition=recognition or None,
         external_inputs=external,
         modality_names=view_mods,
-        factor_names=(*view_facs, *view_nodes),
+        state_names=tuple(view_facs),
+        control_names=tuple(view_nodes),
         dims=tuple((factor, names) for factor, names in composite.dims if factor in view_facs),
         cells=tuple((factor, grid) for factor, grid in composite.cells if factor in view_facs),
         readings=tuple(view_readings),

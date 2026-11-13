@@ -95,7 +95,7 @@ def _dual_learnable_system(epistemic=True, ns=3, no=4, nu=2, seed=5):
         policy_len=2,
         epistemic=epistemic,
         modality_names=("sense", "ident"),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={
@@ -172,7 +172,7 @@ def test_transition_novelty_favors_untried_actions():
         policy_len=1,
         epistemic=("transition:s",),
         modality_names=("ident",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params = SystemParams(
         likelihood={"ident": _near_identity(ns)},
@@ -221,7 +221,7 @@ def _hybrid_learnable_system(seed=5, ns=3, nu=2):
         controlled=(True, False),
         policy_len=2,
         modality_names=("ident", "y"),
-        factor_names=("s", "x"),
+        state_names=("s", "x"),
     )
     params = SystemParams(
         likelihood={
@@ -257,7 +257,7 @@ def test_hybrid_path_matches_discrete_twin_on_transition_novelty():
         controlled=(True,),
         policy_len=2,
         modality_names=("ident",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     params_d = SystemParams(
         likelihood={"ident": params_h.likelihood["ident"]},

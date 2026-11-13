@@ -46,7 +46,8 @@ def mission():
         B_deps=((0, 1), ()),
         controls=(1,),
         action_names=("option",),
-        factor_names=("leg", "u_option"),
+        state_names=("leg",),
+        control_names=("u_option",),
         modality_names=("region",),
         policy_len=2,
         planner="gradient",
@@ -71,7 +72,8 @@ def rover(per_level=True, with_float=True):
     """Fast tier: a 2-D x whose innovations are indexed by a terrain state and an option node,
     under a velocity command when ``with_float``."""
     controls = (2, 3) if with_float else (2,)
-    names = ("terrain", "x", "v", "u_opt") if with_float else ("terrain", "x", "u_opt")
+    states = ("terrain", "x")
+    nodes = ("v", "u_opt") if with_float else ("u_opt",)
     deps = (
         ((0,), (0, 2, 3) if with_float else (0, 2), (), ())
         if with_float
@@ -86,7 +88,8 @@ def rover(per_level=True, with_float=True):
         B_deps=deps,
         controls=controls,
         action_names=("a_v", "a_opt") if with_float else ("a_opt",),
-        factor_names=names,
+        state_names=states,
+        control_names=nodes,
         modality_names=("fix",),
         policy_len=2,
         planner="gradient",
@@ -162,7 +165,8 @@ def pinned_standalone(level, per_level=True):
         B_deps=((0,), (0, 2), ()),
         controls=(2,),
         action_names=("a_v",),
-        factor_names=("terrain", "x", "v"),
+        state_names=("terrain", "x"),
+        control_names=("v",),
         modality_names=("fix",),
         policy_len=2,
         planner="gradient",
@@ -231,7 +235,8 @@ def test_identifying_a_state_with_the_node_keeps_the_innovations():
         B_deps=((0, 1), ()),
         controls=(1,),
         action_names=("pick",),
-        factor_names=("d", "u_d"),
+        state_names=("d",),
+        control_names=("u_d",),
         modality_names=("seen",),
         policy_len=2,
         planner="gradient",
@@ -275,7 +280,8 @@ def float_composite():
         B_deps=((1,), ()),
         controls=(1,),
         action_names=("push",),
-        factor_names=("x", "v"),
+        state_names=("x",),
+        control_names=("v",),
         modality_names=("fix",),
         policy_len=1,
     )

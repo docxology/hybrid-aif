@@ -228,7 +228,7 @@ def test_evidence_by_slot_keys_and_unscored_slots():
         controlled=(False,),
         policy_len=1,
         modality_names=("sense",),
-        factor_names=("s",),
+        state_names=("s",),
     )
     like = ConditionalDirichlet(concentration=jnp.full((2, 2), 1.0), parent_ndims=1)
     trans = ConditionalCategorical(log_table=jnp.log(jnp.full((2, 2, 1), 0.5)), parent_ndims=2)
@@ -286,7 +286,7 @@ def test_mass_let_go_under_decay_is_unscored():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
     )
     assert float(absorbed_count(prior, post)) < 0.0
     out = system.log_evidence(
@@ -315,7 +315,7 @@ def test_positional_params_are_refused_by_name():
         controlled=(False,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
     )
     d0 = Dirichlet(concentration=jnp.ones(2))
     table = ConditionalCategorical(log_table=jnp.zeros((2, 2, 1)), parent_ndims=2)

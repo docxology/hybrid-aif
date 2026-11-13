@@ -38,7 +38,9 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 <!-- /block -->
 
 <!-- block: documentation -->
-  <p class="lead">The documentation will be linked from here.</p>
+  <p class="lead">The <a href="api/index.html">API reference</a> lists every public name of the
+  library, grouped by what a user does with it: declaring a model, composing and running systems,
+  inference, planning and objectives, learning, and records.</p>
 <!-- /block -->
 
 <!-- block: links -->
@@ -142,7 +144,8 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
     B_deps=((0, 3), (1, 0, 3), (0,), ()),     # the option moves visit and energy
     controls=(3,),
     action_names=("option",),
-    factor_names=("visit", "energy", "map", "u_option"),
+    state_names=("visit", "energy", "map"),
+    control_names=("u_option",),
     modality_names=("cell_obs", "gauge"),
     policy_len=2,
     planner="enumeration",

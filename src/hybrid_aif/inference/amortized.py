@@ -174,7 +174,7 @@ def validate_structure(
     state_targets: Mapping[str, object],
     terminal_targets: Mapping[str, object],
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     controls: ControlLayout | None = None,
     external_inputs: tuple[tuple[str, int], ...] = (),
 ) -> AmortizedStructure:
@@ -196,7 +196,7 @@ def validate_structure(
 
     Design: docs/design/amortization.md A11
     """
-    mods, facs = modality_names, factor_names
+    mods, facs = modality_names, state_names
     n_factors = len(B_deps)
     if len(B) != n_factors or len(D) != n_factors:
         raise ValueError(
@@ -407,7 +407,7 @@ def check_analytic_parents(
     recognition: tuple[Recognition, ...] | None,
     modality_names: tuple[str, ...],
     external_inputs: tuple[tuple[str, int], ...] = (),
-    factor_names: tuple[str, ...] = (),
+    state_names: tuple[str, ...] = (),
 ) -> None:
     """Refuse a recognition entry whose conditioning set the analytic path cannot read.
 
@@ -432,7 +432,7 @@ def check_analytic_parents(
                 or (kind == EXTERNAL and name in externals)
                 or (kind == RECOGNITION and name in declared and name != entry.variable)
             )
-            if ok and kind == RECOGNITION and name in factor_names:
+            if ok and kind == RECOGNITION and name in state_names:
                 raise ValueError(
                     f"recognition:{entry.variable}: parent {parent!r} is the output of the entry "
                     f"for the factor {name!r}; an amortized variable is not a parent of another "
@@ -537,7 +537,7 @@ def check_analytic_recognition(
     recognition: tuple[Recognition, ...] | None,
     recognition_params: Mapping[str, object],
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     control_names: tuple[str, ...],
     kinds: tuple[str, ...],
     widths: tuple[int | None, ...],
@@ -555,7 +555,7 @@ def check_analytic_recognition(
     recognition-beside-analytic.md R2. A categorical observation (a level index, no vector) is
     refused as a parent; ``categorical_observations`` flags the modalities that are one.
     """
-    check_analytic_parents(recognition, modality_names, external_inputs, factor_names)
+    check_analytic_parents(recognition, modality_names, external_inputs, state_names)
     entries = tuple(recognition or ())
     for entry in entries:
         for parent in entry.parents:
@@ -585,8 +585,8 @@ def check_analytic_recognition(
     out_width: dict[str, int | None] = {}
     for entry in analytic_order(entries):
         module = recognition_params[entry.variable]
-        if entry.variable in factor_names:
-            f = factor_names.index(entry.variable)
+        if entry.variable in state_names:
+            f = state_names.index(entry.variable)
             if not _module_fits(module, kinds[f], widths[f]):
                 raise _family_refusal(entry.variable, module, kinds[f], widths[f])
             out_width[entry.variable] = widths[f]
@@ -594,7 +594,7 @@ def check_analytic_recognition(
             if entry.variable not in read:
                 raise ValueError(
                     f"recognition:{entry.variable}: the name is neither a state factor "
-                    f"{list(factor_names)} nor read by any entry as 'recognition:"
+                    f"{list(state_names)} nor read by any entry as 'recognition:"
                     f"{entry.variable}'; an auxiliary no entry reads is inert, which is most "
                     "likely a mistyped factor name (recognition-beside-analytic.md R2)"
                 )
@@ -666,7 +666,7 @@ def analytic_recognize(
     externals: Mapping[str, Array] | None,
     present: tuple[bool | Array, ...] | None,
     modality_names: tuple[str, ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     kinds: tuple[str, ...],
     widths: tuple[int, ...],
 ) -> tuple[Measurement, ...]:
@@ -679,7 +679,7 @@ def analytic_recognize(
     entries. An entry whose observed parents are not all present contributes nothing: a static
     absence produces no measurement, a traced one is carried in ``Measurement.present``.
     """
-    factor_of = {name: f for f, name in enumerate(factor_names)}
+    factor_of = {name: f for f, name in enumerate(state_names)}
     supplied = {} if externals is None else externals
     values: dict[str, Array] = {}
     presence: dict[str, bool | Array] = {}

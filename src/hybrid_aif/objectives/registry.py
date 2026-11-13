@@ -124,7 +124,7 @@ class Statics(NamedTuple):
     modality_names: tuple[str, ...] = ()
     controlled: tuple[bool, ...] = ()
     num_controls: tuple[int, ...] = ()
-    factor_names: tuple[str, ...] = ()
+    state_names: tuple[str, ...] = ()
     A: tuple = ()
     B: tuple = ()
     A_deps: tuple[tuple[int, ...], ...] = ()
@@ -282,7 +282,7 @@ def approximate_status(
     A: tuple,
     B_deps: tuple[tuple[int, ...], ...],
     A_deps: tuple[tuple[int, ...], ...],
-    factor_names: tuple[str, ...],
+    state_names: tuple[str, ...],
     modality_names: tuple[str, ...],
 ) -> Approximation:
     """The static ``approximate`` map of a System (design: recognition-beside-analytic.md L7).
@@ -315,7 +315,7 @@ def approximate_status(
         for m, deps in enumerate(A_deps)
     ]
     return Approximation(
-        dict(zip(factor_names, approx, strict=False)),
+        dict(zip(state_names, approx, strict=False)),
         dict(zip(modality_names, modalities, strict=False)),
     )
 
@@ -327,7 +327,7 @@ def statics_approximation(statics: "Statics") -> Approximation:
         statics.A,
         statics.B_deps,
         statics.A_deps,
-        statics.factor_names,
+        statics.state_names,
         statics.modality_names,
     )
 
@@ -454,7 +454,7 @@ def _state_emission(st: Statics) -> Step:
 def _uncertainty(st: Statics) -> Step:
     """``H[q(x)]`` of each mounted continuous factor's predictive belief, or of its marginal
     over the sub-block the row was mounted on (the ``uncertainty`` row)."""
-    index, names = st.index, _sub(st.factor_names, st.index)
+    index, names = st.index, _sub(st.state_names, st.index)
     dims = _sub(st.dims, index) if st.dims else (None,) * len(index)
 
     def step(ctx: StepContext) -> dict[str, Interval]:
@@ -481,7 +481,7 @@ def _param_likelihood(st: Statics) -> Step:
 def _param_transition(st: Statics) -> Step:
     index = st.index
     B, deps = _sub(st.B, index), _sub(st.B_deps, index)
-    names = _sub(st.factor_names, index)
+    names = _sub(st.state_names, index)
 
     def step(ctx: StepContext) -> dict[str, Interval]:
         _needs_prev(ctx.qs_prev)
@@ -548,7 +548,7 @@ def _param_likelihood_compiled(st: Statics) -> Step:
 
 
 def _param_transition_compiled(st: Statics) -> Step:
-    index, facs, B_deps, wB = st.index, st.factor_names, st.B_deps, st.tables.wB
+    index, facs, B_deps, wB = st.index, st.state_names, st.B_deps, st.tables.wB
     cdeps = st.B_control_deps
     # Static per-factor flag: does the transition table carry its control axes?
     has_control = tuple(
@@ -581,7 +581,7 @@ def _occupancy_transition(st: Statics) -> Step:
     """
     index = st.index
     B, deps = _sub(st.B, index), _sub(st.B_deps, index)
-    names = _sub(st.factor_names, index)
+    names = _sub(st.state_names, index)
     cdeps = st.B_control_deps
     # Static per-factor flag: does the declaration carry its control axes?
     has_control = tuple(
@@ -606,7 +606,7 @@ def _occupancy_transition(st: Statics) -> Step:
 
 
 def _occupancy_transition_compiled(st: Statics) -> Step:
-    index, facs, B_deps, B_probs = st.index, st.factor_names, st.B_deps, st.tables.B_probs
+    index, facs, B_deps, B_probs = st.index, st.state_names, st.B_deps, st.tables.B_probs
     cdeps = st.B_control_deps
     has_control = tuple(
         B_probs[f].ndim == len(B_deps[f]) + 1 + num_control_axes(cdeps, f) for f in index
@@ -885,7 +885,7 @@ def mount_statics(mount: Mount, statics: Statics) -> Statics:
     dims = ()
     if mount.dims is not None:
         dims = tuple(
-            mount.dims if f in mount.index else None for f in range(len(statics.factor_names))
+            mount.dims if f in mount.index else None for f in range(len(statics.state_names))
         )
     return statics._replace(
         index=mount.index,

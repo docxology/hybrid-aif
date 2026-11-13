@@ -387,7 +387,7 @@ def mission_system(**overrides):
         policy_len=2,
         mixture_k=4,
         modality_names=("look",),
-        factor_names=("commit", "pose"),
+        state_names=("commit", "pose"),
         epistemic=False,
     )
     return System(**{**defaults, **overrides})

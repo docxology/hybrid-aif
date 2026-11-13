@@ -60,7 +60,7 @@ def test_a_link_from_an_action_node_to_a_control_node_makes_the_two_nodes_one():
     subs = dict(composite.subsystems)
     assert subs["b"].identified == (("b.u_location", "a.u_location"),)
     assert subs["b"].boundary == "blanket" and nested(composite, "b")
-    names = composite.factor_names
+    names = composite.node_names
     assert composite.B_deps[names.index("b.location")] == (
         names.index("b.location"),
         names.index("a.u_location"),
@@ -275,7 +275,7 @@ def test_a_single_name_source_is_one_parent_and_the_terminal_key_is_reserved():
 
     assert "terminal" in _KEY_KINDS
     with pytest.raises(ValueError, match="reserved"):
-        System(B_deps=((),), factor_names=("terminal",), policy_len=1)
+        System(B_deps=((),), state_names=("terminal",), policy_len=1)
 
 
 def test_a_terminal_link_refuses_a_realise_a_port_and_a_second_declaration():

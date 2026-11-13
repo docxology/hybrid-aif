@@ -153,7 +153,7 @@ def make_agent(
         mixture_schedule="mode_aligned",
         epistemic=epistemic,
         modality_names=("y",),
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
     )
     params = SystemParams(
         likelihood={"y": LinearGaussianObservation(H=OBS_H, c=OBS_C, noise=OBS_R_CHOL)},

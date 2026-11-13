@@ -37,7 +37,7 @@ def tmaze_system(policy_len=2, epistemic=True):
         gamma=16.0,
         epistemic=epistemic,
         modality_names=("location_obs", "reward", "cue"),
-        factor_names=("location", "context"),
+        state_names=("location", "context"),
     )
     #  the pymdp-shaped tables enter by position, through the converter
     params = SystemParams(
@@ -293,7 +293,7 @@ def test_a_memoryless_factor_ticks_without_a_transition_parent():
         controlled=(False,),
         policy_len=2,
         A_deps=((0,),),
-        factor_names=("s",),
+        state_names=("s",),
         modality_names=("o",),
     )
     reactive = jnp.log(jnp.asarray([[0.2], [0.5], [0.3]]))  # (levels, control=1)

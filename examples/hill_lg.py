@@ -77,7 +77,7 @@ def make_agent(
         epistemic=epistemic,
         terms=("uncertainty:state",) if include_entropy else (),
         modality_names=("position",),
-        factor_names=("state",),
+        state_names=("state",),
     )
     params = SystemParams(
         likelihood={

@@ -478,6 +478,8 @@ once more.)*
 `modality_names`, filled with `factor_{i}` / `modality_{m}` at construction when not declared) are
 the single source of names and of node order; keys in `SystemParams`, targets and rate maps are
 references to them, validated at every face, and `System.names` is the read-only view.
+*(2026-11-13: the node names are declared as two tuples, `state_names` and `control_names`;
+`System.node_names` is the two in node order.)*
 *Extended again (Alex, 2026-10-06):* the per-variable containers of `SystemParams`
 (`likelihood`, `transition`, `initial_state_prior`, …) and of an environment's parameters are keyed by
 name too (`params.likelihood["position"]`); the tables inside stay arrays. Conditional on no runtime

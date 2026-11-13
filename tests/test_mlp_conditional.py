@@ -53,7 +53,7 @@ def _mlp_transition_system(**system_kwargs):
         B_deps=((),),
         controlled=(True,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,  # a neural slot has no novelty estimator; see the tests below
         **system_kwargs,
     )
@@ -249,7 +249,7 @@ def test_neural_transition_rejects_discrete_parents_and_mixture_priors():
         B_deps=((), (0,)),
         controlled=(False, True),
         policy_len=1,
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         epistemic=False,
         mixture_k=2,
     )
@@ -278,7 +278,7 @@ def test_neural_likelihood_is_declarable_and_conditions_through_its_linearisatio
         controlled=(True,),
         policy_len=1,
         modality_names=("y",),
-        factor_names=("x",),
+        state_names=("x",),
         epistemic=False,
     )
     obs_net = MLPConditional.from_shapes((DIM,), 1, key=KEY, width=8, depth=1)

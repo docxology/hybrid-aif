@@ -484,7 +484,7 @@ action node is the build's, N5 being unbuilt, but the size is honest):
 def world_system():
     """The world's ports: three state factors, one driven control node, three emissions."""
     system = System(
-        factor_names=("terrain", "x", "energy"),
+        state_names=("terrain", "x", "energy"),
         B_deps=((1,), (1,), (2, 0, 1)),               # terrain and x from x; energy from all
         controls=(FLOAT,),                            # v: the velocity command, width 2
         control_names=("v",), action_names=("a_v",),

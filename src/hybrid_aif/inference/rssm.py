@@ -255,7 +255,7 @@ class RSSMCore(eqx.Module):
         recognition: dict,
         A_deps: tuple[tuple[int, ...], ...],
         modality_names: tuple[str, ...],
-        factor_names: tuple[str, ...],
+        state_names: tuple[str, ...],
         roles: dict[str, str] | None = None,
     ) -> tuple["RSSMCore", RSSMSlots]:
         """Read this assembly out of a System's slots: ``(core, slot addresses)``.
@@ -272,8 +272,8 @@ class RSSMCore(eqx.Module):
         if len(carries) != 1 or len(codes) != 1:
             raise ValueError(
                 f"the RSSM assembly is one carry node and one code factor; this System declares "
-                f"carries {[factor_names[f] for f in carries]} and codes "
-                f"{[factor_names[f] for f in codes]}. Several world models in one System is a "
+                f"carries {[state_names[f] for f in carries]} and codes "
+                f"{[state_names[f] for f in codes]}. Several world models in one System is a "
                 "composition question (merge()), not an assembly one."
             )
         carry, code = carries[0], codes[0]
@@ -282,7 +282,7 @@ class RSSMCore(eqx.Module):
         if posterior is None or len(auxiliary) != 1 or len(structure.plan) != 2:
             raise ValueError(
                 f"the RSSM assembly's recognition side is exactly two q-side factors — the "
-                f"amortized posterior over {factor_names[code]!r} and the observation encoding "
+                f"amortized posterior over {state_names[code]!r} and the observation encoding "
                 f"it reads — got {[p.variable for p in structure.plan]}"
             )
         embed = auxiliary[0]
@@ -306,14 +306,14 @@ class RSSMCore(eqx.Module):
             if A_deps[m] != (carry, code):
                 raise ValueError(
                     f"the RSSM's {name} head reads [deter, flat stoch] — A_deps "
-                    f"({factor_names[carry]!r}, {factor_names[code]!r}) — but modality "
-                    f"{modality_names[m]!r} declares {[factor_names[g] for g in A_deps[m]]}"
+                    f"({state_names[carry]!r}, {state_names[code]!r}) — but modality "
+                    f"{modality_names[m]!r} declares {[state_names[g] for g in A_deps[m]]}"
                 )
         gru_inputs = tuple(B[carry].map.input_dims)
         if len(gru_inputs) != 2:
             raise ValueError(
                 f"the RSSM's carry map takes (flat stoch, action); factor "
-                f"{factor_names[carry]!r} declares inputs {gru_inputs}"
+                f"{state_names[carry]!r} declares inputs {gru_inputs}"
             )
         core = cls(
             gru=B[carry],
@@ -328,14 +328,14 @@ class RSSMCore(eqx.Module):
             action_dim=gru_inputs[-1],
         )
         slots = RSSMSlots(
-            gru=f"transition:{factor_names[carry]}",
-            prior=f"transition:{factor_names[code]}",
+            gru=f"transition:{state_names[carry]}",
+            prior=f"transition:{state_names[code]}",
             posterior=f"recognition:{posterior.variable}",
             encoder=f"recognition:{embed.variable}",
             decoder=f"likelihood:{modality_names[heads['decoder']]}",
             reward=f"likelihood:{modality_names[heads['reward']]}",
             cont=f"likelihood:{modality_names[heads['cont']]}",
-            initial=f"initial_state_prior:{factor_names[carry]}",
+            initial=f"initial_state_prior:{state_names[carry]}",
         )
         return core, slots
 

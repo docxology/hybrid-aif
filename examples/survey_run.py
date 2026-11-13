@@ -1369,7 +1369,7 @@ def graph_record(system, params):
     for a single System) of factors, modalities and controls, the transition, likelihood and
     target edges, and the parameter variables with the factors that read them."""
     names = system.names
-    all_nodes = (*system.factor_names, *system.action_names)
+    all_nodes = (*system.node_names, *system.action_names)
     tiers = {}
 
     def tier(n):
@@ -1412,7 +1412,7 @@ def graph_record(system, params):
             rec = dict(name=node, kind="level", levels=int(n_levels), durations=None)
         tier(node)["controls"].append(rec)
     edges = []
-    for child, parents in zip(system.factor_names, system.B_deps, strict=True):
+    for child, parents in zip(system.node_names, system.B_deps, strict=True):
         if child in names.controls:
             continue
         for p in parents:

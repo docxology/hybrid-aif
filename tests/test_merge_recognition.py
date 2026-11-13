@@ -22,7 +22,7 @@ def component(recognition=(), module=None, external=()):
         B_deps=((),),
         controlled=(False,),
         policy_len=1,
-        factor_names=("x",),
+        state_names=("x",),
         modality_names=("y",),
         recognition=recognition,
         external_inputs=external,

@@ -120,7 +120,7 @@ def _sys(schedule, k):
         policy_len=demo.HORIZON,
         mixture_k=k,
         mixture_schedule=schedule,
-        factor_names=("mode", "x"),
+        state_names=("mode", "x"),
         terms=("uncertainty:x",),  # the demo's G: risk + the unobserved x's entropy
     )
 

@@ -27,7 +27,7 @@ def hierarchical_tmaze():
         B_deps=((0,),) + tuple(tuple(d + 1 for d in deps) for deps in base_system._table.B_deps),
         A_deps=tuple(tuple(d + 1 for d in deps) for deps in base_system.A_deps),
         controlled=(False, True, False),
-        factor_names=("regime", *states),
+        state_names=("regime", *states),
         D_deps=((), (), (0,)),  # context's prior is set by the regime
         policy_len=base_system.policy_len,
         gamma=base_system.gamma,

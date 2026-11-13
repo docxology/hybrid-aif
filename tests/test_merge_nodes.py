@@ -131,7 +131,7 @@ def _one_shared_node(policy_len=2):
         gamma=16.0,
         epistemic=True,
         modality_names=("agent.location_obs", "agent.reward", "agent.cue"),
-        factor_names=("agent.location", "agent.context", "world.location", "world.context"),
+        state_names=("agent.location", "agent.context", "world.location", "world.context"),
     )
     params = SystemParams(
         likelihood={f"agent.{m}": a for m, a in ap.likelihood.items()},
@@ -168,7 +168,7 @@ def test_a_same_step_composite_is_one_shared_control_node():
         if field.name != "subsystems":
             assert getattr(composite, field.name) == getattr(hand, field.name), field.name
     assert composite.names.controls == ("agent.u_location",)
-    assert "world.u_location" not in composite.factor_names
+    assert "world.u_location" not in composite.node_names
 
     beliefs = _mixed_beliefs(composite, cp)
     policies = composite.policies(cp)
@@ -396,7 +396,7 @@ def _lg_mind(name: str, G, dim: int = 1):
     system = System(
         B_deps=((),),
         controlled=(True,),
-        factor_names=(name,),
+        state_names=(name,),
         policy_len=1,
         planner="gradient",
         epistemic=False,

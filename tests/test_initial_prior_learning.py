@@ -30,7 +30,7 @@ def _system():
         controlled=(False,),
         policy_len=1,
         modality_names=("sense",),
-        factor_names=("s",),
+        state_names=("s",),
     )
 
 

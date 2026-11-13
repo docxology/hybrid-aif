@@ -54,7 +54,7 @@ def _high(mode_probs=(1.0, 0.0), flip=False, **overrides):
         policy_len=1,
         epistemic=False,
         modality_names=(),
-        factor_names=("mode",),
+        state_names=("mode",),
     )
     system = System(**{**defaults, **overrides})
     table = jnp.asarray([[0.0, 1.0], [1.0, 0.0]]) if flip else jnp.eye(2)
@@ -78,7 +78,7 @@ def _low(**overrides):
         policy_len=1,
         epistemic=False,
         modality_names=("look",),
-        factor_names=("pos",),
+        state_names=("pos",),
     )
     system = System(**{**defaults, **overrides})
     # pos' = u whatever the previous pos, smoothed off the corners: an exactly one-hot
