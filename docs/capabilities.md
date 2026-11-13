@@ -1,4 +1,4 @@
-# hybrid-aif capabilities — v0.18.0 (2026-10-22)
+# hybrid-aif capabilities — v0.20.0 (2026-11-13)
 
 One page, shipped-only. Details: `project-brief.md` (architecture),
 `design/*` (decisions).
@@ -822,9 +822,6 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   scored, the warm start.
   The result carries `gradient_trace` (the RMS gradient before each step) and `best_step` (the
   index of the iterate returned, `0` the warm start and `steps` the final plan).
-  With `starts=n` the planner face returns every start's plan as its policy set
-  (`(starts, policy_len, action_dim)`) with the term tree over them and `q_pi` a point mass on the
-  best start; `GradientResult.start_plans` and `pick` carry the same for `gradient_plan`.
   The `"mixed"` planner searches a control space that mixes discrete and
   continuous nodes (`design/mixed-control-planning.md`): for each discrete policy (the full
   enumeration over the discrete nodes' levels, or a set passed as
@@ -912,25 +909,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   refused. `infer_states` conditions on it at the belief the factor holds when the modality is
   reached (a noise map is read there too), per component of a mixture at the component's mean
   and per level of a categorical parent (the switching form), its log evidence entering the
-  free energy as a linear-Gaussian modality's does; `present=` masks it. The decoder's noise is
-  independent across its `p` readings, so the update is taken in state space, by default and
-  with no switch: the square-root information form (one QR decomposition of the whitened head
-  stacked on the identity), the log evidence by the matrix determinant lemma and the Woodbury
-  identity, at `O(p d²)` for a state factor of dimension `d`, with no `p` by `p` array (a 32 by 32
-  camera over a 6-dimensional state factor: 0.07 ms an update against 6 ms in observation space,
-  and at 128 by 128 pixels 0.5 ms against 13 s). Under `"unscented"` the residual covariance of
-  the sigma points enters as `2d + 1` further standard-normal coordinates read through its
-  square-root factor (`DiagonalNoise.low_rank`), so the update stays in state space at dimension
-  `3d + 1`. What runs in state space: state inference (`infer_states`), and through it `learn`,
-  replay and the description length's evidence; and the conditioning step of the planner's
-  epistemic chain. What still forms `p` by `p` matrices: the dense noise factor every planning
-  leaf's model carries; the information gain and correlation leaves of a Gaussian-carried state
-  factor read with other modalities (the stacked predictive covariance is factored), the
-  sub-block ambiguity and the risk or utility predictive against a dense target; and, under
-  `"unscented"`, every planning leaf and a covered modality's expected log-likelihood. So the
-  planner is not free of `p` by `p` arrays. `inference.condition` takes the state-space form
-  whenever its noise is an `inference.DiagonalNoise` (a Cholesky factor takes the
-  observation-space form). A neural modality over
+  free energy as a linear-Gaussian modality's does; `present=` masks it. A neural modality over
   categorical parents alone is read exactly, as the Gaussian emission it is. Planning reads the
   same model linearised at the belief each term uses, re-taken along the plan, in every term
   (information gain, ambiguity, risk, utility, the cross-modality rows, the closed-loop pass,
@@ -969,8 +948,9 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   identification with another node and is sliced at a pinned level; averaging over the node's
   levels is a mixture and is refused.
   **A sensed node's prior.** `infer_states` reads the prior over an action node a modality
-  observes from the entry in `priors`, else the uniform default; a mind that knows its previous
-  action passes it as the node's point prior (a one-hot), and with no entry the point-prior
+  observes from, in order, the entry in `priors`, the realised action `previous=` carries for
+  that node (as a one-hot), and the uniform default, so a mind that passes its previous action
+  need not seed the node by hand; with neither an entry nor a previous action the point-prior
   refusal stands, with its hint.
   **An unread control node.** A discrete control node no transition reads is admitted when
   something else sizes it: a `C_deps` target conditional on it, a modality observing its action
@@ -982,7 +962,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   `design/control-states.md`, amendment.
   **A view contracts a partner's node in a target.** `subsystem` carries a per-step target
   (`obs_targets`, `state_targets`) conditional on another component's control node by
-  contracting that parent axis with `inputs[action node]`, as it terminates the node's
+  contracting that parent axis with `partner_priors[node]`, as it terminates the node's
   transition axis: an int slices the level, a Categorical mixes a categorical target's
   preferences under its probabilities in probability space, as a soft step does, and a
   Gaussian target under a spread prior is refused, as is a missing entry. Design:
@@ -1029,9 +1009,134 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   that does not call `hold`. Design: `design/step-durations.md` T9.
   `examples/demo.ipynb` re-executes clean under this release.
 
+- **v0.20.0 (2026-11-13)**: one engine for composed Systems (`merge` and `couple` return a System,
+  `run` steps it), emissions and the mirror, parameters as named variables, a System's nodes named
+  by kind, a neural likelihood's update in state space, transition noise that depends on the state
+  and the control, compiled faces and warm-started planners, and an API reference.
+  **Migration from 0.19.0.** This release BREAKS code that composes or runs Systems through
+  `hybrid_aif.composition`, that names nodes with `factor_names`, that declares `System(lagged=)`
+  or passes `infer_states(previous=)`, or that uses a keyword renamed below. Each old spelling is
+  refused, with no alias: a removed name raises `ImportError` or `AttributeError`, a removed keyword
+  `TypeError` (`factor_names=` with a sentence saying how its tuple splits). A single System that
+  uses none of these declares, infers, plans and learns as in 0.19.0, except that: its description
+  length is larger by `log*(1)`, about 1.05 nats (the graph code counts emissions); a neural
+  likelihood's update agrees with 0.19.0 to float32 rounding (below); validation refuses a tabular
+  table whose parent axes do not match its categorical parents' level counts; and an eager face
+  called more than ten times on one System warns once that `System.compiled()` exists. A model
+  document written by 0.19.0 builds as before, except one holding a recurrent datum (a likelihood
+  record's `options.datum`, from `System(lagged=)`), which is refused naming the option. Seeded runs
+  of composed Systems draw from a different key layout, so their numbers differ from 0.19.0's.
+  Composition and running (the driver module `hybrid_aif.composition.driver` is removed):
+
+  | 0.19.0 | 0.20.0 |
+  |---|---|
+  | `ActionControl(driver="a.u_v", control="w.u_v")`, a control-node driver | `Link("a.a_v", "w.u_v")`, from the driver's action node; `w.u_v` stays in `w`, driven |
+  | `ActionControl(driver="a.x", control="w.u_x")`, a state driver (the relay) | `Link("a.x", "w.u_x")` |
+  | `ObservationLink(modality, factors)` | `Link(factors, modality)` |
+  | `TargetEmission(target, parents)` | `Link(parents, "terminal:<target>")` |
+  | `BoundaryPrior(control, prior)` | `Clamp(node, level)` |
+  | the faces of a merge whose components declare a habit, precision or durations, or differ on a planner field, or hold a driven node | `joint_planner(composite, params)`, then the faces of the System it returns |
+  | `subsystem(composite, params, name, partner_priors={control node: v})` | `subsystem(composite, params, name, inputs={action node: v})` |
+  | `subsystem_factors` | `subsystem_states` |
+  | `couple(minds={n: (system, params, respond)}, processes={w: (env, env_params)}, wires=[Wire(a, b)], fixed=...)`, a `Wiring` | `couple({n: (system, params), w: (system, params)}, [Identify(a, b), ...], fixed=...)`, a `(System, SystemParams)`; a world modelled by a System is `mirror(system, params, lower=True)`, an outside environment `black_box(ins=..., outs=...)` |
+  | `run(wiring, ticks=..., key=...)` | `run(system, params, ticks, key, steps)` |
+  | `run(composite, params, minds, ticks, key, ...)` | `run(*with_mirror(composite, params), ticks, key, steps)`, the minds keyed `"model.<name>"`, the world `"world"` (`per_component=True` where components step their own state factors) |
+  | `agent_respond(system, params, planner, **kw)` | `plan(planner, **kw)` as the node's step (`learn=`, `trace=`) |
+  | `ancestral_respond(system, params)` | `sample()` for a process sampled from its System, or a custom step |
+  | `hold(system, params, respond, ticks_per_unit=k)`, `HoldCarry` | `params.durations` in the node's view and `run(..., clocks={node: k})` |
+  | a `RespondFn` `respond(key, obs, carry)` | a step `step(system, key, obs, carry, params) -> (out, carry, params)`, `obs` `None` on the first call |
+  | `Trajectory` (`states`, `observations`, `actions`, `realised`, `carries`), `MindRecord`, `ProcessRecord` | the `Trajectory` tree (`received`, `present`, `intended`, `emitted`, `decided`, `params`; states in `carries` under `record_carries=True`) |
+  | `System(lagged=(("m", "x"),))` | `System(emissions={"x_read": Emission(("x",), realise=r, kernel="identity")}, observes={"m": "x_read"})`, `r` `"mode"` for a Gaussian source (its mean), `"stats"` for a categorical one (its probabilities); the previous action: `observes={"m": "<action node>"}` |
+  | `infer_states(..., previous=...)` | the datum keyed by the variable observed; a sensed action node's previous level as a one-hot in `priors` |
+
+  A perceiver of another node's action node sees it absent in round 0 under `run`, where the wired
+  form handed it level 0. Names (`state_names`, `control_names` and `modality_names` generate as
+  before, so no key in params, targets, selectors or documents changes):
+
+  | 0.19.0 | 0.20.0 |
+  |---|---|
+  | `System(factor_names=...)` | `System(state_names=..., control_names=...)`: the first `len(B_deps) - len(controls)` names are the state factors'; under the sugar (`controlled=`) `state_names` alone |
+  | `system.factor_names` | `system.node_names` (state factors, then control nodes), or `state_names`, `control_names` |
+  | `GenerativeEnv.step(factors=)`, `step_actuated(factors=)` | `states=` |
+  | `System.grow(factor=)`, `System.reduce(factor=)` | `state=` |
+  | `Subsystem.factors` | `Subsystem.states` |
+  | `num_factors` (`Env`, `GenerativeEnv`, the processes, `MountainCar`) | `num_states`, the abstract method of `Env` |
+  | `inference.condition(R_chol=)`, `condition_on_expected(R_chol=)`, `objectives.hybrid.condition_expected(R_chol=)` | `noise=`, a Cholesky factor or an `inference.DiagonalNoise` |
+  | `Conditioner.R_chol_at` | `Conditioner.noise_at` |
+  | `Statics.factor_names` (the estimator registry) | `Statics.state_names` |
+
+  **One engine.** A closed System (a merge or a coupling whose every modality is fed by an
+  identification) is stepped by `run(system, params, ticks, key, steps, clocks=None,
+  tick_order="simultaneous", carries=None, record_carries=False)`, each leaf, or a non-leaf node
+  planned as one mind, by `plan()`, `sample()` or a custom step; `with_mirror` closes a System on
+  its own mirror, per component with `per_component=True`. The bindings are `Link`, `Identify` and
+  `Clamp`; `couple` returns a System whose leaves keep their own planner configuration, and
+  `joint_planner` plans a node as one mind on request. Under `"simultaneous"` every view of a
+  round is taken from the home as the round began and write-backs land at its boundary;
+  `"sequential"` orders the sources by the listing and steps each driven node after its last
+  driver; `"async"` draws a fresh order of the sources each round. A node whose view declares
+  durations decides once per option, `clocks=` converting a duration into rounds. `black_box(ins=,
+  outs=)` declares an external process by its typed ports, stepped by host Python
+  (`env_step(env)` for a positional environment); its inside is listed unscored in the
+  description length and its ports priced. Design: `design/engine-consolidation.md`,
+  `design/couple-and-run.md`, `design/nesting-and-coupling.md`, `design/description-length.md`
+  (note of 2026-11-10); `composing-systems.md`; the entries under "In the field" below.
+  **Emissions and the mirror.** An emission is an out-port of a state factor (`System.emissions`,
+  `Emission(parents, realise, kernel)`, `System.emit`, `System.ports`); `System.observes` maps a
+  modality to the action node or emission it reads, which is how a belief read, in a component or
+  across a merge (`Link(source, modality, realise=..., kernel=...)`), is declared.
+  `mirror(system, params)` is the world a System models, a System that acts; `as_env` is
+  unchanged. Design: `design/emissions-and-mirror.md`.
+  **Parameters as named variables, and a learned field.** A tabular table may be declared once in
+  `SystemParams.parameters` and read through `Parameter("<name>")` by several state factors or
+  modalities, learned once under `parameter:<name>`, identified across components by `Identify`
+  and returned from a view by `write_back`. A tabular state factor may read the cell a continuous
+  state factor falls in (`System(cells={"x": Grid(...)})`, `cell_mass`), so a Dirichlet table over
+  a grid is a map the agent learns and plans to learn; a slow state factor's novelty may pool a
+  declared count of readings per option level (`System.readings`); a Gaussian target over a
+  modality may condition on a categorical state factor. Design: `design/shared-parameters.md`,
+  `design/terrain-field.md`, `design/step-durations.md` T10.
+  **A neural likelihood's update in state space.** An `MLPConditional` likelihood's noise is
+  independent across its `p` readings, so `infer_states` (and through it `learn`, `replay` and the
+  description length's evidence) and the conditioning step of the planner's epistemic chain update
+  a Gaussian or mixture belief by a square-root information form at `O(p d²)`, with no `p` by `p`
+  array, by default and with no switch; `inference.condition` takes this form when its noise is an
+  `inference.DiagonalNoise`. Measured, one update at 1024 readings over a 6-dimensional state
+  factor: 0.07 ms against 5.8 ms in observation space; at 16384 readings, 0.47 ms against 13.2 s;
+  and closer in float32 to an exact reference than the observation-space form. Still formed as `p`
+  by `p` matrices: the dense noise factor every planning leaf's model carries, the information gain
+  and correlation leaves of a Gaussian-carried state factor read with other modalities, the
+  sub-block ambiguity, the risk or utility predictive against a dense target, and under
+  `"unscented"` every planning leaf and a covered modality's expected log-likelihood. Design:
+  `design/recognition-beside-analytic.md` L10.
+  **Transition noise that depends on the state and the control.** With
+  `NonlinearGaussianTransition(..., noise_scale="per_coordinate")` the map returns `(mean,
+  scale)` and the innovations' Cholesky factor is multiplied by `diag(scale)` on the left: read
+  at the belief's mean to first order, as `E[s sᵀ]` over the sigma points unscented, at the sampled
+  state in `as_env`. The scale must be positive, finite and differentiable wherever it is
+  evaluated (a square root that vanishes at rest needs a guard, or the gradient planner returns a
+  NaN plan). `describe` records `options.noise_scale` only when set; a map without a scale is
+  unchanged. Design: `design/nonlinear-transitions.md`, amendment of 2026-11-13.
+  **Compiled faces and planners.** `System.compiled()` returns the five faces compiled once
+  behind input canonicalisation, with a retrace watcher (`hybrid_aif.debug`); `mixed_plan` and
+  `gradient_plan` take `starts=`, warm starts bound through `make_mixed_planner` and
+  `make_gradient_planner` (`starts=1` is bit-identical to before; the gradient planner's face then
+  returns every start's plan); `infer_policies(return_policies=True)` returns the policy
+  set; the information gain of a diagonal-noise neural modality over a mixture-carried state
+  factor and a diagonal image preference are scored in low-rank form. Design:
+  `design/recompilation.md` R6, R7; `design/mixed-control-planning.md`;
+  `design/recognition-beside-analytic.md` L9.
+  **The API reference.** `docs/api` is a Sphinx source (the `docs` extra), one page per group of
+  public names; every field of the public field-bearing classes carries its own description.
+  **The survey example** (`examples/survey_*.py`, not library API): a rover with a vehicle state
+  (heading, speed and energy in the state, a modelled stall), a forward camera read as a neural
+  likelihood, a terrain field it learns, and a scheduler merged over it that shares the field;
+  `SURVEY_FIELD=large` selects a larger field, and the runner's `--settings` picks settings by id.
+  It records the launch page's replay.
+
 ## In the field / in flight
 
-- **Observing a variable (unreleased)**: `System.observes` names, per modality, the variable it observes, an action node or an emission of the System, and
+- **Observing a variable (v0.20.0)**: `System.observes` names, per modality, the variable it observes, an action node or an emission of the System, and
   `Emission(parents, realise="sample", kernel=None)` replaces `Emit`, with `kernel="identity"` or
   a `Grid` indicator as its static kernel beside the kernels of `params.emission` (`kernel=None`
   takes its kernel from there and refuses when it is missing). A read of a belief is such a pair: `System.lagged`, `reads.Read`,
@@ -1047,7 +1152,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   factor's probabilities or of a mean or a cell by `mode`, and everything that does not read a
   belief, is bitwise unchanged (`design/engine-consolidation.md` chunk B;
   `composing-systems.md`).
-- **The splice, its bindings and the joint planner (unreleased)**: `couple(components, bindings,
+- **The splice, its bindings and the joint planner (v0.20.0)**: `couple(components, bindings,
   fixed)` returns a `(System, SystemParams)`: the components spliced and joined by
   `Identify(out_port, in_port)` (an action node or an emission with a modality or a control node)
   and `Clamp`, every other binding refused naming `merge`. An identified modality or control node
@@ -1077,7 +1182,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   params)` wherever it is planned as one mind (the faces; `run` calls it for a step given to a
   non-leaf node).
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
-- **`run` over a closed System (unreleased)**: `run(system, params, ticks, key, steps, clocks=None,
+- **`run` over a closed System (v0.20.0)**: `run(system, params, ticks, key, steps, clocks=None,
   tick_order="simultaneous", carries=None, record_carries=False)` steps a **closed System** (a merge
   or a coupling whose every modality is fed by an identification) and returns a `Trajectory`, a
   tree with one node per component: the params at the root, and per node `received`, `present`,
@@ -1118,15 +1223,16 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   where the wired form handed it level 0. **One engine**: `run` over a closed System is the only
   form of `run`, and `couple` takes components and bindings only. Removed, with no alias: the
   composite form (`run(composite, params, minds, ...)`) and the wired form (`run(wiring, ...)`) of
-  `run`, `couple`'s keywords `minds=`, `processes=` and `links=` and its `fixed=` on a process
+  `run`, `couple`'s keywords `minds=`, `processes=` and `wires=` (`links=` earlier in this cycle),
+  `Wire`, and its `fixed=` on a process
   input, `Wiring`, `MindRecord`, `ProcessRecord`, the composite form's record (`Trajectory` in
   0.19.0), `hold` and `HoldCarry`, `agent_respond` and `ancestral_respond` (and their successors
   of this cycle, `agent_step`, `ancestral_step` and the step shape `MindStep`), `particle` and
   `ParticleCarry`, and `MindCarry.emitted` (a `plan()` step returns its emissions).
   **Migration guide** (a 0.19.0 form, or its spelling earlier in this cycle, -> the form under
   `run`; the examples, the survey runner among them, the notebooks and the tests are migrated):
-  - `couple(minds={...}, processes={"w": system.as_env(params)}, links=[Link(a, b), ...],
-    fixed={...})` (`fixed=` on a process input becoming a `Clamp` on the control node) ->
+  - `couple(minds={...}, processes={"w": system.as_env(params)}, wires=[Wire(a, b), ...],
+    fixed={...})` (`links=[Link(a, b), ...]` earlier in this cycle) (`fixed=` on a process input becoming a `Clamp` on the control node) ->
     `couple({...: (system, params), "w": mirror(system, params, lower=True)}, [Identify(a, b),
     ...])`, the process input named by an action node becoming that action node's control node
     (`world.a_move` -> `world.u_a` in `examples/compose_minds.py`);
@@ -1156,7 +1262,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
     join on it); a chain of same-step `Link`s through a driven node, which `merge` collapsed onto
     the first driver, is refused the same way.
   `design/engine-consolidation.md` chunk B; `composing-systems.md`.
-- **Black boxes (unreleased)**: `black_box(ins={...}, outs={...})` (`hybrid_aif.composition`)
+- **Black boxes (v0.20.0)**: `black_box(ins={...}, outs={...})` (`hybrid_aif.composition`)
   declares an external process, an environment or a hand-written world, by its ports and their
   types alone (`(LEVEL, levels)` or `(FLOAT, width)`): a `System` with one control node per in-port
   (no action node, no reader), one emission per out-port (no parents, the static kernel

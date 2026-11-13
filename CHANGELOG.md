@@ -6,6 +6,8 @@ recorded here; the per-release capability and migration notes are in
 
 | version | date | summary |
 |---|---|---|
+| 0.20.0 | 2026-11-13 | One engine for composed Systems (`couple`, `merge` and `run` over a closed System), nodes named by kind, a neural likelihood's update in state space, state- and control-dependent transition noise, the API reference |
+| 0.19.0 | 2026-11-04 | Recognition beside analytic factors, a neural likelihood inverted by linearisation, a levelled noise map, more of `merge` and `subsystem`, and a slow-tier mind that holds its action for an option's duration |
 | 0.18.1 | 2026-10-31 | Two planner tests tolerate the rounding of a jax point release |
 | 0.18.0 | 2026-10-22 | Planning improvements, including a planner for mixed control spaces |
 | 0.17.0 | 2026-10-21 | A shared innovation noise across modes, fused leaves over a dimension selection, and the posterior chain with noise maps at 0.14.0 speed |
