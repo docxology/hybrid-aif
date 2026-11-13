@@ -176,7 +176,7 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .approx{color:var(--c2)}
 .tip .ap{color:var(--c2);font-size:.75rem}
 .static img{max-width:100%;display:block;margin:1rem 0;border:1px solid var(--line);border-radius:4px}
-#graph text.now{fill:var(--accent)}
+#graph .now{fill:var(--accent)}
 
 .restart{display:inline-flex;align-items:center;gap:.4rem}
 .camnote{font-size:.85rem;color:var(--muted);margin:.5rem 0 .2rem;max-width:68ch}

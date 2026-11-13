@@ -128,7 +128,14 @@
       var cx = (x1 + x2) / 2 - uy * bend, cy = (y1 + y2) / 2 + ux * bend;
       return "M" + x1 + "," + y1 + " Q" + cx + "," + cy + " " + x2 + "," + y2;
     }
-    function rad(n) { return info[n] && info[n].kind === "factor" ? 27 : info[n] && info[n].kind === "parameter" ? 34 : 24; }
+    // the distance from a node's centre to its outline toward the point `to`
+    function rad(n, to) {
+      var k = info[n] && info[n].kind;
+      if (k === "parameter") return 34;
+      if (k !== "control" || !to) return 27;
+      var c = POS[n], dx = to[0] - c[0], dy = to[1] - c[1], len = Math.hypot(dx, dy) || 1;
+      return Math.min(38 / Math.max(Math.abs(dx) / len, 1e-6), 15 / Math.max(Math.abs(dy) / len, 1e-6)) + 2;
+    }
     edges.forEach(function (e, i) {
       var a = POS[e.from], b = POS[e.to]; if (!a || !b || e.from === e.to) return;
       var key = e.from + ">" + e.to, rev = e.to + ">" + e.from, st = KINDS[e.kind] || KINDS.transition;
@@ -148,7 +155,7 @@
       done[key] = true;
       var bend = BEND[key] != null ? BEND[key] : 0;
       if (recip) { bend = (key === "rover.x>rover.terrain" || key === "rover.terrain>rover.x") ? 78 : 20; attrs["marker-start"] = "url(#as-transition)"; }
-      var r1 = rad(e.from), r2 = rad(e.to) + 3;
+      var r1 = rad(e.from, b), r2 = rad(e.to, a) + 3;
       if (recip && bend > 40) {
         // x <-> terrain passes over the energy node: an arc above the row
         var xa = POS[key === "rover.x>rover.terrain" ? e.from : e.to], xb = POS[key === "rover.x>rover.terrain" ? e.to : e.from];
@@ -161,24 +168,29 @@
       var p = POS[name], i = info[name]; if (!i) return;
       var g = el("g", { "data-node": name }, svg), label = short(name), nd = i.nd, fs = label.length > 9 ? 11 : 12.5;
       var fill = css("--bg"), stroke = css("--fg");
+      // a state factor and an observation are circles (plain and blue); a control is an orange pill
       if (i.kind === "factor") el("circle", { cx: p[0], cy: p[1], r: 26, fill: fill, stroke: stroke, "stroke-width": 1.6 }, g);
-      else if (i.kind === "modality") el("rect", { x: p[0] - 32, y: p[1] - 17, width: 64, height: 34, fill: fill, stroke: stroke, "stroke-width": 1.6 }, g);
+      else if (i.kind === "modality") {
+        el("circle", { cx: p[0], cy: p[1], r: 26, fill: fill, stroke: "none" }, g);
+        el("circle", { cx: p[0], cy: p[1], r: 26, fill: css("--c1"), "fill-opacity": 0.16, stroke: css("--c1"), "stroke-width": 1.6 }, g);
+      }
       else if (i.kind === "parameter") {
         el("rect", { x: p[0] - 52, y: p[1] - 24, width: 104, height: 48, rx: 10, fill: css("--c3"), "fill-opacity": 0.16, stroke: css("--c3"), "stroke-width": 2.6 }, g);
       } else el("rect", { x: p[0] - 38, y: p[1] - 15, width: 76, height: 30, rx: 15, fill: fill, stroke: css("--c2"), "stroke-width": 1.8 }, g);
-      el("text", { x: p[0], y: p[1] + (i.kind === "parameter" ? -3 : 4), "text-anchor": "middle", "font-size": fs, "font-weight": i.kind === "parameter" ? 700 : 400 }, g, i.kind === "parameter" ? name : label);
+      el("text", { x: p[0], y: p[1] + 4, "text-anchor": "middle", "font-size": fs, "font-weight": i.kind === "parameter" ? 700 : 400 }, g, i.kind === "parameter" ? name : label);
       if (i.kind === "parameter") {
-        el("text", { x: p[0], y: p[1] + 11, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, "parameter variable");
         el("text", { x: p[0] - 58, y: p[1] - 2, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "one Dirichlet table,");
         var gs = B.meta.grid && B.meta.grid.shape ? B.meta.grid.shape[0] * B.meta.grid.shape[1] : 256;
         el("text", { x: p[0] - 58, y: p[1] + 11, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "3 kinds × " + gs.toLocaleString("en-US") + " cells");
       } else if (i.kind === "control") {
-        el("text", { x: p[0], y: p[1] + 28, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, nd.kind === "level" ? nd.levels + " levels" : "continuous");
-        el("text", { x: p[0], y: p[1] + 40, "text-anchor": "middle", "font-size": 10.5, class: "now" }, g, "");
+        // beside the pill, clear of the edges that leave it downward
+        var ct = el("text", { x: p[0] + 44, y: p[1] + 19, "text-anchor": "start", "font-size": 10.5, class: "muted" }, g, (nd.kind === "level" ? nd.levels + " levels" : "continuous") + "  ");
+        el("tspan", { class: "now" }, ct, "");
       } else {
         var sub = FAM[nd.family] || pretty(nd.family || "");
         if (i.kind === "factor") sub += nd.levels ? " · " + nd.levels : " · dim " + nd.dim;
-        el("text", { x: p[0], y: p[1] + (i.kind === "factor" ? 40 : 31), "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, sub);
+        else sub = "lik.: " + sub;  // a modality's family is its likelihood's, not the reading's
+        el("text", { x: p[0], y: p[1] + 40, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, sub);
       }
     });
     var lg = "", present = {};
@@ -188,7 +200,13 @@
       var st = KINDS[k];
       lg += "<span><svg class='lsw' viewBox='0 0 28 10'><line x1='1' x2='27' y1='5' y2='5' stroke='" + css(st.color) + "' stroke-width='" + st.w + "' stroke-dasharray='" + st.dash + "'/></svg>" + esc(st.label) + "</span>";
     });
-    lg += "<span>circle: state factor</span><span>square: modality</span><span>pill: control</span>";
+    function pill(fillVar, strokeVar) {
+      return "<svg class='lsw' viewBox='0 0 28 12'><rect x='1' y='1' width='26' height='10' rx='5' fill='" + (fillVar ? css(fillVar) : "none") + "' fill-opacity='" + (fillVar ? 0.16 : 1) + "' stroke='" + css(strokeVar) + "' stroke-width='1.4'/></svg>";
+    }
+    function dot(fillVar, strokeVar) {
+      return "<svg class='lsw' viewBox='0 0 28 12'><circle cx='14' cy='6' r='5' fill='" + (fillVar ? css(fillVar) : "none") + "' fill-opacity='" + (fillVar ? 0.16 : 1) + "' stroke='" + css(strokeVar) + "' stroke-width='1.4'/></svg>";
+    }
+    lg += "<span>" + dot(null, "--fg") + "state factor</span><span>" + dot("--c1", "--c1") + "observation (lik.: its likelihood)</span><span>" + pill(null, "--c2") + "control</span>";
     $("graphlegend").innerHTML = lg;
     updateGraph();
   }
