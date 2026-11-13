@@ -482,3 +482,63 @@ dense path runs. A head with a `GridNoiseMap` or a dense `R_chol` is not diagona
 unchanged. The predictive that the risk and utility terms score against a preference target
 (`predictive_obs`) remains dense. A partial parent selection on a neural modality is refused
 as before.
+
+## Amendment 2026-11-12: the update in state space
+
+*Status: DECIDED 2026-11-12 (Alex): the state-space update is the default, with no switch,
+for every neural likelihood whose noise is independent across its readings, and the dense
+observation-space form is kept only as the reference the tests compare against. BUILT AND
+AWAITING ALEX'S CONFIRMATION: the extension to the unscented reading's correlated part (the
+paragraph on `"unscented"` below, `DiagonalNoise.low_rank`). Amends L2 and L4 where they
+condition a belief.*
+
+**L10, the update of a belief on independent readings.** A neural likelihood's noise is
+independent across its `p` readings, so conditioning a Gaussian belief `N(m, L Lᵀ)` of
+dimension `d` on the linearised reading `y = H x + c + eps`, `eps ~ N(0, diag(r²))`, needs no
+`p` by `p` matrix. In the prior's square-root coordinates `x = m + L xi`, `xi ~ N(0, I)`, the
+whitened reading is `w = B xi + e`, `B = diag(r)⁻¹ H L`, `w = diag(r)⁻¹ (y - H m - c)`,
+`e ~ N(0, I)`. One QR decomposition of `[B; I]` (`(p + d)` by `d`) gives the upper-triangular
+`T` with `Tᵀ T = I + Bᵀ B`, the posterior precision of `xi`, without squaring `B`'s condition
+number:
+
+- posterior mean `m + L s`, `s = T⁻¹ Qᵀ w` (`Q` the orthonormal factor's first `p` rows), the
+  solution of `min ‖w - B xi‖² + ‖xi‖²`;
+- posterior covariance `L T⁻¹ T⁻ᵀ Lᵀ`, its lower Cholesky factor the transposed triangular
+  factor of a second QR, of `T⁻ᵀ Lᵀ` (`d` by `d`), its diagonal made positive;
+- log evidence `log N(y; H m + c, H L Lᵀ Hᵀ + diag(r²)) = -½ (p log 2π + ‖w - B s‖² + ‖s‖²) -
+  Σ log r - Σ log|T_ii|`: the matrix determinant lemma for the log determinant and the
+  Woodbury identity for the quadratic form, written as the regularised least squares' minimum,
+  a sum of two non-negative terms.
+
+The cost is `O(p d²)` against the observation-space form's `O(p³)`. Under `"unscented"` the
+noise adds the sigma points' residual covariance `V Vᵀ`, `V` the residuals scaled by the square
+roots of the weights (`2d + 1` columns, rank at most `2d`): it enters as `2d + 1` further
+standard-normal coordinates read through `V` (`DiagonalNoise(scale, low_rank=V)`), so the same
+update runs at dimension `3d + 1` and the belief over `x` is the leading block of the result.
+With the library's `kappa = 0` the centre's weight is zero and so is `V`'s first column: `3d`
+would do, at a slightly smaller QR. (Proposed by the builder; see the status line.) The form is
+the default for every update a neural likelihood makes, with no switch: `infer_states` per component and per mode
+configuration (and so `learn`, replay and the description length's evidence, which read it),
+and the planner's epistemic chain. `inference.condition` takes it whenever its noise is an
+`inference.DiagonalNoise`; a Cholesky factor takes the observation-space form, the reference the
+tests compare against.
+
+*Numerics.* With a reading far more precise than the prior, `B` is large: its condition number
+reaches `max(L)·max(H)/min(r)`, and the QR's backward error is `eps‖[B; I]‖`, which perturbs the
+identity block by about `eps‖B‖` relative. The observation-space form factors `H Σ Hᵀ + R`, whose
+condition number is that ratio squared, and loses it twice. Measured in float32 against a
+50-digit reference: at 1024 readings of scale 0.04 over a 6-dimensional state factor the state-space
+log evidence is off by 0.24 in 2.5e6 and the mean by 3e-7, the observation-space form by 3e4 and
+4e-2; at reading scale 1e-3 against a prior of scale 10 the observation-space form returns NaN.
+The mean is taken from the QR's own right-hand side and not from `Bᵀ w`, whose rounding (of
+order `eps‖B‖‖w‖`) would land in the directions the reading does not inform, where the posterior
+precision is one, when `p < d`.
+
+*What remains in observation space.* The information gain of a neural modality over a
+Gaussian-carried state factor read in a group with others (`linear_gaussian_readings`,
+`sub_block_readings`, which factor the stacked `H Σ Hᵀ + blockdiag(R_m)`), the cross-modality
+correlation leaves, the sub-block ambiguity, the risk and utility predictive against a dense
+target, and every leaf of an unscented reading (its noise is read dense there) factor a `p` by
+`p` matrix. A linear-Gaussian modality's declared `R_chol` is diagonal only by its values, so it
+takes the observation-space form; a noise declared as an `InverseGamma` (independent variances)
+is diagonal by type and could take the state-space form through the same kernel.

@@ -896,7 +896,25 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   refused. `infer_states` conditions on it at the belief the factor holds when the modality is
   reached (a noise map is read there too), per component of a mixture at the component's mean
   and per level of a categorical parent (the switching form), its log evidence entering the
-  free energy as a linear-Gaussian modality's does; `present=` masks it. A neural modality over
+  free energy as a linear-Gaussian modality's does; `present=` masks it. The decoder's noise is
+  independent across its `p` readings, so the update is taken in state space, by default and
+  with no switch: the square-root information form (one QR decomposition of the whitened head
+  stacked on the identity), the log evidence by the matrix determinant lemma and the Woodbury
+  identity, at `O(p d²)` for a state factor of dimension `d`, with no `p` by `p` array (a 32 by 32
+  camera over a 6-dimensional state factor: 0.07 ms an update against 6 ms in observation space,
+  and at 128 by 128 pixels 0.5 ms against 13 s). Under `"unscented"` the residual covariance of
+  the sigma points enters as `2d + 1` further standard-normal coordinates read through its
+  square-root factor (`DiagonalNoise.low_rank`), so the update stays in state space at dimension
+  `3d + 1`. What runs in state space: state inference (`infer_states`), and through it `learn`,
+  replay and the description length's evidence; and the conditioning step of the planner's
+  epistemic chain. What still forms `p` by `p` matrices: the dense noise factor every planning
+  leaf's model carries; the information gain and correlation leaves of a Gaussian-carried state
+  factor read with other modalities (the stacked predictive covariance is factored), the
+  sub-block ambiguity and the risk or utility predictive against a dense target; and, under
+  `"unscented"`, every planning leaf and a covered modality's expected log-likelihood. So the
+  planner is not free of `p` by `p` arrays. `inference.condition` takes the state-space form
+  whenever its noise is an `inference.DiagonalNoise` (a Cholesky factor takes the
+  observation-space form). A neural modality over
   categorical parents alone is read exactly, as the Gaussian emission it is. Planning reads the
   same model linearised at the belief each term uses, re-taken along the plan, in every term
   (information gain, ambiguity, risk, utility, the cross-modality rows, the closed-loop pass,

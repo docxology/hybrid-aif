@@ -64,8 +64,8 @@ from hybrid_aif.factors import (
     lg_point,
 )
 from hybrid_aif.inference.emission import is_emission
-from hybrid_aif.inference.linear_gaussian import condition_on_expected, predict
-from hybrid_aif.inference.linearise import linearise
+from hybrid_aif.inference.linear_gaussian import DiagonalNoise, condition_on_expected, predict
+from hybrid_aif.inference.linearise import linear_model
 from hybrid_aif.inference.mixture_rollout import propagate
 from hybrid_aif.interval import Interval
 from hybrid_aif.objectives import registry
@@ -770,15 +770,16 @@ class BeliefPair(NamedTuple):
     observations; ``conditioned``,
     that belief after conditioning on the observations expected at this step; and ``step``,
     the transitions taken, which indexes a per-step availability; ``noises``, by modality
-    column, the Cholesky factor of each conditioning channel's noise at the epistemic mean, which
-    the chain read to condition and the information-gain leaves read again (empty: the leaves
-    read the noise at the mean themselves)."""
+    column, each conditioning modality's noise at the epistemic mean (a Cholesky factor, or a
+    neural modality's :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`), which the
+    chain read to condition and the information-gain leaves read again (empty: the leaves read
+    the noise at the mean themselves)."""
 
     predictive: Gaussian
     epistemic: Gaussian
     conditioned: Gaussian
     step: Array
-    noises: dict[int, Array] = {}  # noqa: RUF012
+    noises: dict[int, "Array | DiagonalNoise"] = {}  # noqa: RUF012
 
 
 class Conditioner(NamedTuple):
@@ -789,20 +790,21 @@ class Conditioner(NamedTuple):
     parents are action nodes (``nodes``, their engine positions) holds per-level arrays, and
     ``modality`` and ``factor_name`` name it in the sentence a non-point step is refused with;
     the step selects its level (:func:`select_conditioner`). A neural modality has no constant
-    head: ``read(q, levels)`` gives ``(H, c, R_chol)`` linearised at the belief ``q``
-    (:func:`neural_read`), ``levels`` the step's levels of its action-node parents, and ``H`` and
-    ``c`` are zero templates of the head's shapes; :meth:`at` returns the conditioner as a
-    constant one at ``q``."""
+    head: ``read(q, levels)`` gives ``(H, c, noise)`` linearised at the belief ``q``
+    (:func:`neural_read`), ``levels`` the step's levels of its action-node parents, the noise a
+    :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, and ``H`` and ``c`` are zero
+    templates of the head's shapes; :meth:`at` returns the conditioner as a constant one at
+    ``q``, whose ``R_chol_at`` gives that noise, so the chain conditions on it in state space."""
 
     factor: int
     column: int
     H: Array
     c: Array
-    R_chol_at: Callable[[Array], Array]
+    R_chol_at: Callable[[Array], Array | DiagonalNoise]
     nodes: tuple[int, ...] = ()
     modality: str = ""
     factor_name: str = ""
-    read: Callable[..., tuple[Array, Array, Array]] | None = None
+    read: Callable[..., tuple[Array, Array, DiagonalNoise]] | None = None
 
     def at(self, q: Gaussian) -> "Conditioner":
         """This conditioner read at the belief ``q``: itself when its head is constant."""
@@ -834,10 +836,10 @@ def neural_read(
     q: Gaussian | MixtureGaussian,
     sizes: tuple[int, ...] = (),
     levels: tuple[Array, ...] | None = None,
-) -> tuple[Array, Array, Array]:
-    """``(H, c, R_chol)`` of the neural conditional ``decl`` linearised at the belief ``q`` over
+) -> tuple[Array, Array, DiagonalNoise]:
+    """``(H, c, noise)`` of the neural conditional ``decl`` linearised at the belief ``q`` over
     its first parent, the declaration's ``propagation`` (:func:`~hybrid_aif.inference.linearise.
-    linearise`).
+    linear_model`), the noise a :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`.
 
     The categorical parents (``sizes``, their widths) are held at the one-hots of ``levels`` when
     given. On a Gaussian the head is ``(d_obs, d)``. On a mixture it is one per component, and
@@ -846,7 +848,7 @@ def neural_read(
     prop = getattr(decl, "propagation", "first_order")
 
     def head_at(loc: Array, chol: Array, onehots: tuple[Array, ...]):
-        return linearise(decl, loc, chol, (loc, *onehots), 0, prop)
+        return linear_model(decl, loc, chol, (loc, *onehots), 0, prop)
 
     fixed = (
         ()
@@ -864,40 +866,13 @@ def neural_read(
     comps = q.components
     if levels is not None or not sizes:
         out = jax.vmap(lambda loc, chol: head_at(loc, chol, fixed))(comps.loc, comps.chol)
-        return tuple(a[:, None] for a in out)
+        return jax.tree.map(lambda a: a[:, None], out)
     grid = _mode_grid(sizes)
 
     def per_component(loc: Array, chol: Array):
         return jax.vmap(lambda *onehots: head_at(loc, chol, onehots))(*grid)
 
     return jax.vmap(per_component)(comps.loc, comps.chol)
-
-
-def neural_scale(
-    decl: MLPConditional,
-    q: Gaussian | MixtureGaussian,
-    sizes: tuple[int, ...] = (),
-    levels: tuple[Array, ...] | None = None,
-) -> Array:
-    """The decoder's noise standard deviations at the belief's mean (first order), laid out as
-    the diagonal of :func:`neural_read`'s ``R_chol``: ``(d_obs,)`` on a Gaussian, ``(K, M,
-    d_obs)`` on a mixture."""
-    fixed = (
-        ()
-        if levels is None
-        else tuple(jax.nn.one_hot(lv, n) for lv, n in zip(levels, sizes, strict=True))
-    )
-
-    def scale_at(loc: Array, onehots: tuple[Array, ...]) -> Array:
-        return decl._head((loc, *onehots))[1]
-
-    if isinstance(q, Gaussian):
-        return scale_at(q.loc, fixed)
-    comps = q.components
-    if levels is not None or not sizes:
-        return jax.vmap(lambda loc: scale_at(loc, fixed))(comps.loc)[:, None]
-    grid = _mode_grid(sizes)
-    return jax.vmap(lambda loc: jax.vmap(lambda *oh: scale_at(loc, oh))(*grid))(comps.loc)
 
 
 def _categorical_only(deps: tuple[int, ...], families: tuple[str, ...]) -> bool:
@@ -924,15 +899,12 @@ def neural_model(head: NeuralHead, q: Gaussian | MixtureGaussian):
     :class:`~hybrid_aif.objectives.continuous.ComponentHead` (a head per component and mode
     configuration) over a mixture."""
     sizes = tuple(head.decl.parent_dims[1:])
-    H, c, R_chol = neural_read(head.decl, q, sizes, head.levels)
+    H, c, noise = neural_read(head.decl, q, sizes, head.levels)
+    R_chol = noise.chol()
     # first order reads the decoder's diagonal noise at the mean, straight from the head (not as
     # the diagonal of the dense factor, whose gradient would fill a d_obs by d_obs array); the
-    # unscented noise is dense
-    diag = (
-        neural_scale(head.decl, q, sizes, head.levels)
-        if getattr(head.decl, "propagation", "first_order") == "first_order"
-        else None
-    )
+    # unscented noise also carries the residuals' correlated part, so it is read dense
+    diag = noise.scale if noise.low_rank is None else None
     if isinstance(q, MixtureGaussian):
         return ComponentHead(H, c, R_chol, diag)
     obs = DiagonalNoiseObservation(H=H, c=c, noise=R_chol, scale=diag)
@@ -1119,14 +1091,19 @@ def selecting_channels(A: tuple, A_deps: tuple[tuple[int, ...], ...], families, 
 
 
 def _seed_noises(q: Gaussian, factor: int, conditioners: tuple["Conditioner", ...]) -> dict:
-    """The ``noises`` a pair over ``factor`` carries from its seed: a conditioner's noise factor
-    at the seed's mean, and zeros of its shape for one that selects by action node (its level is
-    read at the step)."""
+    """The ``noises`` a pair over ``factor`` carries from its seed: a conditioner's noise at the
+    seed's mean (a Cholesky factor, or a neural modality's
+    :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`), and zeros of its shape for one
+    that selects by action node (its level is read at the step)."""
     out = {}
     for cond in conditioners:
         if cond.factor != factor:
             continue
-        if cond.nodes:
+        if cond.nodes and cond.read is not None:
+            levels = tuple(jnp.zeros((), jnp.int32) for _ in cond.nodes)
+            shape = jax.eval_shape(lambda cond=cond, levels=levels: cond.read(q, levels)[2])
+            out[cond.column] = jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shape)
+        elif cond.nodes:
             d_obs = cond.H.shape[-2]
             out[cond.column] = jnp.zeros((d_obs, d_obs), cond.H.dtype)
         else:
@@ -1179,12 +1156,17 @@ def conditioned_beliefs(qs: tuple[Belief, ...]) -> tuple[Belief, ...]:
 
 
 def condition_expected(
-    q: Gaussian, cond: Conditioner, flag: Array | None, R_chol: Array | None = None
+    q: Gaussian,
+    cond: Conditioner,
+    flag: Array | None,
+    R_chol: Array | DiagonalNoise | None = None,
 ) -> Gaussian:
     """``q`` conditioned on the observation ``cond`` is expected to give at its mean: zero
     innovation, so the mean is ``q.loc`` itself and the covariance takes the Kalman update;
     ``flag`` (``None``: present) leaves ``q`` where the modality is absent. ``R_chol`` is the
-    noise factor at ``q``'s mean when the caller has read it (``None``: read here)."""
+    noise at ``q``'s mean when the caller has read it (``None``: read here): a Cholesky factor,
+    or a :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, which takes the update in
+    state space (:func:`~hybrid_aif.inference.linear_gaussian.condition_on_expected`)."""
     if R_chol is None:
         R_chol = cond.R_chol_at(q.loc)
     posterior = condition_on_expected(q, cond.H, R_chol)

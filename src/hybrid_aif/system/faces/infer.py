@@ -16,7 +16,7 @@ from hybrid_aif.inference import sample as _sample
 from hybrid_aif.inference.detail import InferenceDetail
 from hybrid_aif.inference.discrete import SUPPORT_FLOOR, fpi_support, mean_field_free_energy
 from hybrid_aif.inference.linear_gaussian import condition
-from hybrid_aif.inference.linearise import linearise
+from hybrid_aif.inference.linearise import linear_model
 from hybrid_aif.inference.mixture_filter import (
     _per_mode,
     condition_mixture_components,
@@ -149,16 +149,19 @@ def _belief_components(q) -> tuple[Array, Array]:
     return q.loc[None], q.chol[None]
 
 
-def _dense_model(system, a, m: int, q, out, priors, families, s: int):
+def _observation_model(system, a, m: int, q, out, priors, families, s: int):
     """Modality ``m``'s observation model at the belief ``q`` over its factor, as
-    ``(H, c, R_chol, axes)`` with leading ``(K, M)`` axes: ``K`` the belief's components (one for a
+    ``(H, c, noise, axes)`` with leading ``(K, M)`` axes: ``K`` the belief's components (one for a
     Gaussian), ``M`` the mode configurations over the parents ``axes`` (one where there are none),
     row-major in ``axes`` order.
 
     A linear-Gaussian modality reads its declared arrays (a noise map at each component's mean;
-    action nodes alone select their level). A neural one is linearised at each component's mean
-    and, per configuration of its categorical state parents, at their one-hots; its action-node
-    parents are held at the one-hot of their point prior's level (``priors[g]``).
+    action nodes alone select their level), its noise a Cholesky factor. A neural one is
+    linearised at each component's mean and, per configuration of its categorical state parents,
+    at their one-hots; its action-node parents are held at the one-hot of their point prior's
+    level (``priors[g]``). Its noise is a :class:`~hybrid_aif.inference.linear_gaussian.
+    DiagonalNoise`, which :func:`~hybrid_aif.inference.linear_gaussian.condition` takes in state
+    space.
     """
     mods, facs = system.modality_names, system._facs
     deps = system._engine_A_deps[m]
@@ -189,7 +192,7 @@ def _dense_model(system, a, m: int, q, out, priors, families, s: int):
                 else node_vec[g]
                 for g in deps
             )
-            return linearise(a, loc, chol, parents, deps.index(f), a.propagation)
+            return linear_model(a, loc, chol, parents, deps.index(f), a.propagation)
 
         H, c, R = jax.vmap(lambda loc, chol: jax.vmap(lambda cfg: at(loc, chol, cfg))(grid))(
             locs, chols
@@ -279,7 +282,7 @@ def expected_nll(system, a, m: int, y: Array, out, priors, families, s: int) -> 
         return -jnp.sum(joint * table)
     f = cont[0] if isinstance(a, MLPConditional) else deps[0]
     q = out[f]
-    H, c, R, axes = _dense_model(system, a, m, q, out, priors, families, s)
+    H, c, R, axes = _observation_model(system, a, m, q, out, priors, families, s)
     locs, chols = _belief_components(q)
     return _amortized.expected_gaussian_nll(
         locs, chols, H, c, R, y, _joint_weights(system, q, out, axes, f)
@@ -291,8 +294,9 @@ def _condition_mixture(system, out: list, f: int, H, c, R_chol, y, who: str, fam
 
     Every component takes the Kalman update and the weights are re-scored; ``H``, ``c`` and
     ``R_chol`` are each one array for every component or one per component (``(K, d_obs, d)``,
-    ``(K, d_obs)``, ``(K, d_obs, d_obs)``: a linearised neural modality reads each component at
-    its own mean). Where the factor has
+    ``(K, d_obs)``, and a :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise` of scale
+    ``(K, d_obs)``: a linearised neural modality reads each component at its own mean, and its
+    components are conditioned in state space). Where the state factor has
     categorical mode parents, their beliefs in ``out`` are replaced by the mode evidence message
     and the returned log evidence reads the mode belief the tabular stage left. Returns
     ``(posterior, log_evidence, per_component_loglik or None)``; the caller stores the posterior.
@@ -744,7 +748,9 @@ def _infer_states_expected(
         if neural:
             #  linearised at the belief the factor holds now, per component and, with
             #  state mode parents, per mode configuration (``(K, M, ...)``)
-            lin_H, lin_c, lin_R, _ = _dense_model(system, a, m, out[f], out, priors, families, s)
+            lin_H, lin_c, lin_R, _ = _observation_model(
+                system, a, m, out[f], out, priors, families, s
+            )
         if obs_parents:
             # Switching observation: grow the factor to K*M, read the mode message from
             # the grown weights before reducing (so no mode-owned slots are needed;
@@ -789,9 +795,10 @@ def _infer_states_expected(
             evidence_terms[m] = log_ev[m]
             continue
         if neural:
-            H, c, R_chol = (x[:, 0] for x in (lin_H, lin_c, lin_R))  # one mode configuration
+            #  one mode configuration; the noise is a DiagonalNoise, sliced leaf by leaf
+            H, c, R_chol = jax.tree.map(lambda x: x[:, 0], (lin_H, lin_c, lin_R))
             if families[f] != _hybrid.MIXTURE:
-                H, c, R_chol = H[0], c[0], R_chol[0]
+                H, c, R_chol = jax.tree.map(lambda x: x[0], (H, c, R_chol))
         elif families[f] != _hybrid.MIXTURE:
             H, c = a.H, a.c
             R_chol = a.R_chol_at(out[f].loc) if a.noise_map else a.R_chol

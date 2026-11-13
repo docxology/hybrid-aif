@@ -44,6 +44,7 @@ from hybrid_aif.factors import (
     LinearGaussianObservationMNIW,
     lg_point,
 )
+from hybrid_aif.inference.linear_gaussian import DiagonalNoise
 from hybrid_aif.interval import Interval
 from hybrid_aif.objectives.base import INFOGAIN, TermTree
 from hybrid_aif.objectives.discrete import _block_names, _check_mask, _full, risk, terminal_risk
@@ -176,11 +177,15 @@ def _stacked_noise(
 ) -> tuple[Array, list[Array], tuple[int, ...]]:
     """The stacked head, each channel's noise covariance and the channels' row counts. A
     channel's noise is read from its model at ``q``'s mean (a noise map), unless ``chols`` gives
-    its Cholesky factor there already (``chols[i]`` not ``None``)."""
+    it there already (``chols[i]`` not ``None``): its Cholesky factor, or a
+    :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise`, whose covariance is formed."""
     noises = []
     for i, model in enumerate(models):
         R_chol = model.R_chol_at(q.loc) if chols is None or chols[i] is None else chols[i]
-        noises.append(R_chol @ jnp.swapaxes(R_chol, -1, -2))
+        if isinstance(R_chol, DiagonalNoise):
+            noises.append(R_chol.cov())
+        else:
+            noises.append(R_chol @ jnp.swapaxes(R_chol, -1, -2))
     sizes = tuple(model.H.shape[-2] for model in models)
     return jnp.concatenate([model.H for model in models], axis=-2), noises, sizes
 

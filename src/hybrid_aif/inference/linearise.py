@@ -15,7 +15,11 @@ on its continuous parent ``x``, is read as the affine model ``o = H x + c + eps'
   covariance of ``o``; exact for affine ``m``, moment-matching to degree three otherwise.
 
 The other parents are held fixed (a categorical parent as its one-hot or probability vector).
-Design: docs/design/recognition-beside-analytic.md, amendment L1.
+:func:`linear_model` returns the noise as a
+:class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise` (the averaged noise's standard
+deviations and, under ``"unscented"``, the residuals' square-root factor), the form in which a
+belief is conditioned in state space at ``O(d_obs d²)``; :func:`linearise` returns it as a dense
+Cholesky factor. Design: docs/design/recognition-beside-analytic.md, amendment L1.
 """
 
 from collections.abc import Sequence
@@ -25,6 +29,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from hybrid_aif.distributions.gaussian import sigma_points
+from hybrid_aif.inference.linear_gaussian import DiagonalNoise
 
 PROPAGATIONS = ("first_order", "unscented")
 
@@ -32,25 +37,33 @@ PROPAGATIONS = ("first_order", "unscented")
 #: the points at ``loc ± sqrt(d) · chol[:, i]`` with weight ``1/(2d)`` each and none on the centre.
 UNSCENTED_KAPPA = 0.0
 
-#: Added to the unscented ``R``'s diagonal before its Cholesky factor, against round-off in the
-#: Schur complement; far below any declared noise floor.
+#: Added to the unscented noise's variances, against round-off in the residual covariance; far
+#: below any declared noise floor.
 _JITTER = 1e-9
 
 
-def linearise(
+def linear_model(
     decl,
     loc: Array,
     chol: Array,
     parents: Sequence[Array],
     index: int,
     propagation: str = "first_order",
-) -> tuple[Array, Array, Array]:
-    """``(H, c, R_chol)`` of ``decl`` read at ``N(loc, chol chol^T)`` on its parent ``index``.
+) -> tuple[Array, Array, DiagonalNoise]:
+    """``(H, c, noise)`` of ``decl`` read at ``N(loc, chol chol^T)`` on its parent ``index``, the
+    noise in the form the state-space update reads (:class:`~hybrid_aif.inference.linear_gaussian.
+    DiagonalNoise`).
 
     ``parents`` is the full parent tuple in the declaration's order; its entry at ``index`` is
-    replaced by ``x`` and the others are held fixed. ``H`` is ``(d_obs, d)``, ``c`` is
-    ``(d_obs,)`` and ``R_chol`` is ``(d_obs, d_obs)`` lower triangular. Batch over components
-    with ``jax.vmap`` on ``loc`` and ``chol``.
+    replaced by ``x`` and the others are held fixed. ``H`` is ``(d_obs, d)`` and ``c`` is
+    ``(d_obs,)``. Under ``"first_order"`` the noise is ``DiagonalNoise(sigma(loc))``. Under
+    ``"unscented"`` it is ``DiagonalNoise(sqrt(sum_i w_i sigma(x_i)^2 + jitter), low_rank)`` with
+    ``low_rank`` ``(d_obs, 2d + 1)`` the fit's residuals at the points scaled by ``sqrt(w_i)``,
+    so ``low_rank low_rank^T`` is their weighted covariance (rank at most ``2d``). With
+    :data:`UNSCENTED_KAPPA` ``= 0`` the centre's weight is zero, so the first column is zero and
+    the update runs at dimension ``3d + 1`` where ``3d`` would do; the square roots need ``kappa
+    >= 0`` (a negative centre weight would give NaN). Batch over components with ``jax.vmap`` on
+    ``loc`` and ``chol``.
     """
 
     def head(x: Array) -> tuple[Array, Array]:
@@ -61,7 +74,7 @@ def linearise(
     if propagation == "first_order":
         mean, scale = head(loc)
         jac = jax.jacfwd(lambda x: head(x)[0])(loc)
-        return jac, mean - jac @ loc, jnp.diag(scale)
+        return jac, mean - jac @ loc, DiagonalNoise(scale)
     if propagation == "unscented":
         points, weights = sigma_points(loc, chol, kappa=UNSCENTED_KAPPA)
         means, scales = jax.vmap(head)(points)
@@ -70,14 +83,32 @@ def linearise(
         P_xy = (dx * weights[:, None]).T @ dy
         H = jax.scipy.linalg.cho_solve((chol, True), P_xy).T
         c = y_bar - H @ loc
-        # R from the residuals of the affine fit at the points, not as P_yy - H Sigma H^T: the
-        # same matrix in exact arithmetic (the points reproduce Sigma), positive semidefinite by
-        # construction, and the noise is added outside the subtraction.
+        # the residual covariance from the residuals of the affine fit at the points, not as
+        # P_yy - H Sigma H^T: the same matrix in exact arithmetic (the points reproduce Sigma),
+        # positive semidefinite by construction, and the noise is added outside the subtraction
         resid = dy - dx @ H.T
-        R = (resid * weights[:, None]).T @ resid + jnp.diag(weights @ scales**2)
-        R = 0.5 * (R + R.T) + _JITTER * jnp.eye(R.shape[-1], dtype=R.dtype)
-        return H, c, jnp.linalg.cholesky(R)
+        low_rank = (resid * jnp.sqrt(weights)[:, None]).T
+        scale = jnp.sqrt(weights @ scales**2 + _JITTER)
+        return H, c, DiagonalNoise(scale, low_rank)
     raise ValueError(
         f"propagation must be one of {list(PROPAGATIONS)}, got {propagation!r} (design: "
         "recognition-beside-analytic.md L1)"
     )
+
+
+def linearise(
+    decl,
+    loc: Array,
+    chol: Array,
+    parents: Sequence[Array],
+    index: int,
+    propagation: str = "first_order",
+) -> tuple[Array, Array, Array]:
+    """``(H, c, R_chol)`` of ``decl`` read at ``N(loc, chol chol^T)`` on its parent ``index``:
+    :func:`linear_model` with the noise as its dense lower-triangular Cholesky factor,
+    ``(d_obs, d_obs)`` (:meth:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise.chol`), for the
+    readers that take a dense noise. Batch over components with ``jax.vmap`` on ``loc`` and
+    ``chol``.
+    """
+    H, c, noise = linear_model(decl, loc, chol, parents, index, propagation)
+    return H, c, noise.chol()

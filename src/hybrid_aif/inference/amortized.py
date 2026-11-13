@@ -40,6 +40,7 @@ from hybrid_aif.distributions import (
 )
 from hybrid_aif.distributions.neural import LearnedVector, PredictorHead, straight_through_onehot
 from hybrid_aif.factors import DerivedInitial, Deterministic, Recognition
+from hybrid_aif.inference.linear_gaussian import DiagonalNoise
 from hybrid_aif.inference.sample import collapse
 
 #: The two factor families of this path (see the module docstring).
@@ -774,25 +775,39 @@ def covered_modalities(
 
 
 def expected_gaussian_nll(
-    locs: Array, chols: Array, H: Array, c: Array, R_chol: Array, y: Array, weights: Array
+    locs: Array,
+    chols: Array,
+    H: Array,
+    c: Array,
+    R_chol: Array | DiagonalNoise,
+    y: Array,
+    weights: Array,
 ) -> Array:
-    """``- E_q[log N(y; H x + c, R R^T)]`` under a Gaussian belief per component, weighted.
+    """``- E_q[log N(y; H x + c, R)]`` under a Gaussian belief per component, weighted.
 
     ``locs`` ``(K, d)`` and ``chols`` ``(K, d, d)`` are the components of the belief; ``H``
     ``(K, M, d_obs, d)``, ``c`` ``(K, M, d_obs)`` and ``R_chol`` ``(K, M, d_obs, d_obs)`` the
     observation model of each component under each of ``M`` mode configurations; ``weights``
     ``(K, M)`` the joint weight of each pair (zero weighs nothing). Each pair contributes the
     closed-form expectation of the quadratic,
-    ``- log N(y; H mu + c, R) + 1/2 tr(R^-1 H Sigma H^T)``.
+    ``- log N(y; H mu + c, R) + 1/2 tr(R^-1 H Sigma H^T)``. A
+    :class:`~hybrid_aif.inference.linear_gaussian.DiagonalNoise` (scale ``(K, M, d_obs)``) without
+    a ``low_rank`` part is read on its diagonal, ``O(d_obs d)`` per pair; with one, as its dense
+    Cholesky factor.
     """
     d_obs = y.shape[-1]
 
     def pair(mu, chol, H, c, R):
-        z = jax.scipy.linalg.solve_triangular(R, y - (H @ mu + c), lower=True)
-        A = jax.scipy.linalg.solve_triangular(R, H @ chol, lower=True)
-        return 0.5 * (d_obs * jnp.log(2.0 * jnp.pi) + jnp.sum(z**2) + jnp.sum(A**2)) + jnp.sum(
-            jnp.log(jnp.diagonal(R))
-        )
+        if isinstance(R, DiagonalNoise) and R.low_rank is None:
+            z = (y - (H @ mu + c)) / R.scale
+            A = (H @ chol) / R.scale[:, None]
+            half_log_det = jnp.sum(jnp.log(R.scale))
+        else:
+            R = R.chol() if isinstance(R, DiagonalNoise) else R
+            z = jax.scipy.linalg.solve_triangular(R, y - (H @ mu + c), lower=True)
+            A = jax.scipy.linalg.solve_triangular(R, H @ chol, lower=True)
+            half_log_det = jnp.sum(jnp.log(jnp.diagonal(R)))
+        return 0.5 * (d_obs * jnp.log(2.0 * jnp.pi) + jnp.sum(z**2) + jnp.sum(A**2)) + half_log_det
 
     per_pair = jax.vmap(jax.vmap(pair, (None, None, 0, 0, 0)), (0, 0, 0, 0, 0))(
         locs, chols, H, c, R_chol
