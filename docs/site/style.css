@@ -64,7 +64,9 @@ main{max-width:var(--wide)}
 /* the demo bar: title and playback controls, stuck to the top over the demo's panes */
 .demobar{position:sticky;top:var(--topbar-h,0px);z-index:15;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;margin:-.6rem 0 1.4rem;padding:.6rem 0;background:var(--bg);border-bottom:1px solid var(--line);font-size:.92rem}
 .demobar[hidden]{display:none}
-.demobar-title{flex:1 1 100%;font-weight:600;color:var(--fg);text-decoration:none}
+.demobar-title{flex:1 1 100%;font-size:1.4rem;font-weight:700;line-height:1.25;color:var(--fg);text-decoration:none}
+/* the demo bar carries the demo's title, so its own section heading is kept for assistive technology only */
+#hero>h2{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .demobar-title:hover{color:var(--accent)}
 .demobar-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1rem;flex:1 1 100%;min-width:0}
 .demobar .slider{flex:1 1 7rem}

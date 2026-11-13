@@ -337,9 +337,11 @@
     ze[0].slice(1, -1).forEach(function (x) { g.moveTo(m.X(x), m.Y(f[1][0])); g.lineTo(m.X(x), m.Y(f[1][1])); });
     ze[1].slice(1, -1).forEach(function (y) { g.moveTo(m.X(f[0][0]), m.Y(y)); g.lineTo(m.X(f[0][1]), m.Y(y)); });
     g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
-    // the charging place, where the charge option parks: the bundle's one place, or the place the
-    // charge option in force was sent to (charge_to, the sunny ground nearest the rover)
-    var cs = t.charge_to || B.meta.tiers.charge_site;
+    // the charging place, where the charge option parks, in a two-tier setting only: the place the
+    // charge option in force was sent to (charge_to, the sunny ground nearest the rover), else the
+    // bundle's one fixed place (charge_site) unless the setting's charge option has no fixed place
+    var rec = settingRec(), fixed = rec && rec.charge_form === "nearest" ? null : B.meta.tiers.charge_site;
+    var cs = twoLevel() ? (t.charge_to || fixed) : null;
     if (cs) {
       var cx = m.X(cs[0]), cyy = m.Y(cs[1]), on = hasOpt(t) && sectorOf(t.option) < 0;
       g.strokeStyle = on ? optColor(t.option) : css("--fg"); g.lineWidth = on ? 2.5 : 1.4; g.globalAlpha = on ? 1 : 0.7;
@@ -399,6 +401,16 @@
       if (ch) { var e = pts[pts.length - 1]; g.beginPath(); g.arc(m.X(e[0]), m.Y(e[1]), 4, 0, 2 * Math.PI); g.fillStyle = css("--plan"); g.fill(); }
       g.globalAlpha = 1;
     });
+  }
+  function localises() {
+    // whether the rover's model reads the camera's image (which localises it as well as the fix)
+    var cm = B.meta.image && B.meta.image.camera_mode;
+    return cm == null || cm === "image" || cm === "fixed";
+  }
+  function defaultSetting() {
+    // the rover alone when the bundle has it (a one-level run that pins no option), else the first
+    var alone = B.settings.filter(function (s) { return s.tiers === 1; })[0];
+    return alone && !(B.meta.tiers && B.meta.tiers.pinned_option != null) ? alone.id : B.settings[0].id;
   }
   function hasHeading() { return run().ticks[0].true_heading != null; }  // the world's heading per tick
   function stride() {
@@ -479,7 +491,7 @@
     $("fieldlegend").innerHTML =
       "<span>learned map: " + [0, 1, 2].map(function (c) { return sw(terrColor(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>true ground: " + [0, 1, 2].map(function (c) { return sw(terrBg(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
-      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span>&times; satellite fix</span><span>dotted: true path</span>" +
+      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span>&times; the satellite fix's raw reading, one each tick</span>" + (localises() ? "<span>the belief's ellipse is tighter than the crosses' scatter: the camera also localises the rover</span>" : "") + "<span>dotted: true path</span>" +
       (S.layer === "light" ? "<span>" + (B.meta.world.sun ? "brighter: more solar yield (where parking charges)" : "brighter: more sunlight") + "</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
   }
 
@@ -936,7 +948,7 @@
     if (B.meta.library_version) document.querySelectorAll("#version, .version").forEach(function (vs) { vs.textContent = "v" + B.meta.library_version; });
     var sel = $("setting");
     B.settings.forEach(function (s) { var o = document.createElement("option"); o.value = s.id; o.textContent = s.label + (s.tiers === 2 ? " (two levels)" : " (one level)"); sel.appendChild(o); });
-    S.setting = B.runs[hp.setting] ? hp.setting : B.settings[0].id; sel.value = S.setting;
+    S.setting = B.runs[hp.setting] ? hp.setting : defaultSetting(); sel.value = S.setting;
     var n = run().ticks.length; $("tick").max = n - 1;
     S.t = idxOf(+hp.t || 0);
     if (hp.tier === "rover") { S.tier = "rover"; $("objtier").value = "rover"; } else $("objtier").value = "mission";

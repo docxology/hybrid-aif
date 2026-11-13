@@ -72,7 +72,8 @@ SUNNY_YIELD = 0.5
 #  where the charge option sends the rover: on the small field the charging place (the sunniest
 #  cell, "site"); on the large field the sufficiently sunny cell nearest the rover when the option
 #  begins ("nearest"), held while it lasts: the declared target is the site's, and the rover's step
-#  moves its centre there (``survey_run.charge_target``)
+#  moves its centre there (``survey_run.charge_target``); a setting may choose either form
+#  (``survey_run.charge_form``)
 CHARGE_FORM = "site" if wd.FIELD_SIZE == "small" else "nearest"
 GRID_SHAPE = 16 * wd.BLOCKS  # field cells per axis: a cell of 0.375 at both sizes
 NOISE_NODES = 24 * wd.BLOCKS + 1  # fix-noise map nodes per axis, 0.25 apart

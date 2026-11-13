@@ -58,7 +58,10 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
   <div class="demobar-controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
+  </div>
+  <div class="demobar-controls demobar-setting" role="group" aria-label="Setting">
     <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+    <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
   </div>
 </div>
 <!-- /block -->
@@ -71,7 +74,6 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
       <label><input type="radio" name="layer" value="light"> illumination</label>
       <label><input type="radio" name="layer" value="fix"> satellite fix quality</label>
     </fieldset>
-    <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
   </div>
   <div class="hero-grid">
     <figure class="fieldfig">

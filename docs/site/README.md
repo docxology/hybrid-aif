@@ -80,8 +80,9 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
 - `meta.names`: `terrain` (firm, rough, ice) and `energy` (empty, low, medium, full).
 - `meta.tiers`: `slow_ticks` (24), `options` (survey sector 1 to 4, charge), `zones`,
   `zone_split` (the field's quadrants are split at these x and y), `sector_centres`,
-  `charge_site` (the charging place the charge option drives to and parks at; the viewer marks
-  it), `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
+  `charge_site` (the charging place the charge option drives to and parks at, in bundles whose
+  charge option has one fixed place; the viewer marks it in the two-tier settings only),
+  `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
   one-level run is the rover alone, with no scheduler and no option). Bundles whose one-level run
   pinned an option carry `pinned_option` instead; the viewer reads either.
 - `meta.image`: `side` (32), `layout` (row 0 is the top of the picture), `view` (what the camera
@@ -142,6 +143,18 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
 - `mdl.components`: one entry per priced component (`name`, `kind`, `nats`, `exact`, `entries`),
   including `parameter:rover.field`, priced once; the two readers' `transition` entries carry
   structure only (`entries` 0). The page groups them by tier from the name's prefix.
+
+The viewer opens on the rover alone (the one-level setting) unless the URL names a setting; in
+bundles whose one-level run pinned an option it opens on the first setting. The field's legend
+says that the crosses are the satellite fix's raw readings, one each tick, and, when the rover
+reads the camera's image, that the position belief is tighter than their scatter because the
+camera localises the rover too.
+
+On the small field the setting `two-level-nearest` is the scheduler whose charge option sends the
+rover to the sufficiently sunny cell nearest it (`charge_form` "nearest" in the setting's record)
+rather than to the one charging place. A bundle whose two-tier setting has that form carries
+`meta.tiers.charge_form` and `meta.tiers.sunny_cells` instead of `charge_site`, and each tick under
+charge records its destination as `charge_to`, which the viewer marks while the option is in force.
 
 Testing: open `index.html` from a local server (or from disk); the URL hash
 `#hero&t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` opens the viewer's pane

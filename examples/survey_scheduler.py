@@ -48,6 +48,12 @@ moves the rover.
   confusion.
 - The initial beliefs: the start cell and the full band, uniform terrain.
 
+With the charge form "nearest" (``scheduler(charge_form=)``, ``charge_terms``) the charge option
+sends the rover from each cell to the sufficiently sunny cell nearest it instead of the one
+charging place, and its columns of ``visit`` and ``energy`` are formed from that cell at the rates
+measured for that form (``NEAREST_CHARGE_SPEED``, ``NEAREST_SITE_RATE``). The scheduler reads the
+rover's cell, so the charge is priced from where the rover is, to the cell.
+
 The objective scores the novelty of the field and a target over the energy bands
 (``survey_model.ENERGY_TARGET``).
 
@@ -117,6 +123,13 @@ CELL_SIDE = (wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE
 SURVEY_READINGS = 11
 CHARGE_READINGS = 6
 READINGS = jnp.asarray([SURVEY_READINGS] * sm.N_SURVEY + [CHARGE_READINGS], jnp.float32)
+#  the cells view's charge option with the form "nearest" (``scheduler(charge_form=)``): it sends
+#  the rover to the sufficiently sunny cell nearest it rather than to the one charging place;
+#  measured likewise on the small field's two-tier runs with that form: the travel speed to the
+#  sunny cell, the net energy per tick parked there and the distinct cells a charge crosses
+NEAREST_CHARGE_SPEED = 0.12
+NEAREST_SITE_RATE = 0.021
+NEAREST_CHARGE_READINGS = 4
 
 
 def cell_zones(centres):
@@ -152,18 +165,32 @@ def _travel(here, there, speed=CRUISE):
     return ticks, ticks * _net_rate(here + ramp * (there - here), speed)
 
 
-def option_changes(centres):
+def charge_terms(centres, form="site"):
+    """Where the cells view's charge option sends the rover from each cell and at what measured
+    rates, ``(destinations (cells, 2), speed, parked rate, readings)``: the charging place
+    (``survey_model.charge_site``) from every cell with ``form`` "site", or the sufficiently sunny
+    cell nearest the cell's centre (``survey_model.nearest_sunny``) with ``form`` "nearest"."""
+    if form == "site":
+        site = sm.charge_site()
+        return np.broadcast_to(site, centres.shape), CHARGE_SPEED, SITE_RATE, CHARGE_READINGS
+    if form != "nearest":
+        raise ValueError(f"unknown charge form {form!r}")
+    dest = np.asarray([sm.nearest_sunny(c) for c in centres])
+    return dest, NEAREST_CHARGE_SPEED, NEAREST_SITE_RATE, NEAREST_CHARGE_READINGS
+
+
+def option_changes(centres, form="site"):
     """Expected energy change over one option, ``(cell, option)``, in energy units, outside the
-    empty band."""
+    empty band; the charge option's by ``form`` (``charge_terms``)."""
     targets = sm.sector_centres()
-    site = sm.charge_site()
+    dest, speed, rate, _ = charge_terms(centres, form)
     out = np.zeros((centres.shape[0], sm.N_OPTIONS))
     for c, here in enumerate(centres):
         for k in range(sm.N_SURVEY):
             ticks, energy = _travel(here, targets[k])
             out[c, k] = energy + max(SURVEY_TICKS - ticks, 0.0) * SURVEY_RATE
-        ticks, energy = _travel(here, site, CHARGE_SPEED)
-        out[c, CHARGE] = energy + max(SURVEY_TICKS - ticks, 0.0) * SITE_RATE
+        ticks, energy = _travel(here, dest[c], speed)
+        out[c, CHARGE] = energy + max(SURVEY_TICKS - ticks, 0.0) * rate
     return out
 
 
@@ -182,8 +209,8 @@ def _path_cells(centres, here, there):
     return near.any(axis=1).astype(float)
 
 
-def visit_table(centres):
-    """``visit[next, cell, band, option]``."""
+def visit_table(centres, form="site"):
+    """``visit[next, cell, band, option]``; the charge option's by ``form`` (``charge_terms``)."""
     zones = cell_zones(centres)
     targets = sm.sector_centres()
     n = centres.shape[0]
@@ -201,10 +228,11 @@ def visit_table(centres):
             path = _path_cells(centres, centres[c], targets[k]) * ~inside
             path = path / path.sum() if path.sum() > 0 else w
             moving[:, c, k] = share * path + (1.0 - share) * w
-    site_xy = sm.charge_site()
-    site = int(np.argmin(np.linalg.norm(centres - site_xy[None], axis=1)))
+    dest, speed, _, _ = charge_terms(centres, form)
     for c in range(n):
-        travel = float(np.linalg.norm(site_xy - centres[c])) / CHARGE_SPEED
+        site_xy = dest[c]
+        site = int(np.argmin(np.linalg.norm(centres - site_xy[None], axis=1)))
+        travel = float(np.linalg.norm(site_xy - centres[c])) / speed
         share = min(travel / SURVEY_TICKS, 1.0)
         path = _path_cells(centres, centres[c], site_xy)
         path[site] = 0.0
@@ -215,9 +243,9 @@ def visit_table(centres):
     return table
 
 
-def energy_table(centres):
-    """``energy[next, band, cell, option]``."""
-    change = option_changes(centres)
+def energy_table(centres, form="site"):
+    """``energy[next, band, cell, option]``; the charge option's by ``form`` (``charge_terms``)."""
+    change = option_changes(centres, form)
     stall = stalled_changes(centres)
     n = centres.shape[0]
     table = np.zeros((sm.N_BANDS, sm.N_BANDS, n, sm.N_OPTIONS))
@@ -508,16 +536,22 @@ def scheduler(
     policy_len=2,
     durations=False,
     readings=False,
+    charge_form="site",
 ):
     """``(System, SystemParams)`` for the scheduler over ``grid`` (the rover's ``Grid``) with the
-    cell centres ``centres``. Its parameter variable ``field`` has the shape and prior of the
+    cell centres ``centres``; ``charge_form`` is where its charge option sends the rover
+    (``charge_terms``). Its parameter variable ``field`` has the shape and prior of the
     rover's, so that ``Identify("rover.field", "mission.field")`` identifies them. With
     ``durations`` the control node declares a round of ``SURVEY_TICKS`` for every level; with
     ``readings`` the ``map`` factor's novelty at each plan step is multiplied by the number of
     readings of the option selected at that step (``SURVEY_READINGS`` for a survey,
-    ``CHARGE_READINGS`` for charge), a slow step pooling the readings the fast tier takes in
-    it."""
+    ``CHARGE_READINGS`` for charge, ``NEAREST_CHARGE_READINGS`` with ``charge_form`` "nearest"),
+    a slow step pooling the readings the fast tier takes in it."""
     n_cells = grid.n_cells
+    charge_readings = charge_terms(centres[:1], charge_form)[3]
+    readings_per_option = jnp.asarray(
+        [SURVEY_READINGS] * sm.N_SURVEY + [charge_readings], jnp.float32
+    )
     # factors: visit 0, energy 1, map 2, u_option 3 (the option, a control node)
     system = System(
         A_deps=((0,), (1,)),
@@ -542,8 +576,8 @@ def scheduler(
         parameters={"field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength)},
         likelihood={"cell_obs": _cc(cell_obs_table(n_cells), 1), "gauge": _cc(sm.gauge_table(), 1)},
         transition={
-            "visit": _cc(visit_table(centres), 3),
-            "energy": _cc(energy_table(centres), 3),
+            "visit": _cc(visit_table(centres, charge_form), 3),
+            "energy": _cc(energy_table(centres, charge_form), 3),
             "map": Parameter("field"),
         },
         initial_state_prior={
@@ -554,7 +588,7 @@ def scheduler(
         durations={"u_option": jnp.full(sm.N_OPTIONS, float(SURVEY_TICKS))}
         if (durations or readings)
         else {},
-        **({"readings": {"map": READINGS}} if readings else {}),
+        **({"readings": {"map": readings_per_option}} if readings else {}),
         state_targets={"energy": Categorical(logits=jnp.asarray(energy_target, jnp.float32))},
     )
     return system, params

@@ -19,7 +19,8 @@ position and heading beliefs are calibrated without the camera, and with a small
 the battery drains when driving and charges when parked in the sun, far more on sunny ground than in
 shade; near empty the drive fails (the stall), in the world and in the model's own motion alike, and
 a rover started near empty stalls without losing its position; the charge option sends the rover to
-sunny ground and parks it there; the rover can observe the recogniser's reading instead of the image
+sunny ground and parks it there, and in its "nearest" form to the sufficiently sunny cell nearest
+the rover; the rover can observe the recogniser's reading instead of the image
 (experiment A).
 """
 
@@ -32,6 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from hybrid_aif import Gaussian
 from hybrid_aif.distributions import MLPConditional
 from hybrid_aif.planning.gradient import make_gradient_planner
 
@@ -215,6 +217,44 @@ def test_the_charge_option_goes_to_sunny_ground_and_parks_there():
     change = ss.option_changes(centres)[:, sm.CHARGE]
     near = np.linalg.norm(centres - site, axis=1) < 1.5
     assert change[near].min() > 0.4  # about a band in two options
+
+
+def test_the_nearest_charge_option_sends_the_rover_to_sunny_ground_near_it():
+    sm = example("survey_model")
+    ss = example("survey_scheduler")
+    sr = example("survey_run")
+    _, centres = sm.field_grid()
+    setting = next(s for s in sr.settings_grid_l2() if s["id"] == "two-level-nearest")
+    assert setting["tiers"] == 2 and sr.charge_form(setting) == "nearest"
+    sunny = sm.sunny_cells()
+    yields = sm.cell_yields()
+    assert len(sunny) > 1  # more than one place to charge
+    # the scheduler's destination from each cell: a sufficiently sunny cell, the nearest one
+    dest, _, _, _ = ss.charge_terms(centres, "nearest")
+    dest_cells = np.argmin(np.linalg.norm(centres[None] - dest[:, None], axis=2), axis=1)
+    assert np.all(yields[dest_cells] >= sm.SUNNY_YIELD)
+    gap = np.linalg.norm(dest - centres, axis=1)
+    nearest = np.linalg.norm(centres[:, None] - sunny[None], axis=2).min(axis=1)
+    assert np.allclose(gap, nearest)
+    # its readings fall on the way and at that cell, which holds the most of them from every cell
+    # less than half an option's trip away
+    visit = ss.visit_table(centres, "nearest")[:, :, 1:, sm.CHARGE]
+    assert np.allclose(visit.sum(axis=0), 1.0)
+    close = gap / ss.NEAREST_CHARGE_SPEED < ss.SURVEY_TICKS / 2
+    assert np.all(visit.argmax(axis=0)[close][:, 0] == dest_cells[close])
+    # the rover's own target under charge moves to the sunny cell nearest its believed position
+    rs, rp, _, _ = sm.rover(None, camera=False, tiered=True)
+    target = rp.state_targets["x"]  # the view sliced at the charge option, as the step sees it
+    sliced = dataclasses.replace(
+        rp,
+        state_targets={"x": Gaussian(loc=target.loc[sm.CHARGE], chol=target.chol[sm.CHARGE])},
+    )
+    here = np.asarray([3.5, 2.0])
+    moved, site = sr.charge_target(sliced, "", None, here, "nearest")
+    assert np.allclose(site, sm.nearest_sunny(here))
+    assert np.allclose(np.asarray(moved.state_targets["x"].loc[:2]), site)
+    assert np.linalg.norm(site - sm.charge_site()) > 1.0  # not the one charging place
+    assert sr.charge_target(sliced, "", None, here, "site")[1] is None
 
 
 def _drive(wd, commands, start, key):

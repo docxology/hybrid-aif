@@ -365,14 +365,23 @@ def position_target(params, pre):
     return np.asarray(target.loc)[:2], sd
 
 
-def charge_target(params, pre, held, position):
-    """Under the charge option with ``survey_model.CHARGE_FORM`` "nearest": ``(params, site)``,
+def charge_form(setting):
+    """Where a setting's charge option sends the rover: its ``charge_form`` entry, else the field's
+    default ``survey_model.CHARGE_FORM`` ("site", the one charging place, or "nearest", the
+    sufficiently sunny cell nearest the rover when the option begins)."""
+    return setting.get("charge_form", sm.CHARGE_FORM)
+
+
+def charge_target(params, pre, held, position, form=None):
+    """Under the charge option with the charge form ``form`` (``survey_model.CHARGE_FORM`` when
+    ``None``) "nearest": ``(params, site)``,
     the params with the rover's target on ``x`` moved to ``site``, the place the option sends the
     rover: ``held`` (the place chosen when the option began) or else the sufficiently sunny cell
     nearest ``position`` (``survey_model.nearest_sunny``). Otherwise ``(params, None)``. The
     charge option is told by its target, narrower than a map cell."""
     target = params.state_targets.get(pre + "x")
-    if sm.CHARGE_FORM != "nearest" or target is None or np.ndim(target.loc) != 1:
+    form = sm.CHARGE_FORM if form is None else form
+    if form != "nearest" or target is None or np.ndim(target.loc) != 1:
         return params, None
     if not np.all(np.sqrt(np.diag(np.asarray(target.cov)))[:2] < CELL_SIDE):
         return params, None
@@ -436,7 +445,9 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
         if shared is not None:
             shared["position"] = belief_now["mean"]
         counts_now = field_record(params, setting["field_strength"], home)[1]
-        plan_params, site = charge_target(params, pre, carry.charge_to, belief_now["mean"])
+        plan_params, site = charge_target(
+            params, pre, carry.charge_to, belief_now["mean"], charge_form(setting)
+        )
         init = warm_starts(
             None if carry.plan is None else shifted(carry.plan),
             belief_now,
@@ -694,6 +705,9 @@ def run_setting(
 
 
 SLOW_TICKS = ss.SURVEY_TICKS  # fast ticks per slow step
+#  settings of the two-tier grid that run only when named (``--settings``): the small field's
+#  scheduler with the "nearest" charge form, a comparison beside the shipped pair
+NAMED_ONLY = ("two-level-nearest",)
 READINGS_AVAILABLE = "readings" in {f.name for f in dataclasses.fields(ss.System)}
 
 
@@ -701,7 +715,9 @@ def settings_grid_l2():
     """The settings of the two-tier comparison: the scheduler over the rover (two levels), and
     the rover alone (one level), the fast tier with its own novelty term and no scheduler, free to
     go where it likes. Both share the rover's epistemic terms, its energy preference and its
-    field; the scheduler's ladder over the energy bands is ``energy_logits``. On the large field
+    field; the scheduler's ladder over the energy bands is ``energy_logits``. On the small field
+    a third is the scheduler whose charge option sends the rover to the sufficiently sunny cell
+    nearest it (``charge_form`` "nearest") rather than to the one charging place. On the large field
     there is a third, the scheduler with survey options alone (``charge`` false), and the runs
     record the map every ``MAP_EVERY`` ticks and which cells are mapped every tick."""
 
@@ -721,12 +737,19 @@ def settings_grid_l2():
             seed=0,
         )
         if wd.FIELD_SIZE != "small":
-            out.update(field_size=wd.FIELD_SIZE, map_every=MAP_EVERY, mapped_bits=True, **extra)
+            out.update(field_size=wd.FIELD_SIZE, map_every=MAP_EVERY, mapped_bits=True)
+        out.update(extra)
         return out
 
     if wd.FIELD_SIZE == "small":
         return [
             setting("two-level", "Scheduler over the rover", 2),
+            setting(
+                "two-level-nearest",
+                "Scheduler over the rover, charging on the nearest sunny ground",
+                2,
+                charge_form="nearest",
+            ),
             setting("one-level", "Rover alone", 1),
         ]
     return [
@@ -773,7 +796,7 @@ def agent_system(decoder, setting, confusion=None):
         readings=setting.get("readings", False),
     )
     if ss.VIEW == "cells":
-        ms, mp = ss.scheduler(grid, centres, **common)
+        ms, mp = ss.scheduler(grid, centres, charge_form=charge_form(setting), **common)
         kernel = grid
     else:  # the scheduler reads the sector the rover's position belief puts it in
         ms, mp = ss.sector_scheduler(grid, centres, charge=setting.get("charge", True), **common)
@@ -1513,27 +1536,28 @@ def assemble(out_dir, camera_report, decoder):
     meta = meta_record(n, camera_report, grid, camera_mode(settings[0]))
     if tiered:
         charged = settings[0].get("charge", True)
+        two = next(s for s in settings if s.get("tiers") == 2)
+        if charge_form(two) == "site":
+            charging = {"charge_site": [float(c) for c in sm.charge_site()]}
+        else:
+            charging = {
+                "charge_form": (
+                    "the charge option sends the rover to the sufficiently sunny cell nearest "
+                    f"it when the option begins (mean solar yield at least {sm.SUNNY_YIELD}), "
+                    "held while the option lasts, to park and charge there; each tick of a "
+                    "charge option records it (charge_to)"
+                ),
+                "sunny_cells": [[float(c) for c in p] for p in sm.sunny_cells()],
+            }
+        if ss.VIEW == "sectors":
+            charging.update(zone_edges=[list(e) for e in wd.ZONE_EDGES], view=ss.VIEW)
         meta["tiers"] = dict(
             slow_ticks=settings[0]["slow_ticks"],
             options=ss.OPTION_NAMES[: sm.option_count(charged)],
             zones=ss.SECTOR_NAMES,
             zone_split=list(wd.ZONE_SPLIT),
             sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
-            **(
-                {"charge_site": [float(c) for c in sm.charge_site()]}
-                if sm.CHARGE_FORM == "site"
-                else {
-                    "zone_edges": [list(e) for e in wd.ZONE_EDGES],
-                    "view": ss.VIEW,
-                    "charge_form": (
-                        "the charge option sends the rover to the sufficiently sunny cell nearest "
-                        f"it when the option begins (mean solar yield at least {sm.SUNNY_YIELD}), "
-                        "held while the option lasts, to park and charge there; each tick of a "
-                        "charge option records it (charge_to)"
-                    ),
-                    "sunny_cells": [[float(c) for c in p] for p in sm.sunny_cells()],
-                }
-            ),
+            **charging,
             survey_readings=ss.SURVEY_READINGS,
             one_level=(
                 "the one-level setting is the rover alone: the fast tier with its own objective "
@@ -1603,6 +1627,8 @@ def main():
     if args.settings:
         keep = set(args.settings.split(","))
         settings = [s for s in settings if s["id"] in keep]
+    else:
+        settings = [s for s in settings if s["id"] not in NAMED_ONLY]
     for s in settings:
         s["field_lr"] = args.field_lr
         if args.seed is not None:
