@@ -43,6 +43,22 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   through its moments; `as_env` samples through `f`; described and rebuilt by the
   registered name of `f`'s class, `register_transition("<package>.<name>", cls)`, and its
   fields (`design/nonlinear-transitions.md`).
+  **Process noise that depends on the state and the controls**
+  (`NonlinearGaussianTransition(..., noise_scale="per_coordinate")`): `f` returns `(mean,
+  scale)` and the innovations' Cholesky factor becomes `diag(scale) chol`, the scale read at
+  the belief's mean to first order and averaged over the sigma points as `E[s sᵀ]` unscented
+  (the expected conditional covariance), at the sampled state in `as_env`; the gradient
+  planner differentiates through it, provided the scale is strictly positive, finite and
+  differentiable wherever it is evaluated (a `sqrt(1 - rho(d)**2)` with `rho(0) = 1` has a NaN
+  derivative at rest: write `sqrt(1 - rho**2 + eps)`); recorded in the document as
+  `options.noise_scale`. The neural
+  transition steps through the same propagation. What this covers: a transition's noise as a
+  function of its own state factor's previous value and its control nodes, per coordinate
+  (each coordinate's standard deviation scaled; the correlations are the declared
+  innovations'). What it does not: a noise whose correlations change with the state,
+  noise read from another state factor (cross-factor continuous parents are not built), or a
+  scale on a linear-Gaussian transition (declare an affine `f` instead). An observation's noise
+  varies over the observed state by its own mechanism, a `NoiseMap` (below).
 - **A Gaussian emission over categorical parents alone** (`gaussian_emission(loc, R_chol)`):
   the linear-Gaussian family with an empty regressor block, a Gaussian mixture whose
   component label is the parent; it sends the parents the exact categorical message of its

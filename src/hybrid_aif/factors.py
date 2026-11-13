@@ -11,7 +11,7 @@ docs/design/amortization.md A1, A2, A10, A11
 
 import itertools
 import math
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import equinox as eqx
 import jax
@@ -137,33 +137,59 @@ class LinearGaussianTransition(eqx.Module):
 
 #: The moment propagations a :class:`NonlinearGaussianTransition` declares.
 PROPAGATIONS = ("first_order", "unscented")
+#: The values a :class:`NonlinearGaussianTransition`'s ``noise_scale`` takes besides ``None``
+#: (``f`` returns the mean alone): ``"per_coordinate"``, ``f`` returns the pair ``(mean,
+#: scale)`` and the innovations' Cholesky factor ``chol`` is taken as ``diag(scale) chol``.
+NOISE_SCALES = ("per_coordinate",)
 
 
 class NonlinearGaussianTransition(eqx.Module):
     """``x' = f(x, controls) + eps``: a user-written mean map with conditioned innovations.
 
+    Under ``noise_scale="per_coordinate"`` the map also scales the innovations: ``f`` returns
+    ``(mean, scale)`` and ``eps ~ N(loc_j, diag(s) chol_j chol_jᵀ diag(s))``, ``s`` the scale at
+    the previous state and the controls, so the process noise depends on both.
+
     A state factor declaring this transition has no discrete state parents; it is
     Gaussian-carried, or mixture-carried when its prior is a
     :class:`~hybrid_aif.distributions.MixtureGaussian`.
-    Design: docs/design/nonlinear-transitions.md N1–N5.
+    Design: docs/design/nonlinear-transitions.md N1–N5 and the amendment of 2026-11-13.
     """
 
     #: An :class:`equinox.Module` called as ``f(x, controls)``: ``x`` the state factor's ``(d,)``
     #: state, ``controls`` a tuple with one entry per control parent in declared order (a discrete
     #: node's integer level, a continuous node's float vector); it returns the ``(d,)`` mean of
-    #: the next state. Its numeric fields are pytree leaves and its code is static structure.
-    #: ``f`` is not learned.
+    #: the next state, or under ``noise_scale="per_coordinate"`` the tuple ``(mean, scale)`` of
+    #: two ``(d,)`` float arrays. Its numeric fields are pytree leaves and its code is static
+    #: structure. ``f`` is not learned.
     f: eqx.Module
     #: A :class:`ConditionalGaussian` added to ``f``'s output, ``eps ~ N(loc_j, chol_j chol_jᵀ)``,
     #: whose parent axes are the state factor's discrete control nodes in declared order (the
     #: trivial ``(1,)`` for none); its Cholesky factor's diagonal must be positive for beliefs to
-    #: be propagated.
+    #: be propagated. Under ``noise_scale="per_coordinate"`` its Cholesky factor is
+    #: ``diag(scale) chol_j`` and its offset ``loc_j`` is not scaled.
     innovations: ConditionalGaussian
     #: How a belief is pushed through ``f`` (static): ``"first_order"`` linearises ``f`` at the
     #: belief's mean, ``"unscented"`` pushes ``2n + 1`` sigma points through it (``n`` the state's
     #: dimension plus that of any control carried as a belief). Both are exact for ``f`` affine in
-    #: its continuous inputs.
+    #: its continuous inputs and a scale that does not vary.
     propagation: str = eqx.field(static=True, default="first_order")
+    #: What ``f`` returns besides the mean (static): ``None``, nothing (the mean alone);
+    #: ``"per_coordinate"``, the pair ``(mean, scale)``, ``scale`` a ``(d,)`` vector, the
+    #: innovations' Cholesky factor taken as ``diag(scale) chol``. Validation checks the map's
+    #: return against it; no code path reads the return's structure instead.
+    #:
+    #: The scale must be strictly positive and finite (a softplus or an exponential, say); it is
+    #: not checked under ``jit``. A zero on a coordinate whose mean has no spread makes the
+    #: predicted covariance singular, and its Cholesky factor NaN; a negative entry flips the
+    #: sign of that coordinate's correlations. For the gradient planner and any gradient through
+    #: a belief, the scale must also be differentiable wherever it is evaluated, the unscented
+    #: centre point included (its zero weight does not cancel a NaN). A scale such as
+    #: ``sqrt(1 - rho(d)**2)`` with ``rho(0) = 1`` has an infinite or NaN derivative at ``d = 0``
+    #: (zero displacement, a vehicle at rest), and the gradient planner then returns a NaN plan
+    #: from a start at rest; guard it as ``sqrt(1 - rho**2 + eps)``, or with a double ``where``
+    #: that keeps the root's argument away from zero on the branch not taken.
+    noise_scale: Literal["per_coordinate"] | None = eqx.field(static=True, default=None)
 
     def __check_init__(self) -> None:
         if not isinstance(self.f, eqx.Module) or not callable(self.f):
@@ -177,10 +203,46 @@ class NonlinearGaussianTransition(eqx.Module):
                 f"NonlinearGaussianTransition: propagation={self.propagation!r}; pass one of "
                 f"{list(PROPAGATIONS)}"
             )
+        if self.noise_scale is not None and self.noise_scale not in NOISE_SCALES:
+            raise ValueError(
+                f"NonlinearGaussianTransition: noise_scale={self.noise_scale!r}; pass None (f "
+                f"returns the mean alone) or one of {list(NOISE_SCALES)} (f returns the pair "
+                "(mean, scale))"
+            )
 
     @property
     def dim(self) -> int:
         return self.innovations.dim
+
+    @property
+    def _scaled(self) -> bool:
+        """Whether ``f`` scales the innovations (``noise_scale="per_coordinate"``)."""
+        return self.noise_scale == "per_coordinate"
+
+    def _mean_and_scale(self, x: Array, controls: tuple) -> tuple[Array, Array | None]:
+        """``f`` at ``x`` and ``controls`` as ``(mean, scale)``, ``scale`` ``None`` under
+        ``noise_scale=None``. The return's structure is checked against the declaration when
+        traced, so a map that returns a pair undeclared (or a mean alone when a pair is
+        declared) raises instead of being misread."""
+        out = self.f(x, controls)
+        pair = isinstance(out, tuple) and len(out) == 2
+        if self._scaled and not pair:
+            raise TypeError(
+                "NonlinearGaussianTransition: noise_scale='per_coordinate' declares that f "
+                f"returns the pair (mean, scale), and it returned a {type(out).__name__}"
+            )
+        if not self._scaled and isinstance(out, tuple | list):
+            raise TypeError(
+                f"NonlinearGaussianTransition: f returned a {type(out).__name__} of "
+                f"{len(out)} entries, and noise_scale=None declares that it returns the mean "
+                "alone; declare noise_scale='per_coordinate' for a map that returns "
+                "(mean, scale)"
+            )
+        return (out[0], out[1]) if self._scaled else (out, None)
+
+    def _mean(self, x: Array, controls: tuple) -> Array:
+        """The next state's mean, ``f``'s first output under either ``noise_scale``."""
+        return self._mean_and_scale(x, controls)[0]
 
 
 class NoiseMap(eqx.Module):

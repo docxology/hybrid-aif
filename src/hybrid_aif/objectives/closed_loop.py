@@ -316,7 +316,9 @@ def coverage(
 def _nonlinear_mean(B_f: NonlinearGaussianTransition, loc: Array, chol: Array, inputs) -> Array:
     """The propagated mean of ``f(x, controls)`` (before the innovation's offset), as
     :func:`~hybrid_aif.objectives.hybrid._nonlinear_moments` computes it: ``f`` at the joint
-    mean under ``first_order``, the sigma points' weighted mean under ``unscented``."""
+    mean under ``first_order``, the sigma points' weighted mean under ``unscented``. A scale
+    ``f`` returns does not enter the mean: the feedback gains read the mean's Jacobians, and the
+    scaled noise reaches the pass through the recorded covariances."""
     d = loc.shape[-1]
     spans, at = [], d
     for _, mean, _ in inputs.beliefs:
@@ -328,7 +330,7 @@ def _nonlinear_mean(B_f: NonlinearGaussianTransition, loc: Array, chol: Array, i
         controls = list(inputs.controls)
         for (pos, _, _), (lo, hi) in zip(inputs.beliefs, spans, strict=True):
             controls[pos] = z[lo:hi]
-        return B_f.f(z[:d], tuple(controls))
+        return B_f._mean(z[:d], tuple(controls))
 
     if B_f.propagation == "first_order":
         return g(loc_z)

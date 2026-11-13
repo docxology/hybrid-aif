@@ -199,7 +199,9 @@ class HybridProcess(Env):
     linear-Gaussian factor steps ``x' = F_j x + G_j u + b_j + ε``, its discrete parents (state
     factors and discrete control nodes) selecting ``j``; a nonlinear one ``x' = f(x, controls) +
     ε_j``, ``f`` given each control node's entry in declared order (a discrete node's level, a
-    continuous node's value) and the discrete nodes selecting ``j``.
+    continuous node's value) and the discrete nodes selecting ``j``; a map that scales its noise
+    (``noise_scale="per_coordinate"``) draws ``ε_j = loc_j + diag(s) chol_j ξ`` with ``s`` its
+    scale at the sampled state and the step's controls.
     """
 
     A_deps: tuple[tuple[int, ...], ...] = eqx.field(static=True)
@@ -341,7 +343,13 @@ class HybridProcess(Env):
                         value = jnp.asarray(value, jnp.float32)
                     controls.append(value)
                 innov = B_f.innovations.condition_on(tuple(levels) or (0,))
-                next_state.append(B_f.f(jnp.asarray(state[f]), tuple(controls)) + innov.sample(k))
+                mean, scale = B_f._mean_and_scale(jnp.asarray(state[f]), tuple(controls))
+                if scale is None:
+                    next_state.append(mean + innov.sample(k))
+                else:  # the scale at this sampled state and these controls, exactly
+                    eps = jax.random.normal(k, innov.loc.shape)
+                    draw = (innov.chol @ eps[..., None])[..., 0]  # as innov.sample draws
+                    next_state.append(mean + (innov.loc + scale * draw))
             else:
                 # Discrete parents are read from *this step's* sampled values
                 # (ancestral in declaration order), matching the planner's

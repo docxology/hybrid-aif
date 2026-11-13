@@ -365,14 +365,43 @@ def _validate_nonlinear(
             f"factor {name!r}: the NonlinearGaussianTransition's f fails on the factor's "
             f"layout, f(x: float[{d}], controls: {described}): {exc}"
         ) from exc
-    shape = getattr(out, "shape", None)
-    dtype = getattr(out, "dtype", None)
-    if shape != (d,) or dtype is None or not jnp.issubdtype(dtype, jnp.floating):
-        what = f"{dtype}{list(shape)}" if shape is not None else type(out).__name__
+
+    def text(value) -> str:
+        shape, dtype = getattr(value, "shape", None), getattr(value, "dtype", None)
+        return f"{dtype}{list(shape)}" if shape is not None else type(value).__name__
+
+    def is_vector(value) -> bool:
+        dtype = getattr(value, "dtype", None)
+        return (
+            getattr(value, "shape", None) == (d,)
+            and dtype is not None
+            and jnp.issubdtype(dtype, jnp.floating)
+        )
+
+    call = f"f(x: float[{d}], controls: {described})"
+    if decl._scaled:
+        if not (isinstance(out, tuple) and len(out) == 2 and all(map(is_vector, out))):
+            what = (
+                "(" + ", ".join(text(v) for v in out) + ")"
+                if isinstance(out, tuple | list)
+                else text(out)
+            )
+            raise ValueError(
+                f"factor {name!r}: the NonlinearGaussianTransition's f returns {what} for "
+                f"{call}; under noise_scale='per_coordinate' it must return the pair (mean, "
+                f"scale), (float[{d}], float[{d}])"
+            )
+    elif isinstance(out, tuple | list):
         raise ValueError(
-            f"factor {name!r}: the NonlinearGaussianTransition's f returns {what} for "
-            f"f(x: float[{d}], controls: {described}); it must return the next state's mean, "
-            f"float[{d}]"
+            f"factor {name!r}: the NonlinearGaussianTransition's f returns a "
+            f"{type(out).__name__} of {len(out)} entries for {call}, and noise_scale=None "
+            f"declares the next state's mean alone, float[{d}]; a map that returns (mean, "
+            "scale) is declared with noise_scale='per_coordinate'"
+        )
+    elif not is_vector(out):
+        raise ValueError(
+            f"factor {name!r}: the NonlinearGaussianTransition's f returns {text(out)} for "
+            f"{call}; it must return the next state's mean, float[{d}]"
         )
 
 
@@ -1291,6 +1320,55 @@ def _gaussian_step(q: Gaussian, inputs: _LGInputs) -> Gaussian:
     return predict(q, F, loc, chol)
 
 
+#: The unscented transform's scaling (Julier & Uhlmann 2004; the scaled form of Julier 2002):
+#: ``α = 1`` and ``κ = 0`` put the sigma points at ``μ ± √n`` columns of the covariance root
+#: with weight ``1/(2n)`` each and none on the centre's mean; ``β = 2`` (optimal for a Gaussian
+#: belief) adds ``1 − α² + β = 2`` to the centre's covariance weight, so every covariance weight
+#: is positive and the propagated covariance is positive semidefinite.
+UNSCENTED_KAPPA = 0.0
+UNSCENTED_BETA = 2.0
+
+
+def _push_conditional(
+    g: Callable[[Array], tuple[Array, Array | None]],
+    loc: Array,
+    root: Array,
+    propagation: str,
+) -> tuple[Array, Array, Array | None]:
+    """The moments of ``y`` under ``z ~ N(loc, root rootᵀ)`` and ``y | z ~ N(m(z), diag s(z) Q
+    diag s(z))``, the predictive of a Gaussian transition whose noise is scaled by its input:
+    ``g(z)`` returns ``(m(z), s(z))``, ``s`` ``None`` for a noise that does not depend on ``z``.
+
+    Returns ``(mean, spread, ss)``: ``mean`` and ``spread`` the mean and covariance of ``m(z)``,
+    and ``ss`` the second moment of the scale, ``E[s sᵀ]`` (``None`` without a scale). The
+    predictive covariance is ``spread + Q ∘ ss`` (``∘`` elementwise), since
+    ``E[diag s Q diag s] = Q ∘ E[s sᵀ]``: the law of total covariance, ``Cov y = Cov E[y|z] +
+    E[Cov(y|z)]``. The caller adds the noise, ``Q`` itself without a scale.
+
+    ``"first_order"``: ``m(loc)``, ``(J root)(J root)ᵀ`` with ``J = ∂m/∂z`` at ``loc``, and
+    ``ss = s(loc) s(loc)ᵀ``, the scale read at the mean. ``"unscented"``: the sigma points of
+    the belief (:data:`UNSCENTED_KAPPA`, :data:`UNSCENTED_BETA`), ``m``'s weighted mean and
+    covariance over them, and ``ss = Σ_i w_i s_i s_iᵀ`` with the mean weights ``w_i``, the
+    points' estimate of the expectation (not ``E[s] E[s]ᵀ``, which drops the scale's own
+    spread). The neural and the nonlinear transitions both step through it."""
+    if propagation == "first_order":
+        jac = jax.jacfwd(lambda z: g(z)[0])(loc)
+        pushed = jac @ root
+        mean, scale = g(loc)
+        ss = None if scale is None else scale[:, None] * scale[None, :]
+        return mean, pushed @ pushed.T, ss
+    points, weights = sigma_points(loc, root, kappa=UNSCENTED_KAPPA)
+    ys, scales = jax.vmap(g)(points)
+    mean = weights @ ys
+    dev = ys - mean
+    cov_weights = weights.at[0].add(UNSCENTED_BETA)  # α = 1: the centre's 1 − α² + β
+    # The second moment is positive semidefinite (and Q ∘ ss with it, a Schur product) because
+    # every mean weight is non-negative, which UNSCENTED_KAPPA = 0 gives; a negative kappa makes
+    # the centre's weight negative and ss can be indefinite, so a change of kappa revisits this.
+    ss = None if scales is None else (scales * weights[:, None]).T @ scales
+    return mean, (dev * cov_weights[:, None]).T @ dev, ss
+
+
 def _mlp_step(
     q: Gaussian,
     B_f: MLPConditional,
@@ -1302,22 +1380,16 @@ def _mlp_step(
     ``μ' = m(μ, a)``, ``Σ' = J Σ Jᵀ + diag σ(μ, a)²`` with ``J = ∂m/∂x |_μ``. Exact
     for an affine mean head, approximate otherwise. ``action_parents`` are already in
     parent form, one per control node the factor reads (a level's one-hot, a continuous value).
+    The step is :func:`_push_conditional` with the head's scale ``σ`` and ``Q = I``, the path a
+    nonlinear transition with a scaled noise takes.
     Design: docs/design/amortization.md A1
     """
     mu = q.loc
     tail = tuple(a.astype(mu.dtype) for a in action_parents)
-    head = B_f.condition_on((mu, *tail))
-    jac = jax.jacfwd(lambda x: B_f.condition_on((x, *tail)).loc)(mu)
-    return Gaussian.from_cov(head.loc, jac @ q.cov @ jnp.swapaxes(jac, -1, -2) + head.cov)
-
-
-#: The unscented transform's scaling (Julier & Uhlmann 2004; the scaled form of Julier 2002):
-#: ``α = 1`` and ``κ = 0`` put the sigma points at ``μ ± √n`` columns of the covariance root
-#: with weight ``1/(2n)`` each and none on the centre's mean; ``β = 2`` (optimal for a Gaussian
-#: belief) adds ``1 − α² + β = 2`` to the centre's covariance weight, so every covariance weight
-#: is positive and the propagated covariance is positive semidefinite.
-UNSCENTED_KAPPA = 0.0
-UNSCENTED_BETA = 2.0
+    mean, spread, ss = _push_conditional(
+        lambda x: B_f.diag_moments((x, *tail)), mu, q.chol, "first_order"
+    )
+    return Gaussian.from_cov(mean, spread + jnp.eye(mean.shape[-1], dtype=ss.dtype) * ss)
 
 
 class _NLInputs(NamedTuple):
@@ -1363,12 +1435,13 @@ def _nl_inputs(
 
 def _nonlinear_moments(
     B_f: NonlinearGaussianTransition, loc: Array, chol: Array, inputs: _NLInputs
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, Array | None]:
     """The mean and covariance of ``f(x, controls)`` under ``x ~ N(loc, chol cholᵀ)`` and the
-    step's control beliefs, before the innovations: the joint ``z = (x, u_beliefs)`` with a
-    block-diagonal root is pushed through ``f``, to first order (``f(μ_z)``, ``J Σ_z Jᵀ`` with
-    ``J = ∂f/∂z`` at ``μ_z``, which is ``J_x Σ J_xᵀ + J_u S J_uᵀ``) or by the unscented
-    transform (:data:`UNSCENTED_KAPPA`, :data:`UNSCENTED_BETA`)."""
+    step's control beliefs, before the innovations, and the second moment of ``f``'s scale
+    (``None`` under ``noise_scale=None``): the joint ``z = (x, u_beliefs)`` with a
+    block-diagonal root is pushed through ``f`` by :func:`_push_conditional`, to first order
+    (``f(μ_z)``, ``J Σ_z Jᵀ`` with ``J = ∂f/∂z`` at ``μ_z``, which is ``J_x Σ J_xᵀ + J_u S
+    J_uᵀ``) or by the unscented transform, the scale read over the same ``z``."""
     d = loc.shape[-1]
     spans, at = [], d
     for _, mean, _ in inputs.beliefs:
@@ -1378,29 +1451,24 @@ def _nonlinear_moments(
     roots = [chol, *(root for _, _, root in inputs.beliefs)]
     root_z = jax.scipy.linalg.block_diag(*roots) if len(roots) > 1 else chol
 
-    def g(z: Array) -> Array:
+    def g(z: Array) -> tuple[Array, Array | None]:
         controls = list(inputs.controls)
         for (pos, _, _), (lo, hi) in zip(inputs.beliefs, spans, strict=True):
             controls[pos] = z[lo:hi]
-        return B_f.f(z[:d], tuple(controls))
+        return B_f._mean_and_scale(z[:d], tuple(controls))
 
-    if B_f.propagation == "first_order":
-        jac = jax.jacfwd(g)(loc_z)
-        pushed = jac @ root_z
-        return g(loc_z), pushed @ pushed.T
-    points, weights = sigma_points(loc_z, root_z, kappa=UNSCENTED_KAPPA)
-    ys = jax.vmap(g)(points)
-    mean = weights @ ys
-    dev = ys - mean
-    cov_weights = weights.at[0].add(UNSCENTED_BETA)  # α = 1: the centre's 1 − α² + β
-    return mean, (dev * cov_weights[:, None]).T @ dev
+    return _push_conditional(g, loc_z, root_z, B_f.propagation)
 
 
 def _nonlinear_step(q: Gaussian, B_f: NonlinearGaussianTransition, inputs: _NLInputs) -> Gaussian:
     """``x' = f(x, controls) + ε`` for a Gaussian belief: the moments of ``f``'s output
-    (:func:`_nonlinear_moments`) plus the innovation's offset and covariance."""
-    mean, cov = _nonlinear_moments(B_f, q.loc, q.chol, inputs)
-    return Gaussian.from_cov(mean + inputs.loc, cov + inputs.chol @ inputs.chol.T)
+    (:func:`_nonlinear_moments`) plus the innovation's offset and covariance, ``Q = chol
+    cholᵀ``, or under a scale ``Q ∘ E[s sᵀ]``, the expected ``diag(s) Q diag(s)``."""
+    mean, cov, ss = _nonlinear_moments(B_f, q.loc, q.chol, inputs)
+    noise = inputs.chol @ inputs.chol.T
+    if ss is not None:
+        noise = noise * ss
+    return Gaussian.from_cov(mean + inputs.loc, cov + noise)
 
 
 def _nonlinear_mixture_step(

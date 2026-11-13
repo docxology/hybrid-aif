@@ -8,7 +8,8 @@ parents: its own previous value, other state factors, and control nodes. It acce
   :class:`~hybrid_aif.ConditionalDirichlet` for a table that is learned;
 - a linear map with Gaussian noise, optionally one map per level of a discrete parent (a switching
   linear model): :class:`~hybrid_aif.LinearGaussianTransition`;
-- a nonlinear map with Gaussian noise: :class:`~hybrid_aif.NonlinearGaussianTransition`;
+- a nonlinear map with Gaussian noise, which the map may scale per coordinate by the state and
+  the controls: :class:`~hybrid_aif.NonlinearGaussianTransition`;
 - a neural conditional: :class:`~hybrid_aif.MLPConditional` for a continuous state,
   :class:`~hybrid_aif.MLPCategorical` for a categorical code;
 - a deterministic map that is computed forward and carried:

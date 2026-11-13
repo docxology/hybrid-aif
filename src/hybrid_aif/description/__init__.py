@@ -244,7 +244,7 @@ FAMILIES: dict[str, _Family] = {
         ("f", "innovations"),
         optional=("f",),
         nested={"innovations": ("loc", "chol")},
-        options={"f": None, "propagation": "first_order"},
+        options={"f": None, "propagation": "first_order", "noise_scale": None},
         labels=("transition",),
         reads_self=True,
     ),
@@ -946,7 +946,9 @@ def _encode_deterministic(w: _Writer, decl, base: str, address: str, remember) -
 def _encode_nonlinear(w: _Writer, decl, base: str, address: str) -> dict[str, Any]:
     """A nonlinear transition: ``f`` by its registered name, its leaves one tree variable keyed
     by field name, its static fields JSON values in ``options.f.static``; the innovations as a
-    linear-Gaussian transition's (nonlinear-transitions.md N5)."""
+    linear-Gaussian transition's (nonlinear-transitions.md N5). A map that scales the noise
+    writes ``options.noise_scale``, so the record says the innovations are scaled by ``f``; the
+    option is absent for one that does not (its default, ``None``)."""
     f = decl.f
     names = [n for n, entry in _TRANSITIONS.items() if entry.cls is type(f)]
     if not names:
@@ -976,11 +978,10 @@ def _encode_nonlinear(w: _Writer, decl, base: str, address: str) -> dict[str, An
     spec: dict[str, Any] = {"name": name}
     if static:
         spec["static"] = static
-    return _record(
-        "NonlinearGaussianTransition",
-        parameters=parameters,
-        options={"f": spec, "propagation": decl.propagation},
-    )
+    options: dict[str, Any] = {"f": spec, "propagation": decl.propagation}
+    if decl.noise_scale is not None:  # the map scales the noise: the record says so
+        options["noise_scale"] = decl.noise_scale
+    return _record("NonlinearGaussianTransition", parameters=parameters, options=options)
 
 
 def _float_leaf(value: object, address: str) -> np.ndarray:
@@ -4481,7 +4482,8 @@ class _Model:
     def _decode_NonlinearGaussianTransition(self, fac: _Factor, options, role: str):
         """``f`` rebuilt from its registered class: the document's fields checked against the
         class's schema (names, static or leaf), then assembled from their values; only a
-        registered class is instantiated. Shapes are checked when the System is validated."""
+        registered class is instantiated. Shapes are checked when the System is validated, and
+        ``options.noise_scale`` (default ``None``) against what ``f`` returns."""
         spec, address = options["f"], f"{fac.address}.options.f"
         if (
             not isinstance(spec, Mapping)
@@ -4566,6 +4568,7 @@ class _Model:
             f=f,
             innovations=innovations,
             propagation=options["propagation"],
+            noise_scale=options["noise_scale"],
         )
 
     def _decode_LinearGaussianObservation(self, fac: _Factor, options, role: str):

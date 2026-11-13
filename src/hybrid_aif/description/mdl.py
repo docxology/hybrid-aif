@@ -885,6 +885,8 @@ class _Walk:
                 family = resolution_term(k, n)
             exact = False
             note += f" (a point map of {_map_count(decl.f)} parameters: fixed, its extent unscored)"
+            if decl._scaled:  # the scale is f's code and leaves, counted above
+                note += "; its noise scaled per coordinate by the map"
         elif isinstance(decl, _factors.LinearGaussianObservationMNIW):
             d, p = decl.M.shape[-2], decl.M.shape[-1]
             batch = decl.M.shape[:-2]

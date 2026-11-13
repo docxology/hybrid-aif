@@ -239,3 +239,134 @@ would need `f` to take the mode, or one `f` per mode, an API with no consumer ye
   first order's 0.075. `κ = 3 − n` keeps the error near 0.003 at every `n` but gives up the
   non-negative weights; a rule that does not widen with `n` (Gauss–Hermite on the nonlinear
   coordinates only) is the further `propagation` value N2 anticipates.
+
+## Amendment 2026-11-13: process noise scaled by the map
+
+*Status. Ruled by the owner on 2026-11-12: (i) a per-coordinate, state- and control-dependent
+scale on the nonlinear transition, the registered map returning the mean and the scale (the
+decoder-error design, R3.1 (a): "`scale` multiplying the declared innovation factor per
+coordinate"; "first order reads the scale at the mean; unscented averages it over the points");
+and (ii) one path shared with the neural transition's input-dependent noise where the
+mathematics is the same, ruled in conversation on 2026-11-12 ("Decision 2"; the design file
+does not record it). Every point below marked* **(builder's choice)** *was settled in the build
+and awaits the owner's confirmation; the closing* **finding** *is for the owner to read, not
+settled design.*
+
+The innovations above are a fixed Gaussian: `x' = f(x, controls) + ε`, `ε ~ N(loc_j, Q_j)`. The
+amendment lets the noise depend on the previous state and the controls without a new family:
+
+    x' = f(x, u) + loc_j + diag(s(x, u)) L_j ξ,    ξ ~ N(0, I),    Q_j = L_j L_jᵀ
+
+so the step's covariance is `diag(s) Q_j diag(s)`, entry `s_i s_k (Q_j)_ik`. The scale changes
+each coordinate's variance and leaves the correlations of `Q_j` as declared. The decoder-error
+design's test 12 writes the first-order noise as `diag(scale)² ∘ Q`, which keeps only `Q`'s
+diagonal; what is built is `Q ∘ s sᵀ = diag(s) Q diag(s)`, the form R3.1 (a) states ("scale
+multiplying the declared innovation factor"), which keeps `Q`'s correlations. The two agree for
+a diagonal `Q`.
+
+- **The offset is not scaled** **(builder's choice).** `loc_j` is added as declared. Scaling it
+  would make the predictive carry a cross term, `Cov(m(z), s(z) ∘ loc)`.
+- **The declaration** **(builder's choice: the field's name, its values, `None` for off).** A
+  static field, `NonlinearGaussianTransition(f, innovations, propagation, noise_scale=None)`, with
+  `noise_scale="per_coordinate"` declaring that `f` returns the pair `(mean, scale)`, both
+  `float[d]`. Validation (the `jax.eval_shape` check of N5, which needs the System's control
+  layout and so runs there, not at construction) checks the return against the declaration
+  both ways: a pair from a map declared `None` is refused naming `noise_scale`, as is a mean
+  alone, or a scale of the wrong shape, from one declared `"per_coordinate"`. No code path reads
+  the return's structure to decide what it means; each reads the declared field through one
+  private accessor, which raises at trace time if the two disagree. Detecting the pair by its
+  structure alone was set aside: a map that returns a tuple by accident would be read as
+  scaled, and the document would not say so. A string value, not a bool, so a matrix-valued
+  form (below) is a further value.
+- **What a scale must be.** Strictly positive and finite; not checked under `jit`. A zero on a
+  coordinate whose mean has no spread makes the predicted covariance singular and its Cholesky
+  factor NaN (V10 refuses a zero in a declared factor but cannot see one in a scale); a negative
+  entry flips the sign of that coordinate's correlations. For gradients (the gradient planner,
+  and gradient learning later) the scale must also be differentiable wherever it is evaluated,
+  the unscented centre point included: its mean weight is zero, but `0 · NaN` is NaN. The form
+  the decoder-error design needs, `sqrt(1 − rho(d)²)` with `rho(0) = 1`, has an infinite or NaN
+  derivative at zero displacement, and from a start at rest the gradient planner returns a NaN
+  plan. Guard it: `sqrt(1 − rho² + ε)`, or a double `where` that keeps the root's argument away
+  from zero on the branch not taken. Tests pin the guarded form.
+- **A scale of ones** gives the plain map's results: bit for bit to first order (the noise is
+  `Q ∘ 1`), to rounding under the unscented rule (the weights' sum), bit for bit in `as_env`
+  (the same draw from the same key). A map declared `None` takes the plain path bit for bit
+  (checked on the survey example's regression quantities against the tree without this
+  amendment).
+- **Propagation.** First order (ruled): `μ' = f(μ_z)`, `Σ' = J Σ_z Jᵀ + Q ∘ s(μ_z) s(μ_z)ᵀ`, the
+  scale read at the joint mean of the state and any control belief. Unscented
+  **(builder's choice: the reading of "averages it over the points")**: the predictive
+  covariance is the law of total covariance, `Cov E[x'|z] + E[Cov(x'|z)]`, and the second term is
+  `E[diag(s) Q diag(s)] = Q ∘ E[s sᵀ]`, estimated over the same sigma points with the mean
+  weights, `Σ_i w_i s_i s_iᵀ`; not `diag(E[s]) Q diag(E[s])`, which drops the scale's own spread
+  (`Q ∘ Cov(s)`). For a scale affine in the state the unscented rule is exact (the second moment
+  is quadratic) and first order is short by exactly `Q ∘ B Σ Bᵀ` (`s = c + B x`). A control
+  carried as a belief enters the scale as it enters the mean, through the joint `z`. The second
+  moment is positive semidefinite because every mean weight is non-negative (`κ = 0`); a
+  negative `κ` would need this revisited.
+- **The path shared with the neural transition** (ruled (ii)). One function,
+  `objectives/hybrid.py::_push_conditional(g, loc, root, propagation)`, takes `g(z) -> (m(z),
+  s(z))` and returns the mean and covariance of `m(z)` and `E[s sᵀ]` under either rule; the
+  caller adds the noise, `Q ∘ E[s sᵀ]`. The nonlinear transition calls it with its map and its
+  innovations' `Q`; the neural transition (`_mlp_step`) with its head's mean and scale and
+  `Q = I`, which is its `diag σ(μ)²`. What is shared: the Jacobian or the sigma points, the
+  spread, and the scale's second moment. What is not: the neural transition steps to first
+  order only (its `propagation` field is read on the likelihood path, by
+  `inference/linearise.py`); the neural likelihood's unscented reading keeps its own code,
+  since it returns a statistical linearisation `(H, c, R)` for conditioning rather than
+  predictive moments, but its noise, `Σ_i w_i σ(x_i)²`, is the diagonal case of the same
+  expectation, so the two rules agree. Through the shared step the neural transition's spread
+  is formed as `(J L)(J L)ᵀ` instead of `J (L Lᵀ) Jᵀ`: its mean agrees bit for bit and its
+  covariance to relative rounding, a few units in the last place (2.9e-7 relative in float32,
+  2.2e-16 in float64, measured in review).
+- **Sampling.** `as_env` draws `ε_j = loc_j + diag(s) L_j ξ` with `s` at the sampled previous
+  state and the step's controls, exactly.
+- **Planning.** Every planner predicts through the step above, as inference does
+  (`make_transition`); the gradient planner differentiates through the scale, in the state, the
+  control and the map's leaves (subject to the differentiability above). Under
+  `feedback="linear_quadratic"` **(builder's choice)** the gains read the mean's Jacobians and
+  the scaled noise reaches the pass through the recorded covariances; the Riccati pass ignores
+  the noise's dependence on the state, so it does not credit a correction for the noise it
+  would avoid.
+- **The record** **(builder's choice: omission at the default, refusal of a stripped
+  document).** `describe` writes `options.noise_scale` when it is `"per_coordinate"` and omits
+  it at its default, so the document of a map without a scale carries no trace of the option,
+  and a document without it builds a map declared `None`. A reader of the document sees that
+  the innovations are scaled by the named code. A document whose option is removed while its
+  map returns a pair fails validation rather than building a model whose noise is unscaled; an
+  unknown value is refused. `registered_transitions` and replay need nothing of their own
+  (replay runs inference).
+- **The description length** **(builder's choice).** The map is priced as N5 says: the scale is
+  computed by `f`'s code from `f`'s leaves, already counted; the option itself is unpriced, as
+  `propagation` is, so a scaled noise is model capacity at the plain map's price. The note says
+  the noise is scaled.
+- **Refusals** apply to a scaled map with the plain map's sentences: discrete state parents
+  (switching dynamics), a zero on the declared factor's diagonal, a merge binding that removes a
+  control node `f` reads, an unregistered map at `describe`. A mixture-carried factor steps each
+  component with the scale at its own moments, as the plain map does; `merge` carries the field.
+- **Scope: a per-coordinate scale only, as ruled.** A matrix-valued factor, `f` returning
+  `(mean, M(x, u))` with the noise `M L Lᵀ Mᵀ`, would be a clean generalisation: the shared step
+  would return `E[N Nᵀ]` with `N = M L` in place of `Q ∘ E[s sᵀ]` (`Σ_i w_i N_i N_iᵀ` unscented,
+  `N(μ) N(μ)ᵀ` to first order), sampling would draw `M L ξ`, and the declaration would take a
+  further value of `noise_scale`; it costs `d²` numbers per point and needs `M` kept invertible.
+
+**Finding for the owner (not settled).** A per-coordinate scale keeps the correlations of `Q`.
+A persistent error `e' = R e + w` with per-group persistences `R = diag(ρ_g)` and stationary
+covariance `P` needs `Cov(w) = P − R P R`, entries `P_ik (1 − ρ_i ρ_k)`; a scaled fixed `Q` gives
+`s_i s_k Q_ik`, whose correlation `Q_ik / sqrt(Q_ii Q_kk)` does not move. The two agree for every
+`ρ` only if `(1 − ρ_i ρ_k)² = (1 − ρ_i²)(1 − ρ_k²)` wherever `P_ik ≠ 0`, which (Cauchy-Schwarz)
+holds only for `ρ_i = ρ_k`. In the whitened declaration of R3.1 (`e = L_e ε`, persistence and
+the diagonal scale `sqrt(1 − ρ²)` on `ε`), the persistence on `e` is `L_e R L_e⁻¹`, which acts
+group by group only when `L_e` is block-diagonal by group. So per-group persistence is exact
+when the error's factor is block-diagonal by group (the groups uncorrelated) or the groups share
+one persistence; for correlated groups with different persistences it needs the matrix form
+above or a declaration that accepts the mixing.
+
+As built: `factors.py` (`noise_scale`, `NOISE_SCALES`, private `_scaled`, `_mean_and_scale`,
+`_mean`), `objectives/hybrid.py` (`_validate_nonlinear`, `_push_conditional`,
+`_nonlinear_moments`, `_nonlinear_step`, `_mlp_step`), `objectives/closed_loop.py` (the mean
+alone), `envs/_process.py` (the draw), `description/__init__.py` (the option),
+`description/mdl.py` (the note); `tests/test_scaled_innovations.py`. Measured there: a filter
+whose world's speed noise grows with the speed covers the true speed in its 90 % interval 0.885
+to 0.902 of the time at commanded speeds 0 to 3; the constant-noise model, right at speed 1.5,
+covers 1.000 at rest and 0.605 at speed 3.
