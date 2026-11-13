@@ -52,9 +52,12 @@ import survey_world as wd
 
 from hybrid_aif.distributions import MLPCategorical, MLPConditional
 
-DECODER_SHAPE = dict(width=512, depth=4, activation="silu")
+#  the large field (``survey_world.FIELD_SIZE``) holds nine times the scene, so its decoder is
+#  wider and trained on more images for longer (see the build record for the measurements)
+LARGE = wd.FIELD_SIZE == "large"
+DECODER_SHAPE = dict(width=1024 if LARGE else 512, depth=4, activation="silu")
 ENCODER_SHAPE = dict(width=256, depth=2)
-DECODER_STEPS = 80000
+DECODER_STEPS = 400000 if LARGE else 80000
 ENCODER_STEPS = 20000
 CALIBRATION_STEPS = 6000  # steps of the noise calibration (the scale head alone)
 CALIBRATION_IMAGES = 16000  # held-out images the effective pixel count is estimated from
@@ -70,7 +73,7 @@ TEMPER_STATES = 2000  # held-out states the tempering rule is measured on
 TEMPER_KEY = 12345  # their key, used by no training draw
 TEMPER_FIT_STATES = 20000  # states the tempered noise head is fitted on
 _ACTIVATIONS = {"silu": jax.nn.silu, "gelu": jax.nn.gelu, "tanh": jnp.tanh, "relu": jax.nn.relu}
-DATASET = 80000  # rendered training images
+DATASET = 400000 if LARGE else 80000  # rendered training images
 N_TERRAIN = 3
 BATCH = 256
 LEARNING_RATE = 1e-3
@@ -79,8 +82,12 @@ LEARNING_RATE = 1e-3
 RMSE_LIMIT = 1.25 * wd.PIXEL_SD
 #  the state's spread over the training set, folded into the decoder's first layer so that every
 #  input enters at unit scale: position, heading pair, speed, then the terrain's one-hot
+#  (on the large field the position enters at 0.6, a third of its sd over the field: a network
+#  reading it at unit scale resolves the scene's detail far less well, by the measurements of the
+#  build record)
 INPUT_LOC = np.asarray([np.mean(wd.FIELD[0]), np.mean(wd.FIELD[1]), 0, 0, 0, 0, 0, 0])
-INPUT_SCALE = np.asarray([1.7, 1.7, 0.7, 0.7, 0.2, 1.0, 1.0, 1.0])
+_POSITION_SCALE = 0.6 if LARGE else 1.7
+INPUT_SCALE = np.asarray([_POSITION_SCALE, _POSITION_SCALE, 0.7, 0.7, 0.2, 1.0, 1.0, 1.0])
 
 
 def sample_states(key, n):

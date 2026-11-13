@@ -453,3 +453,172 @@ def test_the_rover_s_position_belief_is_calibrated_with_a_small_trained_camera(t
     cal = module.position_calibration(rows)
     assert not cal["lost"]
     assert cal["ellipse_coverage"] >= 0.7
+
+
+#  the large field (``SURVEY_FIELD=large``): the field's size is read when the world is imported, so
+#  these tests run the examples in a fresh interpreter and read back what it prints as JSON
+
+
+def in_field(size, code):
+    """The JSON a fresh interpreter prints after running ``code`` with the examples importable and
+    the field's size ``size``."""
+    import json
+    import os
+    import subprocess
+
+    script = f"import json, sys\nsys.path.insert(0, {str(EXAMPLES)!r})\n{code}"
+    env = {**os.environ, "SURVEY_FIELD": size}
+    out = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+    )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+FIELD_FACTS = """
+import numpy as np, jax.numpy as jnp
+import survey_world as wd, survey_model as sm, survey_scheduler as ss
+_, centres = sm.field_grid()
+zones = ss.cell_zones(centres)
+sectors = sm.sector_centres()
+yields = sm.cell_yields()
+print(json.dumps(dict(
+    field=[list(r) for r in wd.FIELD], grid=sm.GRID_SHAPE, start=list(wd.START),
+    cell=(wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE,
+    sectors_own=[int(wd.zone_of(jnp.asarray(c))) for c in sectors],
+    cells_per_sector=np.bincount(zones, minlength=sm.N_SURVEY).tolist(),
+    sector_side=wd.ZONE_EDGES[0][1] - wd.ZONE_EDGES[0][0],
+    sunny_regions=int(len(sm.sunny_cells())),
+    yield_p10=float(np.percentile(wd.SUN, 10)), yield_p99=float(np.percentile(wd.SUN, 99)),
+    terrain_shares=[float(np.mean(wd.TERRAIN_GRID == k)) for k in range(3)],
+)))
+"""
+
+
+@pytest.mark.parametrize("size", ["small", "large"])
+def test_the_field_keeps_its_cell_size_and_its_sectors_tile_it(size):
+    facts = in_field(size, FIELD_FACTS)
+    side = facts["field"][0][1] - facts["field"][0][0]
+    assert side == {"small": 6.0, "large": 18.0}[size]
+    assert facts["cell"] == pytest.approx(CELL)  # the same cell, so the same motion per cell
+    assert facts["sectors_own"] == list(range(len(facts["sectors_own"])))  # each centre in its own
+    assert len(set(facts["cells_per_sector"])) == 1  # equal sectors, tiling the grid
+    assert sum(facts["cells_per_sector"]) == facts["grid"] ** 2
+    assert all(0.04 < s < 0.12 for s in facts["terrain_shares"][1:])  # rough and ice, a few each
+    assert facts["yield_p99"] > 10 * facts["yield_p10"]  # strong contrast between sun and shade
+
+
+def test_the_large_field_is_several_plans_wide_with_sun_in_many_places():
+    facts = in_field("large", FIELD_FACTS)
+    side = facts["field"][0][1] - facts["field"][0][0]
+    sm_reach = 12 * 0.3  # a plan of twelve ticks at the top speed
+    assert side >= 4 * sm_reach
+    assert facts["sector_side"] >= sm_reach  # a far sector lies beyond a plan
+    assert facts["sunny_regions"] >= 100  # sufficiently sunny cells all over, not one peak
+    small = in_field("small", FIELD_FACTS)
+    assert facts["start"] == small["start"]
+
+
+def test_the_large_field_s_wall_window_ranks_plans_as_the_whole_preference():
+    got = in_field(
+        "large",
+        """
+import numpy as np, jax.numpy as jnp, survey_model as sm
+full, rng, spread = sm.wall_target(), np.random.default_rng(0), []
+for c in [(-0.2, -0.6), (8.0, 7.0), (16.5, 15.5)]:
+    w = sm.wall_target(around=c)
+    a, r = rng.uniform(0, 2 * np.pi, 500), rng.uniform(0, 3.8, 500)
+    p = jnp.asarray(np.stack([c[0] + r * np.cos(a), c[1] + r * np.sin(a)], 1), jnp.float32)
+    d = np.asarray(w.log_prob(p) - full.log_prob(p))
+    spread.append(float(d.max() - d.min()))
+print(json.dumps(dict(spread=spread, k=int(w.means.shape[0]), full=int(full.means.shape[0]))))
+""",
+    )
+    assert got["k"] < got["full"] / 3
+    assert max(got["spread"]) < 1e-3  # the same log density up to a constant, within reach
+
+
+def test_the_large_field_s_scheduler_tables_are_distributions_and_far_sectors_take_options():
+    got = in_field(
+        "large",
+        """
+import numpy as np, survey_model as sm, survey_scheduler as ss
+_, centres = sm.field_grid()
+out = {}
+for charge in (True, False):
+    v, r, e = ss.sector_tables(centres, charge)
+    out[str(charge)] = dict(shapes=[list(v.shape), list(r.shape), list(e.shape)],
+        sums=[bool(np.allclose(t.sum(0), 1)) for t in (v, r, e)])
+moving, _, change = ss.option_legs(centres, True)
+far = int(moving[:, 0, sm.N_SURVEY - 1].argmax())
+gain = float(np.min(change[:, sm.CHARGE] - change[:, : sm.N_SURVEY].max(axis=1)))
+obs = bool(np.allclose(ss.sector_obs_table().sum(0), 1))
+print(json.dumps(dict(out=out, far_end=far, n=sm.N_SURVEY, charge_gain=gain, obs=obs)))
+""",
+    )
+    n = got["n"]
+    assert got["out"]["True"]["shapes"] == [
+        [n, n, 4, n + 1],
+        [48 * 48, n, 4, n + 1],
+        [4, 4, n, n + 1],
+    ]
+    assert got["out"]["False"]["shapes"][0] == [n, n, 4, n]
+    assert all(all(v["sums"]) for v in got["out"].values()) and got["obs"]
+    assert got["far_end"] != n - 1  # the far corner is not reached in one option
+    assert got["charge_gain"] > 0  # from every sector charging gains more energy than surveying
+
+
+def test_a_short_large_field_run_moves_stays_calibrated_and_the_scheduler_decides():
+    """The rover alone and the scheduler over it on the large field, camera off, the showcase's
+    planner, 24 ticks, an option four ticks long: the rover drives, its plans stay inside the
+    wall, its belief is not lost, and the scheduler decides on the slow clock among the sixteen
+    sectors."""
+    got = in_field(
+        "large",
+        """
+import numpy as np, survey_run as sr
+out = {}
+for sid in ("one-level", "two-level"):
+    s = dict(next(x for x in sr.settings_grid_l2() if x["id"] == sid))
+    s.update(camera=False, slow_ticks=4, readings=sr.READINGS_AVAILABLE)
+    rows = sr.run_setting(s, 24, None)["ticks"]
+    cal = sr.position_calibration(rows)
+    out[sid] = dict(speed=float(np.median([r["true_speed"] for r in rows])), lost=cal["lost"],
+        coverage=cal["ellipse_coverage"], wall=float(sr.plan_excursions(rows, True).max()),
+        decisions=[r["t"] for r in rows if r.get("slow", {}).get("decision")],
+        options=sorted(set(r.get("option", -1) for r in rows)),
+        mapped="mapped" in rows[1], maps=[r["t"] for r in rows if r["map"] is not None])
+print(json.dumps(out))
+""",
+    )
+    for sid, r in got.items():
+        assert r["speed"] > 0.1, sid
+        assert not r["lost"] and r["coverage"] >= 0.6, sid
+        assert r["wall"] <= 0.1, sid
+        assert r["mapped"] and r["maps"] == [0], sid  # the map every MAP_EVERY ticks
+    assert got["two-level"]["decisions"] == [0, 4, 8, 12, 16, 20]
+    assert max(got["two-level"]["options"]) < 17
+
+
+def test_the_large_field_s_charge_priced_from_the_rover_changes_only_its_sector_s_charge():
+    got = in_field(
+        "large",
+        """
+import numpy as np, jax.numpy as jnp, survey_model as sm, survey_scheduler as ss, survey_world as wd
+_, centres = sm.field_grid()
+_, p = ss.sector_scheduler(sm.field_grid()[0], centres, charge=True)
+near = sm.sunny_cells()[0] + np.asarray([0.1, 0.1])
+far = np.asarray([16.4, 8.9])  # four units from sunny ground
+gain = [float(ss.charge_from(x, centres)[2]) for x in (near, far)]
+moved = ss.priced_at(p.transition, far, centres, "")
+j = int(wd.zone_of(jnp.asarray(far)))
+diff = np.asarray(moved["energy"].log_table != p.transition["energy"].log_table)
+cols = [list(map(int, c)) for c in zip(*np.nonzero(diff))]
+sectors, options = sorted({c[2] for c in cols}), sorted({c[3] for c in cols})
+bands = sorted({c[1] for c in cols})
+out = dict(gain=gain, sectors=sectors, options=options, bands=bands, j=j, charge=sm.CHARGE)
+print(json.dumps(out))
+""",
+    )
+    assert got["gain"][0] > got["gain"][1]  # charging from beside the sun pays more
+    assert got["sectors"] == [got["j"]] and got["options"] == [got["charge"]]
+    assert 0 not in got["bands"]  # the empty band (the stall) is left as declared

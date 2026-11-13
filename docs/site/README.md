@@ -148,6 +148,22 @@ Testing: open `index.html` from a local server (or from disk); the URL hash
 and sets the initial view (without a pane id, settings open the viewer's pane), and
 `window.__app.set({...})` drives it from a script.
 
+The large field (`SURVEY_FIELD=large`, 18 by 18, a 48 by 48 grid, sixteen sectors): its bundles
+add `meta.tiers.zone_edges` (the sectors' edges per axis; the viewer draws and labels the sectors
+from it, else from `zone_split`), `meta.tiers.view` (`sectors`: the scheduler's coarse view),
+`meta.tiers.charge_form` and `meta.tiers.sunny_cells` (the charge option sends the rover to the
+sufficiently sunny cell nearest it when the option begins; each tick under charge records that
+place as `charge_to`, which the viewer marks in place of `charge_site`). The setting
+`two-level-priced` is the scheduler with its charge option priced, at each decision, from the
+rover's believed position instead of its sector's centre (`charge_pricing`). Its runs record `map` and
+`counts` every 24 ticks (null between) and `mapped` (which cells are mapped, packed bits) every
+tick. Trimmed for the page with `survey_trim.py --keep-every K --heavy-every H --play-stride P`:
+every K-th tick is kept (and every decision tick), the pictures and plans every H-th, and
+`meta.trim` says so; a kept tick without them shows those of the latest tick that has them, and
+the viewer plays P ticks a step. The viewer reads the options' count from `meta.tiers.options`,
+gives options beyond the page's five colours a hue each, and labels the timeline with the
+recorded ticks.
+
 Images: after `survey_trim.py`, each tick's `img`, `recon` and `map` is one base64 string of the
 bytes in the layout `meta.image.layout` and `meta.map_layout` describe (`meta.image.encoding` and
 `meta.map_encoding` say so); before trimming they are lists. The viewer accepts both forms.

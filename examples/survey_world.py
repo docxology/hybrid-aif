@@ -9,6 +9,12 @@ band a coarse meter shows (the slow tier reads the band; the option of a slow ti
 the world). The field's height map, sky openness, sunlight, solar yield, slope and fix noise are
 tabulated at import.
 
+The field comes in two sizes (``FIELD_SIZE``, from the environment variable ``SURVEY_FIELD``):
+the small field, 6 by 6, and the large field, 18 by 18, nine blocks of the small field's side whose
+south-west block is the small field and whose other blocks carry hills and terrain patches drawn
+with the small field's makeup (``_drawn_block``). Every map is computed by the same procedure at
+either size.
+
 The rover is a wheeled vehicle with a heading of its own and a solar battery (``VehicleStep``):
 its state is the position, the heading as a unit vector, the forward speed and the energy level;
 the command is a target speed, as a share of the top speed ``TOP_SPEED`` (the rover drives forward
@@ -24,7 +30,10 @@ ray-marched over the height map, lit by the sun, textured in world coordinates, 
 ``render``.
 
     python examples/survey_world.py
+    SURVEY_FIELD=large python examples/survey_world.py
 """
+
+import os
 
 import equinox as eqx
 import jax
@@ -36,10 +45,20 @@ from hybrid_aif.composition.black_box import black_box
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.description import register_transition
 
-FIELD = ((-1.0, 5.0), (-2.0, 4.0))
+#  the field's size, read from the environment variable SURVEY_FIELD when the module is imported:
+#  "small", a 6 by 6 field of four hills and three terrain patches, or "large", 18 by 18, nine
+#  blocks of 6 by 6 whose south-west block is the small field and whose other eight are drawn by
+#  ``_drawn_block`` (four hills and three patches each); the cell size, the motion, the battery
+#  and the camera are the same at both sizes
+FIELD_SIZE = os.environ.get("SURVEY_FIELD", "small")
+if FIELD_SIZE not in ("small", "large"):
+    raise ValueError(f"SURVEY_FIELD must be small or large, not {FIELD_SIZE!r}")
+BLOCK = 6.0  # the side of the small field, and of each block of the large one
+BLOCKS = 1 if FIELD_SIZE == "small" else 3  # blocks per axis
+FIELD = ((-1.0, -1.0 + BLOCKS * BLOCK), (-2.0, -2.0 + BLOCKS * BLOCK))
 START = (-0.2, -0.6)
 DT = 1.0
-GRID_N = 121
+GRID_N = 120 * BLOCKS + 1  # the tabulated maps' points per axis, 0.05 apart
 
 TERRAIN_NAMES = ("firm", "rough", "ice")
 TOP_SPEED = 0.3  # the forward speed under a full drive command, under one 0.375 map cell a tick
@@ -51,8 +70,16 @@ TURN_MAX = np.deg2rad(20.0)  # the heading turns at most this far per tick (in p
 #  process sd per state coordinate: position, heading pair, speed, energy level
 STATE_SD = np.asarray([0.005, 0.005, 0.01, 0.01, 0.004, 0.004])
 STATE_NAMES = ("x", "y", "cos heading", "sin heading", "forward speed", "energy level")
-ICE_PATCH = ((1.4, 2.1), 0.9)  # (centre, radius) in the low basin
-ROUGH_PATCHES = (((3.6, 0.2), 0.8), ((-0.2, 2.6), 0.6))
+#  the small field (the large field's south-west block): its hills ``(centre x, centre y, sd,
+#  height)`` (a negative height is a basin) and its terrain patches ``((centre), radius)``
+SMALL_HILLS = (
+    (2.0, 1.0, 1.1, 1.0),
+    (4.2, 3.2, 0.9, 0.7),
+    (-0.3, -1.2, 0.8, 0.5),
+    (1.0, 3.0, 0.9, -0.5),
+)
+SMALL_ICE = (((1.4, 2.1), 0.9),)  # in the low basin
+SMALL_ROUGH = (((3.6, 0.2), 0.8), ((-0.2, 2.6), 0.6))
 
 SUN_AZIMUTH = np.deg2rad(200.0)
 SUN_ELEVATION = np.deg2rad(35.0)
@@ -78,7 +105,7 @@ MOVING_CHARGE = 0.1  # the share of the parked charge collected at speed
 PARK_SPEED = 0.05  # the charge falls from parked to moving over about this speed
 #  the solar yield of the ground: the sunlight there over the field's brightest, to this power,
 #  so that sun-facing slopes yield several times what level ground does and shaded ground almost
-#  nothing
+#  nothing; on the large field ground of yield 0.6 or more lies in sixteen separate places
 SUN_POWER = 4.0
 CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls this sharp
 #  the rover's typical forward speed, the median over the closed-loop runs of both settings (see
@@ -86,8 +113,15 @@ CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls
 CRUISE_SPEED = 0.17
 GAUGE_SD = 0.05  # the gauge's noise on the energy level
 GAUGE_ACC = 0.88
-ZONE_SPLIT = (2.0, 1.0)  # the field's quadrants split at these x and y
-ZONES = 4
+#  the survey sectors: a grid over the field, the edges per axis; the small field's quadrants
+#  split at x 2 and y 1, the large field's sixteen sectors of 4.5 by 4.5
+ZONE_SPLIT = (2.0, 1.0)
+ZONE_EDGES = (
+    ((FIELD[0][0], ZONE_SPLIT[0], FIELD[0][1]), (FIELD[1][0], ZONE_SPLIT[1], FIELD[1][1]))
+    if FIELD_SIZE == "small"
+    else tuple(tuple(float(v) for v in np.linspace(lo, hi, 5)) for lo, hi in FIELD)
+)
+ZONES = (len(ZONE_EDGES[0]) - 1) * (len(ZONE_EDGES[1]) - 1)
 
 IMG_SIDE = 32
 IMG_PIXELS = IMG_SIDE * IMG_SIDE
@@ -117,17 +151,61 @@ TEXTURE_WAVELENGTH = (0.9, 1.8)  # field units: about two and a half to five map
 SKY_ZENITH, SKY_HORIZON, SUN_GLOW = 0.9, 0.76, 0.08
 
 
-def _bump(x, y, cx, cy, s, a):
-    return a * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * s**2))
+def _drawn_block(bx, by):
+    """The hills and terrain patches of block ``(bx, by)`` of the large field (``bx``, ``by`` from
+    0 at the south-west), drawn from a seed fixed by the block with the small field's makeup:
+    three hills (sd 0.8 to 1.1, height 0.5 to 1.0) and one basin (sd 0.8 to 1.0, depth 0.4 to
+    0.6), their centres at least 0.6 inside the block; an ice patch (radius 0.7 to 0.9) near the
+    basin's floor and two rough patches (radius 0.6 to 0.8) anywhere in the block."""
+    rng = np.random.default_rng(1000 + 10 * bx + by)
+    x0 = FIELD[0][0] + bx * BLOCK
+    y0 = FIELD[1][0] + by * BLOCK
+
+    def place():
+        return x0 + rng.uniform(0.6, BLOCK - 0.6), y0 + rng.uniform(0.6, BLOCK - 0.6)
+
+    hills = [(*place(), rng.uniform(0.8, 1.1), rng.uniform(0.5, 1.0)) for _ in range(3)]
+    bx_, by_ = place()
+    hills.append((bx_, by_, rng.uniform(0.8, 1.0), -rng.uniform(0.4, 0.6)))
+    ice = [((bx_ + rng.uniform(-0.5, 0.5), by_ + rng.uniform(-0.5, 0.5)), rng.uniform(0.7, 0.9))]
+    rough = [(place(), rng.uniform(0.6, 0.8)) for _ in range(2)]
+    return hills, rough, ice
+
+
+def _layout():
+    """``(hills, rough patches, ice patches)`` of the field: the small field's, and with the large
+    field the drawn blocks' after them."""
+    hills, rough, ice = list(SMALL_HILLS), list(SMALL_ROUGH), list(SMALL_ICE)
+    for bx in range(BLOCKS):
+        for by in range(BLOCKS):
+            if (bx, by) != (0, 0):
+                h, r, i = _drawn_block(bx, by)
+                hills += h
+                rough += r
+                ice += i
+    return tuple(hills), tuple(rough), tuple(ice)
+
+
+HILLS, ROUGH_PATCHES, ICE_PATCHES = _layout()
+ICE_PATCH = ICE_PATCHES[0]  # the small field's ice patch
+
+
+def _hill_sum(bump):
+    """The sum over ``HILLS`` of ``bump(cx, cy, s, height)``, a basin's subtracted (``bump`` of
+    its depth), in the order the hills are listed."""
+    total = None
+    for cx, cy, s, a in HILLS:
+        if total is None:
+            total = bump(cx, cy, s, a)
+        elif a >= 0:
+            total = total + bump(cx, cy, s, a)
+        else:
+            total = total - bump(cx, cy, s, -a)
+    return total
 
 
 def _height_fn(x, y):
-    return (
-        _bump(x, y, 2.0, 1.0, 1.1, 1.0)
-        + _bump(x, y, 4.2, 3.2, 0.9, 0.7)
-        + _bump(x, y, -0.3, -1.2, 0.8, 0.5)
-        - _bump(x, y, 1.0, 3.0, 0.9, 0.5)
-    )
+    return _hill_sum(lambda cx, cy, s, a: a * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * s**2)))
 
 
 XS = np.linspace(FIELD[0][0], FIELD[0][1], GRID_N)
@@ -196,8 +274,8 @@ def _terrain_grid():
     t = np.zeros(HEIGHT.shape, np.int32)
     for (cx, cy), r in ROUGH_PATCHES:
         t[np.hypot(_GX - cx, _GY - cy) <= r] = 1
-    (cx, cy), r = ICE_PATCH
-    t[np.hypot(_GX - cx, _GY - cy) <= r] = 2
+    for (cx, cy), r in ICE_PATCHES:
+        t[np.hypot(_GX - cx, _GY - cy) <= r] = 2
     return t
 
 
@@ -236,13 +314,7 @@ def smooth_height(points):
     def bump(cx, cy, s, a):
         return a * jnp.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * s**2))
 
-    return (
-        bump(2.0, 1.0, 1.1, 1.0)
-        + bump(4.2, 3.2, 0.9, 0.7)
-        + bump(-0.3, -1.2, 0.8, 0.5)
-        - bump(1.0, 3.0, 0.9, 0.5)
-        - _H_MIN
-    )
+    return _hill_sum(bump) - _H_MIN
 
 
 def maps():
@@ -256,8 +328,9 @@ def terrain_of(xy):
     t = jnp.asarray(0, jnp.int32)
     for centre, radius in ROUGH_PATCHES:
         t = jnp.where(jnp.linalg.norm(xy - jnp.asarray(centre)) <= radius, 1, t)
-    centre, radius = ICE_PATCH
-    return jnp.where(jnp.linalg.norm(xy - jnp.asarray(centre)) <= radius, 2, t).astype(jnp.int32)
+    for centre, radius in ICE_PATCHES:
+        t = jnp.where(jnp.linalg.norm(xy - jnp.asarray(centre)) <= radius, 2, t)
+    return t.astype(jnp.int32)
 
 
 def drive_share(level):
@@ -359,9 +432,13 @@ def velocity_of(x):
 
 
 def zone_of(xy):
-    """The quadrant (survey sector) of a position: 0 low x and low y, 1 high x and low y, 2 low x
-    and high y, 3 high x and high y, split at ``ZONE_SPLIT``."""
-    return ((xy[0] >= ZONE_SPLIT[0]) + 2 * (xy[1] >= ZONE_SPLIT[1])).astype(jnp.int32)
+    """The survey sector of a position, numbered along x first from the south-west, a row of
+    sectors at a time (``ZONE_EDGES``): on the small field 0 low x and low y, 1 high x and low y,
+    2 low x and high y, 3 high x and high y."""
+    xe, ye = ZONE_EDGES
+    ix = sum((xy[0] >= e).astype(jnp.int32) for e in xe[1:-1])
+    iy = sum((xy[1] >= e).astype(jnp.int32) for e in ye[1:-1])
+    return (ix + (len(xe) - 1) * iy).astype(jnp.int32)
 
 
 def band_of(energy):

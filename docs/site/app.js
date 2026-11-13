@@ -57,19 +57,32 @@
   // ---- names and colours ----
   var TERM_VAR = { risk: "--c1", uncertainty: "--c2", ambiguity: "--c5", infogain: "--c3", utility: "--c4" };
   function termColor(t) { return css(TERM_VAR[t] || "--muted"); }
-  function optColor(i) { return css("--o" + i); }
+  function optColor(i) {
+    // the page's option colours, and for options beyond them (a field of many sectors) a hue each
+    var c = css("--o" + i);
+    return c || "hsl(" + Math.round((i * 137.5) % 360) + ",55%,55%)";
+  }
+  function nOpts() { return (B.meta.tiers && B.meta.tiers.options || []).length || 5; }
+  function heavy(key, at) {
+    // the latest tick at or before ``at`` that carries ``key``: a trimmed bundle keeps the heavy
+    // fields (pictures, map, plans) on a subset of ticks (meta.trim), every other field on all
+    var T = run().ticks, i = at == null ? S.t : at;
+    while (i > 0 && T[i][key] == null) i--;
+    return T[i];
+  }
   function optLabel(i) { return (B.meta.tiers.options || [])[i] || "option " + i; }
   function hasOpt(t) { return t.option != null; }
   function pinnedOpt() { return B.meta.tiers.pinned_option; }  // set by bundles whose one-level run pins an option
   function aloneText() { return "none: the rover runs alone"; }
-  function optShort(i) { var n = optLabel(i), m = /(\d)$/.exec(n); return m ? "S" + m[1] : n === "charge" ? "C" : n; }
-  function sectorOf(opt) { var m = /survey sector (\d)/.exec(optLabel(opt)); return m ? +m[1] - 1 : -1; }
+  function optShort(i) { var n = optLabel(i), m = /(\d+)$/.exec(n); return m ? "S" + m[1] : n === "charge" ? "C" : n; }
+  function sectorOf(opt) { var m = /survey sector (\d+)/.exec(optLabel(opt)); return m ? +m[1] - 1 : -1; }
   function terrColor(c) { return css(["--mf", "--mr", "--mi"][c]); }
   function terrBg(c) { return css(["--tf", "--tr", "--ti"][c]); }
 
   // ---- the model graph: both tiers, the parameter variable between them ----
   var POS = {
     "mission.u_option": [140, 52], "mission.energy": [140, 130], "mission.visit": [280, 130], "mission.map": [420, 130],
+    "mission.reading": [420, 52],
     "mission.gauge": [140, 208], "mission.cell_obs": [280, 208],
     "rover.field": [420, 282],
     "rover.v": [150, 366], "rover.x": [150, 440], "rover.energy": [285, 440], "rover.terrain": [420, 440],
@@ -157,7 +170,8 @@
       if (i.kind === "parameter") {
         el("text", { x: p[0], y: p[1] + 11, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, "parameter variable");
         el("text", { x: p[0] - 58, y: p[1] - 2, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "one Dirichlet table,");
-        el("text", { x: p[0] - 58, y: p[1] + 11, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "3 kinds × 256 cells");
+        var gs = B.meta.grid && B.meta.grid.shape ? B.meta.grid.shape[0] * B.meta.grid.shape[1] : 256;
+        el("text", { x: p[0] - 58, y: p[1] + 11, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "3 kinds × " + gs.toLocaleString("en-US") + " cells");
       } else if (i.kind === "control") {
         el("text", { x: p[0], y: p[1] + 28, "text-anchor": "middle", "font-size": 10.5, class: "muted" }, g, nd.kind === "level" ? nd.levels + " levels" : "continuous");
         el("text", { x: p[0], y: p[1] + 40, "text-anchor": "middle", "font-size": 10.5, class: "now" }, g, "");
@@ -209,10 +223,11 @@
   function mapAt(m, ix, iy) { return m[ix][iy]; }
   function contours(g, m, W) {
     // marching squares on the height map, levels every 0.2
-    var xs = W.xs, ys = W.ys, H = W.height, nx = xs.length, ny = ys.length;
+    var xs = W.xs, ys = W.ys, H = W.height, nx = xs.length, ny = ys.length, hmax = 0;
+    H.forEach(function (row) { row.forEach(function (v) { hmax = Math.max(hmax, v); }); });
     var SEG = [[], [[3, 0]], [[0, 1]], [[3, 1]], [[1, 2]], [[3, 0], [1, 2]], [[0, 2]], [[3, 2]], [[2, 3]], [[0, 2]], [[0, 1], [2, 3]], [[1, 2]], [[1, 3]], [[0, 1]], [[3, 0]], []];
     g.beginPath();
-    for (var lv = 0.2; lv < 1.5; lv += 0.2) {
+    for (var lv = 0.2; lv < Math.max(1.5, hmax); lv += 0.2) {
       for (var i = 0; i < nx - 1; i++) for (var j = 0; j < ny - 1; j++) {
         var c = [H[i][j], H[i + 1][j], H[i + 1][j + 1], H[i][j + 1]], px = [xs[i], xs[i + 1], xs[i + 1], xs[i]], py = [ys[j], ys[j], ys[j + 1], ys[j + 1]];
         var idx = (c[0] > lv ? 1 : 0) | (c[1] > lv ? 2 : 0) | (c[2] > lv ? 4 : 0) | (c[3] > lv ? 8 : 0);
@@ -271,6 +286,7 @@
   }
   function drawMap(m, t) {
     var g = m.g, gr = B.meta.grid, nx = gr.shape[0], ny = gr.shape[1], dx = (gr.high[0] - gr.low[0]) / nx, dy = (gr.high[1] - gr.low[1]) / ny;
+    t = t.map != null ? t : heavy("map");
     var u = unpackMap(t);
     for (var ix = 0; ix < nx; ix++) for (var iy = 0; iy < ny; iy++) {
       var c = ix * ny + iy;
@@ -290,16 +306,22 @@
   }
   function drawSectors(m, t) {
     var g = m.g, f = B.meta.field, sp = B.meta.tiers.zone_split, k = hasOpt(t) ? sectorOf(t.option) : -1;
-    var xr = [[f[0][0], sp[0]], [sp[0], f[0][1]]], yr = [[f[1][0], sp[1]], [sp[1], f[1][1]]];
+    // the sectors' edges per axis (meta.tiers.zone_edges), else the quadrants split at zone_split
+    var ze = B.meta.tiers.zone_edges || [[f[0][0], sp[0], f[0][1]], [f[1][0], sp[1], f[1][1]]];
+    var span = function (e) { var o = []; for (var i = 0; i + 1 < e.length; i++) o.push([e[i], e[i + 1]]); return o; };
+    var xr = span(ze[0]), yr = span(ze[1]), nzx = xr.length, nz = nzx * yr.length;
     if (k >= 0) {
-      var r = [xr[k % 2], yr[Math.floor(k / 2)]];
+      var r = [xr[k % nzx], yr[Math.floor(k / nzx)]];
       g.fillStyle = optColor(t.option); g.globalAlpha = 0.2; g.fillRect(m.X(r[0][0]), m.Y(r[1][1]), (r[0][1] - r[0][0]) * m.sc, (r[1][1] - r[1][0]) * m.sc); g.globalAlpha = 1;
       g.strokeStyle = optColor(t.option); g.lineWidth = 3; g.strokeRect(m.X(r[0][0]) + 1.5, m.Y(r[1][1]) + 1.5, (r[0][1] - r[0][0]) * m.sc - 3, (r[1][1] - r[1][0]) * m.sc - 3);
     }
     g.strokeStyle = css("--fg"); g.globalAlpha = 0.7; g.lineWidth = 1.4; g.setLineDash([6, 4]); g.beginPath();
-    g.moveTo(m.X(sp[0]), m.Y(f[1][0])); g.lineTo(m.X(sp[0]), m.Y(f[1][1]));
-    g.moveTo(m.X(f[0][0]), m.Y(sp[1])); g.lineTo(m.X(f[0][1]), m.Y(sp[1])); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
-    var cs = B.meta.tiers.charge_site;  // the charging place, where the charge option parks
+    ze[0].slice(1, -1).forEach(function (x) { g.moveTo(m.X(x), m.Y(f[1][0])); g.lineTo(m.X(x), m.Y(f[1][1])); });
+    ze[1].slice(1, -1).forEach(function (y) { g.moveTo(m.X(f[0][0]), m.Y(y)); g.lineTo(m.X(f[0][1]), m.Y(y)); });
+    g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+    // the charging place, where the charge option parks: the bundle's one place, or the place the
+    // charge option in force was sent to (charge_to, the sunny ground nearest the rover)
+    var cs = t.charge_to || B.meta.tiers.charge_site;
     if (cs) {
       var cx = m.X(cs[0]), cyy = m.Y(cs[1]), on = hasOpt(t) && sectorOf(t.option) < 0;
       g.strokeStyle = on ? optColor(t.option) : css("--fg"); g.lineWidth = on ? 2.5 : 1.4; g.globalAlpha = on ? 1 : 0.7;
@@ -307,10 +329,10 @@
       for (var a = 0; a < 8; a++) { var an = a * Math.PI / 4; g.beginPath(); g.moveTo(cx + 9 * Math.cos(an), cyy + 9 * Math.sin(an)); g.lineTo(cx + 13 * Math.cos(an), cyy + 13 * Math.sin(an)); g.stroke(); }
       g.globalAlpha = 1;
     }
-    g.font = "600 12px system-ui, sans-serif"; g.textAlign = "left";
-    for (var z = 0; z < 4; z++) {
-      var rx = xr[z % 2][0], ry = yr[Math.floor(z / 2)][1];
-      var tx = m.X(rx) + 6, ty = m.Y(ry) + 16, txt = "sector " + (z + 1);
+    g.font = "600 " + (nz > 4 ? 11 : 12) + "px system-ui, sans-serif"; g.textAlign = "left";
+    for (var z = 0; z < nz; z++) {
+      var rx = xr[z % nzx][0], ry = yr[Math.floor(z / nzx)][1];
+      var tx = m.X(rx) + 6, ty = m.Y(ry) + 16, txt = (nz > 4 ? "S" : "sector ") + (z + 1);
       g.lineWidth = 3; g.strokeStyle = css("--panel"); g.strokeText(txt, tx, ty); g.fillStyle = css("--fg"); g.fillText(txt, tx, ty);
     }
   }
@@ -361,10 +383,17 @@
     });
   }
   function hasHeading() { return run().ticks[0].true_heading != null; }  // the world's heading per tick
+  function stride() {
+    // ticks (array entries) advanced per step while playing: the bundle's play stride over the
+    // ticks it keeps (meta.trim), one otherwise
+    var tr = B.meta.trim;
+    return tr ? Math.max(1, Math.round((tr.play_stride || 1) / (tr.keep_every || 1))) : 1;
+  }
   function interp(r, i, f) {
-    // the true state at tick i plus a fraction f of the way to tick i + 1: position and velocity,
-    // and as a fifth entry the heading, turned along the shorter arc (when the bundle has one)
-    var a = r[i], b = i + 1 < r.length && f > 0 ? r[i + 1] : a;
+    // the true state at tick i plus a fraction f of the way to the next tick played (stride()
+    // ticks on): position and velocity, and as a fifth entry the heading, turned along the shorter
+    // arc (when the bundle has one)
+    var a = r[i], b = i + stride() < r.length && f > 0 ? r[i + stride()] : a;
     var out = a.true_x.map(function (v, k) { return v + f * (b.true_x[k] - v); });
     if (a.true_heading != null) {
       var d = b.true_heading - a.true_heading; d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -401,7 +430,7 @@
     g.stroke(); g.restore();
     var f = B.meta.field;
     g.save(); g.beginPath(); g.rect(m.X(f[0][0]), m.Y(f[1][1]), (f[0][1] - f[0][0]) * m.sc, (f[1][1] - f[1][0]) * m.sc); g.clip();
-    drawPlans(m, t);
+    if (t.policies) drawPlans(m, t);  // a trimmed bundle keeps the plans on a subset of ticks
     g.restore();
     if (t.fix) {
       var fx = m.X(t.fix[0]), fy = m.Y(t.fix[1]);
@@ -450,6 +479,7 @@
   }
   function drawCamera(t) {
     var host = $("camgrid"), n = (B.meta.image && B.meta.image.side) || 48;
+    t = t.img != null ? t : heavy("img");
     if (!host.children.length) {
       [["observed image", "obs"], ["decoder prediction at the belief", "rec"], ["terrain readout", "read"]].forEach(function (p, i) {
         var d = document.createElement("div"); d.className = "cam";
@@ -541,9 +571,11 @@
     }
     curve(O, css("--muted"), "5 4", 2);
     curve(T, css("--accent"), "", 2.4);
-    for (var k = 0; k <= n; k += 100) {
+    var every = [100, 200, 500, 1000, 2000, 5000].filter(function (v) { return n / v <= 10; })[0] || 10000;
+    for (var k = 0; k <= n; k += every) {
       el("line", { x1: sx(k), x2: sx(k), y1: yC + hC, y2: yC + hC + 4, stroke: css("--muted") }, svg);
-      el("text", { x: sx(k), y: yC + hC + 16, "text-anchor": "middle", "font-size": 10, class: "muted" }, svg, k === n ? "tick " + n : k);
+      var lab = k < n ? T[k].t : T[n - 1].t + 1;  // the recorded tick (a trimmed bundle keeps a subset)
+      el("text", { x: sx(k), y: yC + hC + 16, "text-anchor": "middle", "font-size": 10, class: "muted" }, svg, k === n ? "tick " + lab : lab);
     }
     // cursor
     var cx = sx(S.t + 0.5);
@@ -559,7 +591,7 @@
     svg.addEventListener("pointerup", function () { svg._d = false; });
     svg.addEventListener("pointercancel", function () { svg._d = false; });
     var rs = settingRec(), ro = settingRec(other()), tl = "";
-    for (var o = 0; o < 5; o++) if (C.segs.some(function (s) { return s.option === o; }) || twoLevel()) tl += "<span><i style='background:" + optColor(o) + "'></i>" + esc(optLabel(o)) + "</span>";
+    for (var o = 0; o < nOpts(); o++) if (C.segs.some(function (s) { return s.option === o; }) || twoLevel()) tl += "<span><i style='background:" + optColor(o) + "'></i>" + esc(optLabel(o)) + "</span>";
     tl += "<span><svg class='lsw' viewBox='0 0 28 10'><line x1='1' x2='27' y1='5' y2='5' stroke='" + css("--accent") + "' stroke-width='2.4'/></svg>coverage, " + esc(rs.label.toLowerCase()) + "</span>" +
       "<span><svg class='lsw' viewBox='0 0 28 10'><line x1='1' x2='27' y1='5' y2='5' stroke='" + css("--muted") + "' stroke-width='2' stroke-dasharray='5 4'/></svg>coverage, " + esc(ro.label.toLowerCase()) + "</span>" +
       "<span><svg class='lsw' viewBox='0 0 28 10'><line x1='1' x2='27' y1='5' y2='5' stroke='" + css("--c3") + "' stroke-width='2'/></svg>energy level</span>";
@@ -603,7 +635,7 @@
     var chosen = d.slow.option;
     note.textContent = "Decision at tick " + d.t + ": " + optLabel(chosen) + ". The scheduler scores every sequence of two options; each bar below is the best sequence that starts with that option, split into its two objective terms (novelty of the map, which is the information the plan expects to gain about the table, and energy risk), with a mark at their sum, G.";
     var rg = decRange(), lo = rg[0], hi = rg[1], pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
-    var Wd = Math.max(300, host.clientWidth - 16), Lx = Wd < 520 ? 96 : 168, Rx = 70, rowH = 34, H = 10 + 5 * rowH + 30;
+    var no = nOpts(), Wd = Math.max(300, host.clientWidth - 16), Lx = Wd < 520 ? 96 : 168, Rx = 70, rowH = 34, H = 10 + no * rowH + 30;
     var sx = function (v) { return Lx + (v - lo) / (hi - lo) * (Wd - Lx - Rx); };
     var svg = el("svg", { viewBox: "0 0 " + Wd + " " + H, width: Wd, height: H, role: "img", "aria-label": "Expected free energy by first option, split into novelty and energy risk" }, host);
     svg.style.height = "auto";
@@ -618,7 +650,7 @@
       if (!best[k] || m < best[k].m) best[k] = { p: p, m: m };
     });
     var missing = false;
-    for (var k = 0; k < 5; k++) {
+    for (var k = 0; k < no; k++) {
       var y = 10 + k * rowH, ch = k === chosen, G = d.slow.efe_by_option[k], b = best[k];
       if (ch) el("rect", { x: 1, y: y, width: Wd - 2, height: rowH - 2, rx: 3, fill: "none", stroke: css("--accent"), "stroke-width": 1.5 }, svg);
       var name = optLabel(k) + (b ? "" : "");
@@ -653,8 +685,8 @@
     Object.keys(d).forEach(function (k) { lo += d[k][0]; hi += d[k][1]; });
     return [lo, hi];
   }
-  function approx(tm, lf) { var a = S.tier === "rover" && tick().approximate; return !!(a && a[tm] && a[tm][lf]); }
-  function anyApprox() { var a = S.tier === "rover" && tick().approximate; if (!a) return false; for (var tm in a) for (var lf in a[tm]) if (a[tm][lf]) return true; return false; }
+  function approx(tm, lf) { var a = S.tier === "rover" && heavy("policies").approximate; return !!(a && a[tm] && a[tm][lf]); }
+  function anyApprox() { var a = S.tier === "rover" && heavy("policies").approximate; if (!a) return false; for (var tm in a) for (var lf in a[tm]) if (a[tm][lf]) return true; return false; }
   function showTip(ev, it) {
     var h = "<b>" + esc(it.name) + "</b> &nbsp; posterior weight qπ=" + it.q.toFixed(3) + "<br>G " + (Math.abs(it.G[1] - it.G[0]) < 1e-9 ? "= " + it.G[0].toFixed(2) + " (point)" : "[" + it.G[0].toFixed(2) + ", " + it.G[1].toFixed(2) + "]") + "<table>", ap = false;
     leafRows(it.p).forEach(function (r) {
@@ -669,7 +701,7 @@
   }
   function objItems() {
     if (S.tier === "rover") {
-      var t = tick();
+      var t = heavy("policies");
       return {
         terms: Object.keys(t.policies[0].terms), decided: null,
         items: t.policies.map(function (p, i) { return { name: "start " + p.id, sub: "q=" + p.q_pi.toFixed(2), G: p.G, q: p.q_pi, p: p, chosen: i === t.chosen }; })
@@ -714,7 +746,7 @@
       : "Rover tier: the gradient planner descends from four warm starts (initial velocity plans) and keeps the best; the bars are the four starts' plans, the acted one outlined, and the intervals the closed-form mixture bounds put around each term." + (anyApprox() ? " Terms that read the camera are computed on the decoder's linearisation at the belief and are marked ≈ in the tooltip." : "");
     $("objcap").textContent = (mission
       ? "Expected free energy of the kept option sequences (the " + items.length + " the page keeps: the best overall and the best for each first option) at the most recent decision (tick " + o.decided + "), best first; lower is better. "
-      : "Expected free energy G of the chosen plan at the current tick (lower is better). ") +
+      : "Expected free energy G of the chosen plan at " + (heavy("policies").t === tick().t ? "the current tick" : "tick " + heavy("policies").t + ", the latest the replay keeps plans for") + " (lower is better). ") +
       "Hover or focus a " + (mission ? "sequence" : "plan") + " for its per-term, per-leaf values. The chosen " + (mission ? "sequence" : "plan") + " is highlighted. " + (B.meta.sign_convention ? "Sign convention: " + B.meta.sign_convention + "." : "") +
       (mode === "terms" ? " Each G is split into its objective terms, stacked from zero: negative terms to the left, positive to the right; a bracket marks each term's interval." : "");
     var btn = $("objall"); btn.hidden = !(mission && items.length > TOP_N);
@@ -834,8 +866,16 @@
   }
 
   // ---- state / wiring ----
+  function idxOf(t) {
+    // the index of a recorded tick: the latest kept tick at or before t (a trimmed bundle keeps a
+    // subset of the ticks, meta.trim); the index itself otherwise
+    var T = run().ticks, n = T.length;
+    if (!B.meta.trim) return clamp(Math.round(t), 0, n - 1);
+    var i = 0; while (i + 1 < n && T[i + 1].t <= t) i++;
+    return i;
+  }
   function render() {
-    $("tick").value = S.t; $("tickout").textContent = S.t;
+    $("tick").value = S.t; $("tickout").textContent = tick().t;
     drawField(); updateGraph(); drawTimeline(); drawDecision(); drawObjective();
   }
   var TICK_MS = 120, MOTION = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -849,14 +889,14 @@
     clearInterval(S.timer); if (S.raf) cancelAnimationFrame(S.raf); S.raf = null;
     if (S.frac) { S.frac = 0; drawField(true); }
     if (!on) return;
-    if (!smooth()) { S.timer = setInterval(function () { S.t = (S.t + 1) % run().ticks.length; render(); }, TICK_MS); return; }
+    if (!smooth()) { S.timer = setInterval(function () { S.t = (S.t + stride()) % run().ticks.length; render(); }, TICK_MS); return; }
     var last = null;
     function frame(now) {
       if (!S.playing) return;
       S.frac += last == null ? 0 : (now - last) / TICK_MS; last = now;
       if (S.frac >= 1) {
-        S.t = (S.t + Math.floor(S.frac)) % run().ticks.length; S.frac -= Math.floor(S.frac);
-        if (S.t === run().ticks.length - 1) S.frac = 0;  // no next tick to move toward
+        S.t = (S.t + stride() * Math.floor(S.frac)) % run().ticks.length; S.frac -= Math.floor(S.frac);
+        if (S.t + stride() >= run().ticks.length) S.frac = 0;  // no next tick to move toward
         render();
       } else drawField(true);
       S.raf = requestAnimationFrame(frame);
@@ -880,7 +920,7 @@
     B.settings.forEach(function (s) { var o = document.createElement("option"); o.value = s.id; o.textContent = s.label + (s.tiers === 2 ? " (two levels)" : " (one level)"); sel.appendChild(o); });
     S.setting = B.runs[hp.setting] ? hp.setting : B.settings[0].id; sel.value = S.setting;
     var n = run().ticks.length; $("tick").max = n - 1;
-    S.t = Math.max(0, Math.min(n - 1, +hp.t || 0));
+    S.t = idxOf(+hp.t || 0);
     if (hp.tier === "rover") { S.tier = "rover"; $("objtier").value = "rover"; } else $("objtier").value = "mission";
     if (hp.view === "terms") $("objmode").value = "terms";
     if (hp.layer && /^(terrain|light|fix)$/.test(hp.layer)) { S.layer = hp.layer; document.querySelector("input[name=layer][value=" + hp.layer + "]").checked = true; }
@@ -907,7 +947,7 @@
       if (o.view) $("objmode").value = o.view;
       if (o.all != null) S.showAll = o.all;
       if (o.layer) { S.layer = o.layer; BG = null; document.querySelector("input[name=layer][value=" + o.layer + "]").checked = true; }
-      if (o.t != null) { S.t = o.t; S.frac = 0; }
+      if (o.t != null) { S.t = idxOf(o.t); S.frac = 0; }
       if (o.frac != null) S.frac = clamp(+o.frac, 0, 0.999);
       render();
     }, state: function () { return { t: S.t, frac: S.frac, setting: S.setting, playing: S.playing }; } };
