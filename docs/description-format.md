@@ -45,7 +45,12 @@ consumer name whose values are objects (`{"my_tool": {...}}`). The library carri
 A document whose `hybrid_aif_description` is an earlier version (description 0.2, the layout
 with `structure` and `declarations` sections) is refused with a sentence: hybrid-aif 0.18.0 is the
 last release that reads it, and building it there and `describe`-ing the result writes it in this
-format. `describe` writes this format only.
+format. `describe` writes this format only. A document of release 0.19.0 (or 0.18.x) may give a
+likelihood record the option `"datum": "<source>[t-1]"` (a modality reading a state factor or an
+action node at the previous tick, from `System(lagged=)`); `build` reads it as that record
+observing an identity emission `<source>_read` of the state factor (suffixed `_2`, `_3`, ... where
+the name is taken; realised `stats` for a categorical source, `mode` for a continuous one), or the
+action node itself (section 3.3, "A read"). Any other `datum` is refused naming the option.
 
 A document carries data and never code. A transition written as code, a
 `NonlinearGaussianTransition` (`x' = f(x, controls) + ε`, `f` an equinox module), is written by

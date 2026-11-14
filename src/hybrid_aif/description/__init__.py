@@ -2478,6 +2478,121 @@ class _Init(NamedTuple):
     args: Mapping[str, Any]
 
 
+#: The likelihood option of a document of release 0.19.0 (also 0.18.0 and 0.18.1) for a
+#: modality that reads a state factor or an action node at the previous tick.
+_DATUM = "datum"
+
+
+def _names_in(node: object, out: set[str]) -> set[str]:
+    """Every string a document holds, as a key or as a value."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            out.add(str(key))
+            _names_in(value, out)
+    elif isinstance(node, list | tuple):
+        for value in node:
+            _names_in(value, out)
+    elif isinstance(node, str):
+        out.add(node)
+    return out
+
+
+def _read_datum(document: Mapping[str, Any], where: str) -> Mapping[str, Any]:
+    """``document`` with every likelihood option ``datum`` read as an emission and ``observes``.
+
+    A document of release 0.19.0 gives a modality that reads a source at the previous tick the
+    likelihood option ``"datum": "<source>[t-1]"``. A state factor source becomes the identity
+    emission ``<source>_read`` over it (suffixed ``_2``, ``_3``, ... where that name is in the
+    document already), realised ``"stats"`` (the probability vector) for a categorical source and
+    ``"mode"`` (the mean) for a continuous one, one emission for each such modality (so each
+    keeps its own data and ``present`` flags), and the modality observes it; an action node
+    source is observed directly. The modality's own variable record goes, as an observing
+    modality takes the domain of what it observes. A document without the option is returned as
+    it is, the same object.
+    """
+    factors = document.get("factors") if isinstance(document, Mapping) else None
+    if not isinstance(factors, Mapping):
+        return document
+    reading: list[tuple[str, str]] = []
+    for child, block in factors.items():
+        record = block.get("likelihood") if isinstance(block, Mapping) else None
+        options = record.get("options") if isinstance(record, Mapping) else None
+        if isinstance(options, Mapping) and _DATUM in options:
+            reading.append((child, options[_DATUM]))
+    if not reading:
+        return document
+
+    def refuse(child: str, sentence: str) -> DescriptionError:
+        return DescriptionError(
+            f"{where}factors[{child!r}]['likelihood'].options.datum (a document of release "
+            f"0.19.0, written for System(lagged=)): {sentence}"
+        )
+
+    variables = document.get("variables")
+    variables = dict(variables) if isinstance(variables, Mapping) else {}
+    relations = document.get("relations")
+    controls = relations.get("controls") if isinstance(relations, Mapping) else None
+    actions = set(controls.values()) if isinstance(controls, Mapping) else set()
+    taken = _names_in(document, set())
+    factors = {name: dict(block) for name, block in factors.items()}
+    for child, datum in reading:
+        record = dict(factors[child]["likelihood"])
+        try:
+            source, offset = _parse_parent(datum, "datum")
+        except DescriptionError:
+            source, offset = None, None
+        if offset != 1 or source not in variables:
+            raise refuse(
+                child,
+                f"{datum!r} is no variable at the previous tick; the option names a state factor "
+                "or an action node as name[t-1]",
+            )
+        if "observes" in record:
+            raise refuse(
+                child,
+                f"the record also observes {record['observes']!r}; a modality observes one "
+                "variable, so give the record the option or observes, not both",
+            )
+        source_block = factors.get(source)
+        is_state = isinstance(source_block, Mapping) and (
+            "initial" in source_block or "transition" in source_block
+        )
+        if source in actions:
+            observed = source
+        elif is_state:
+            observed, n = f"{source}_read", 1
+            while observed in taken:
+                n += 1
+                observed = f"{source}_read_{n}"
+            taken.add(observed)
+            domain = variables[source]
+            categorical = isinstance(domain, Mapping) and domain.get("domain") == "categorical"
+            factors[observed] = {
+                "actuator": {
+                    "parents": [source],
+                    "options": {
+                        "kernel": "identity",
+                        "realise": "stats" if categorical else "mode",
+                    },
+                }
+            }
+            variables[observed] = domain
+        else:
+            raise refuse(
+                child,
+                f"{source!r} is neither a state factor nor the action node of a control node; "
+                "the option names one of these at the previous tick",
+            )
+        options = {k: v for k, v in record["options"].items() if k != _DATUM}
+        record = {k: v for k, v in record.items() if k != "options"}
+        if options:
+            record["options"] = options
+        record["observes"] = observed
+        factors[child]["likelihood"] = record
+        variables.pop(child, None)
+    return {**document, "variables": variables, "factors": factors}
+
+
 class _Reader:
     """The arrays file and the PRNG key one build draws from (shared by nested models)."""
 
@@ -2502,7 +2617,7 @@ class _Model:
     """One document (or a term's own model) being read: parse, derive, lower, construct."""
 
     def __init__(self, reader: _Reader, document: Mapping[str, Any], where: str) -> None:
-        self.reader, self.doc, self.where = reader, document, where
+        self.reader, self.doc, self.where = reader, _read_datum(document, where), where
         self.faults: list[str] = []
         self.observes: dict[str, str] = {}  # modality → the variable it observes, where renamed
         self.statics: dict[str, tuple[str, Grid | None]] = {}  # emission → its static kernel

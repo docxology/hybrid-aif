@@ -98,6 +98,10 @@ round's. B1 kept the one-round lag in the composite form of `run`; `run` over a 
 **Description.** An emission with a static kernel is a family-less `actuator` record
 (`options.kernel` `"identity"` or `"indicator"` with its grid, `options.realise` where not the
 default); the likelihood record's `options.datum` is gone. No tagged release carried `lagged`.
+*Correction (2026-11-14):* that last sentence is false. v0.18.0, v0.18.1 and v0.19.0 carried
+`lagged`, and their documents carry `options.datum`; `build` reads such a document as an identity
+emission per reading modality plus `observes` (an action node source observed directly), checked
+bit for bit against 0.19.0's own replays in `tests/test_v019_lagged_documents.py`.
 
 **Equivalence pinned.** `tests/data/own_read_datum.npz`, recorded from a `git archive` of 61052fc
 (chunk A) in a separate interpreter: `tests/test_own_read_equivalence.py` matches the datum, the

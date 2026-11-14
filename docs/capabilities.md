@@ -1023,8 +1023,13 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   likelihood's update agrees with 0.19.0 to float32 rounding (below); validation refuses a tabular
   table whose parent axes do not match its categorical parents' level counts; and an eager face
   called more than ten times on one System warns once that `System.compiled()` exists. A model
-  document written by 0.19.0 builds as before, except one holding a recurrent datum (a likelihood
-  record's `options.datum`, from `System(lagged=)`), which is refused naming the option. Seeded runs
+  document written by 0.19.0 builds as before. One holding a recurrent datum (a likelihood record's
+  `options.datum`, from `System(lagged=)`) is read as the declaration in the table below: a state
+  factor source becomes an identity emission `<source>_read` (suffixed `_2`, `_3`, ... where the
+  name is taken), one for each reading modality, and an action node source is observed directly;
+  the replay of such a document equals 0.19.0's bit for bit, its absence flags keyed by the
+  emission, and `describe` writes the result in the 0.20.0 form. A datum 0.19.0 also refused (not
+  `name[t-1]`, or not a state factor or action node) is refused naming the option. Seeded runs
   of composed Systems draw from a different key layout, so their numbers differ from 0.19.0's.
   Composition and running (the driver module `hybrid_aif.composition.driver` is removed):
 
