@@ -1136,8 +1136,8 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   **The survey example** (`examples/survey_*.py`, not library API): a rover with a vehicle state
   (heading, speed and energy in the state, a modelled stall), a forward camera read as a neural
   likelihood, a terrain field it learns, and a scheduler merged over it that shares the field;
-  `SURVEY_FIELD=large` selects a larger field, and the runner's `--settings` picks settings by id.
-  It records the launch page's replay.
+  the runner's `--settings` picks the scheduler over the rover or the rover alone. It records the
+  launch page's replay.
 
 ## In the field / in flight
 

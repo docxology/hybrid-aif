@@ -7,8 +7,7 @@ height map and the sun, and the ground textured in world coordinates by the clas
 The decoder is an ``MLPConditional`` from the rover's state ``(x, y, cos theta, sin theta, s)`` and
 a one-hot terrain class to the pixels; it is trained with the speed at zero and its first-layer
 weights on the speed zeroed after, so it reads the position, the heading (as the unit vector, smooth
-in every direction and at rest) and the terrain. ``FIXED_VIEW`` trains the comparison camera
-instead, fixed along the world's ``CAMERA_HEADING`` (experiment B, not the showcase).
+in every direction and at rest) and the terrain.
 
 The decoder's noise is calibrated (``calibrate``): it is fit to the decoder's residuals on noisy
 images (sensor noise and the decoder's own error together) and inflated by ``sqrt(N / N_eff)``,
@@ -52,12 +51,9 @@ import survey_world as wd
 
 from hybrid_aif.distributions import MLPCategorical, MLPConditional
 
-#  the large field (``survey_world.FIELD_SIZE``) holds nine times the scene, so its decoder is
-#  wider and trained on more images for longer (see the build record for the measurements)
-LARGE = wd.FIELD_SIZE == "large"
-DECODER_SHAPE = dict(width=1024 if LARGE else 512, depth=4, activation="silu")
+DECODER_SHAPE = dict(width=512, depth=4, activation="silu")
 ENCODER_SHAPE = dict(width=256, depth=2)
-DECODER_STEPS = 400000 if LARGE else 80000
+DECODER_STEPS = 80000
 ENCODER_STEPS = 20000
 CALIBRATION_STEPS = 6000  # steps of the noise calibration (the scale head alone)
 CALIBRATION_IMAGES = 16000  # held-out images the effective pixel count is estimated from
@@ -65,15 +61,13 @@ CALIBRATION_IMAGES = 16000  # held-out images the effective pixel count is estim
 CONVERGENCE_IMAGES = (2000, 4000, 8000, 16000)
 #  an empirical factor on the calibrated noise, beyond the measured correlation; 1 means none
 EMPIRICAL_TEMPER = 1.0
-#  the comparison camera (experiment B): fixed along the world's CAMERA_HEADING, not the heading
-FIXED_VIEW = False
 #  whether the image's evidence is tempered for the decoder's error (``tempering``, ``temper``)
 TEMPERED = True
 TEMPER_STATES = 2000  # held-out states the tempering rule is measured on
 TEMPER_KEY = 12345  # their key, used by no training draw
 TEMPER_FIT_STATES = 20000  # states the tempered noise head is fitted on
 _ACTIVATIONS = {"silu": jax.nn.silu, "gelu": jax.nn.gelu, "tanh": jnp.tanh, "relu": jax.nn.relu}
-DATASET = 400000 if LARGE else 80000  # rendered training images
+DATASET = 80000  # rendered training images
 N_TERRAIN = 3
 BATCH = 256
 LEARNING_RATE = 1e-3
@@ -82,12 +76,8 @@ LEARNING_RATE = 1e-3
 RMSE_LIMIT = 1.25 * wd.PIXEL_SD
 #  the state's spread over the training set, folded into the decoder's first layer so that every
 #  input enters at unit scale: position, heading pair, speed, then the terrain's one-hot
-#  (on the large field the position enters at 0.6, a third of its sd over the field: a network
-#  reading it at unit scale resolves the scene's detail far less well, by the measurements of the
-#  build record)
 INPUT_LOC = np.asarray([np.mean(wd.FIELD[0]), np.mean(wd.FIELD[1]), 0, 0, 0, 0, 0, 0])
-_POSITION_SCALE = 0.6 if LARGE else 1.7
-INPUT_SCALE = np.asarray([_POSITION_SCALE, _POSITION_SCALE, 0.7, 0.7, 0.2, 1.0, 1.0, 1.0])
+INPUT_SCALE = np.asarray([1.7, 1.7, 0.7, 0.7, 0.2, 1.0, 1.0, 1.0])
 
 
 def sample_states(key, n):
@@ -104,15 +94,9 @@ def sample_states(key, n):
     return jnp.concatenate([pos, heading, jnp.zeros((n, 1))], axis=1), terrain
 
 
-def view_of(x):
-    """The direction the camera looks at a state: the rover's heading, or the fixed
-    ``CAMERA_HEADING`` with ``FIXED_VIEW``."""
-    return wd.CAMERA_HEADING if FIXED_VIEW else wd.heading_of(x)
-
-
 def render_many(states, terrain, chunk=4096):
-    """The clean camera images of many states (along ``view_of``), rendered in chunks."""
-    f = jax.jit(jax.vmap(lambda x, t: wd.render(x, t, view_of(x))))
+    """The clean camera images of many states (along the rover's heading), rendered in chunks."""
+    f = jax.jit(jax.vmap(lambda x, t: wd.render(x, t, wd.heading_of(x))))
     parts = [f(states[i : i + chunk], terrain[i : i + chunk]) for i in range(0, len(states), chunk)]
     return jnp.concatenate(parts)
 
@@ -161,10 +145,9 @@ def _new_decoder(key):
 
 def _picture_inputs(net):
     """``net`` with its first layer's weights zeroed on the inputs the picture does not depend on:
-    the speed, and with ``FIXED_VIEW`` the heading too."""
+    the speed."""
     first = net.layers[0]
-    cols = slice(2, 5) if FIXED_VIEW else slice(4, 5)
-    return eqx.tree_at(lambda m: m.layers[0].weight, net, first.weight.at[:, cols].set(0.0))
+    return eqx.tree_at(lambda m: m.layers[0].weight, net, first.weight.at[:, 4:5].set(0.0))
 
 
 def _batch(data, key):
@@ -298,7 +281,7 @@ def shift_sizes(decoder, states, terrain):
 
         mean, scale = head(z[:2])
         jac = jax.jacfwd(lambda xy: head(xy)[0])(z[:2])
-        clean = wd.render(z, t, view_of(z))
+        clean = wd.render(z, t, wd.heading_of(z))
         w = 1.0 / scale**2
         info = jac.T @ (w[:, None] * jac)
         b = jnp.linalg.solve(info, jac.T @ (w * (mean - clean)))
@@ -414,7 +397,7 @@ def evaluate(decoder, encoder, key, n=4000):
     ``[reading, true class]`` (each column sums to one): the reading is the most probable class."""
     states, terrain, clean, images, onehot = _held_out(key, n)
     mean, scale = jax.vmap(lambda s, t: decoder.diag_moments((s, t)))(states, onehot)
-    sky = jax.vmap(lambda s: wd.ground_view(s, view_of(s))[2].reshape(-1))(states)
+    sky = jax.vmap(lambda s: wd.ground_view(s, wd.heading_of(s))[2].reshape(-1))(states)
     err = (mean - clean) ** 2
     probs = jax.vmap(lambda y: terrain_probs(encoder, y))(images)
     reading = np.asarray(jnp.argmax(probs, axis=1))
@@ -482,7 +465,6 @@ def load_or_train(cache, seed=0, verbose=True):
         effective_pixels=n_eff,
         effective_pixels_by_sample_size=by_size,
         empirical_temper=EMPIRICAL_TEMPER,
-        fixed_view=FIXED_VIEW,
         pixels=pixels,
         noise_inflation=inflation,
         likelihood_fitted=likelihood_report(fitted, k_lik),
@@ -532,7 +514,5 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", required=True)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--fixed", action="store_true", help="the comparison camera fixed along +y")
     args = ap.parse_args()
-    FIXED_VIEW = args.fixed
     load_or_train(args.cache, args.seed)

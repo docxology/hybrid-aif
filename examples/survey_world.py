@@ -7,13 +7,7 @@ position), and the readings the rover receives: a satellite position fix whose n
 the terrain closes the sky, a camera image, a gauge reading of the energy level and the energy
 band a coarse meter shows (the slow tier reads the band; the option of a slow tier never reaches
 the world). The field's height map, sky openness, sunlight, solar yield, slope and fix noise are
-tabulated at import.
-
-The field comes in two sizes (``FIELD_SIZE``, from the environment variable ``SURVEY_FIELD``):
-the small field, 6 by 6, and the large field, 18 by 18, nine blocks of the small field's side whose
-south-west block is the small field and whose other blocks carry hills and terrain patches drawn
-with the small field's makeup (``_drawn_block``). Every map is computed by the same procedure at
-either size.
+tabulated at import. The field is 6 by 6, with four hills and three terrain patches.
 
 The rover is a wheeled vehicle with a heading of its own and a solar battery (``VehicleStep``):
 its state is the position, the heading as a unit vector, the forward speed and the energy level;
@@ -30,10 +24,7 @@ ray-marched over the height map, lit by the sun, textured in world coordinates, 
 ``render``.
 
     python examples/survey_world.py
-    SURVEY_FIELD=large python examples/survey_world.py
 """
-
-import os
 
 import equinox as eqx
 import jax
@@ -45,20 +36,10 @@ from hybrid_aif.composition.black_box import black_box
 from hybrid_aif.controls import FLOAT, LEVEL
 from hybrid_aif.description import register_transition
 
-#  the field's size, read from the environment variable SURVEY_FIELD when the module is imported:
-#  "small", a 6 by 6 field of four hills and three terrain patches, or "large", 18 by 18, nine
-#  blocks of 6 by 6 whose south-west block is the small field and whose other eight are drawn by
-#  ``_drawn_block`` (four hills and three patches each); the cell size, the motion, the battery
-#  and the camera are the same at both sizes
-FIELD_SIZE = os.environ.get("SURVEY_FIELD", "small")
-if FIELD_SIZE not in ("small", "large"):
-    raise ValueError(f"SURVEY_FIELD must be small or large, not {FIELD_SIZE!r}")
-BLOCK = 6.0  # the side of the small field, and of each block of the large one
-BLOCKS = 1 if FIELD_SIZE == "small" else 3  # blocks per axis
-FIELD = ((-1.0, -1.0 + BLOCKS * BLOCK), (-2.0, -2.0 + BLOCKS * BLOCK))
+FIELD = ((-1.0, 5.0), (-2.0, 4.0))  # the field, 6 by 6
 START = (-0.2, -0.6)
 DT = 1.0
-GRID_N = 120 * BLOCKS + 1  # the tabulated maps' points per axis, 0.05 apart
+GRID_N = 121  # the tabulated maps' points per axis, 0.05 apart
 
 TERRAIN_NAMES = ("firm", "rough", "ice")
 TOP_SPEED = 0.3  # the forward speed under a full drive command, under one 0.375 map cell a tick
@@ -70,16 +51,17 @@ TURN_MAX = np.deg2rad(20.0)  # the heading turns at most this far per tick (in p
 #  process sd per state coordinate: position, heading pair, speed, energy level
 STATE_SD = np.asarray([0.005, 0.005, 0.01, 0.01, 0.004, 0.004])
 STATE_NAMES = ("x", "y", "cos heading", "sin heading", "forward speed", "energy level")
-#  the small field (the large field's south-west block): its hills ``(centre x, centre y, sd,
-#  height)`` (a negative height is a basin) and its terrain patches ``((centre), radius)``
-SMALL_HILLS = (
+#  the field's hills ``(centre x, centre y, sd, height)`` (a negative height is a basin) and its
+#  terrain patches ``((centre), radius)``
+HILLS = (
     (2.0, 1.0, 1.1, 1.0),
     (4.2, 3.2, 0.9, 0.7),
     (-0.3, -1.2, 0.8, 0.5),
     (1.0, 3.0, 0.9, -0.5),
 )
-SMALL_ICE = (((1.4, 2.1), 0.9),)  # in the low basin
-SMALL_ROUGH = (((3.6, 0.2), 0.8), ((-0.2, 2.6), 0.6))
+ICE_PATCHES = (((1.4, 2.1), 0.9),)  # in the low basin
+ROUGH_PATCHES = (((3.6, 0.2), 0.8), ((-0.2, 2.6), 0.6))
+ICE_PATCH = ICE_PATCHES[0]
 
 SUN_AZIMUTH = np.deg2rad(200.0)
 SUN_ELEVATION = np.deg2rad(35.0)
@@ -105,7 +87,7 @@ MOVING_CHARGE = 0.1  # the share of the parked charge collected at speed
 PARK_SPEED = 0.05  # the charge falls from parked to moving over about this speed
 #  the solar yield of the ground: the sunlight there over the field's brightest, to this power,
 #  so that sun-facing slopes yield several times what level ground does and shaded ground almost
-#  nothing; on the large field ground of yield 0.6 or more lies in sixteen separate places
+#  nothing
 SUN_POWER = 4.0
 CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls this sharp
 #  the rover's typical forward speed, the median over the closed-loop runs of both settings (see
@@ -113,13 +95,11 @@ CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls
 CRUISE_SPEED = 0.17
 GAUGE_SD = 0.05  # the gauge's noise on the energy level
 GAUGE_ACC = 0.88
-#  the survey sectors: a grid over the field, the edges per axis; the small field's quadrants
-#  split at x 2 and y 1, the large field's sixteen sectors of 4.5 by 4.5
+#  the survey sectors: the field's quadrants, split at x 2 and y 1, the edges per axis
 ZONE_SPLIT = (2.0, 1.0)
 ZONE_EDGES = (
-    ((FIELD[0][0], ZONE_SPLIT[0], FIELD[0][1]), (FIELD[1][0], ZONE_SPLIT[1], FIELD[1][1]))
-    if FIELD_SIZE == "small"
-    else tuple(tuple(float(v) for v in np.linspace(lo, hi, 5)) for lo, hi in FIELD)
+    (FIELD[0][0], ZONE_SPLIT[0], FIELD[0][1]),
+    (FIELD[1][0], ZONE_SPLIT[1], FIELD[1][1]),
 )
 ZONES = (len(ZONE_EDGES[0]) - 1) * (len(ZONE_EDGES[1]) - 1)
 
@@ -129,7 +109,6 @@ PIXEL_SD = 0.04
 FOCAL = (IMG_SIDE / 2) / np.tan(np.deg2rad(35.0))  # pixels: a 70 degree field of view
 CAMERA_HEIGHT = 0.12  # the lens above the ground under the rover
 CAMERA_TILT = np.deg2rad(8.0)  # the lens points this far below the rover's forward axis
-CAMERA_HEADING = np.pi / 2  # the comparison camera's fixed direction (``observe(fixed=True)``)
 NEAR, REACH, MARCH = 0.15, 5.0, 96  # the ray march: nearest and farthest distance, samples
 SUBCOLUMNS = 3  # rays per pixel across its width (the pixel's footprint, a midpoint rule)
 WALL_EDGE = 0.05  # the ground's albedo ramps to WALL_ALBEDO over this width across a wall
@@ -149,45 +128,6 @@ TEXTURE_WAVELENGTH = (0.9, 1.8)  # field units: about two and a half to five map
 #  the sky: brightest at the top, somewhat less at the horizon, and brighter toward the sun's
 #  azimuth; the same whether the rover stands in sun or shade
 SKY_ZENITH, SKY_HORIZON, SUN_GLOW = 0.9, 0.76, 0.08
-
-
-def _drawn_block(bx, by):
-    """The hills and terrain patches of block ``(bx, by)`` of the large field (``bx``, ``by`` from
-    0 at the south-west), drawn from a seed fixed by the block with the small field's makeup:
-    three hills (sd 0.8 to 1.1, height 0.5 to 1.0) and one basin (sd 0.8 to 1.0, depth 0.4 to
-    0.6), their centres at least 0.6 inside the block; an ice patch (radius 0.7 to 0.9) near the
-    basin's floor and two rough patches (radius 0.6 to 0.8) anywhere in the block."""
-    rng = np.random.default_rng(1000 + 10 * bx + by)
-    x0 = FIELD[0][0] + bx * BLOCK
-    y0 = FIELD[1][0] + by * BLOCK
-
-    def place():
-        return x0 + rng.uniform(0.6, BLOCK - 0.6), y0 + rng.uniform(0.6, BLOCK - 0.6)
-
-    hills = [(*place(), rng.uniform(0.8, 1.1), rng.uniform(0.5, 1.0)) for _ in range(3)]
-    bx_, by_ = place()
-    hills.append((bx_, by_, rng.uniform(0.8, 1.0), -rng.uniform(0.4, 0.6)))
-    ice = [((bx_ + rng.uniform(-0.5, 0.5), by_ + rng.uniform(-0.5, 0.5)), rng.uniform(0.7, 0.9))]
-    rough = [(place(), rng.uniform(0.6, 0.8)) for _ in range(2)]
-    return hills, rough, ice
-
-
-def _layout():
-    """``(hills, rough patches, ice patches)`` of the field: the small field's, and with the large
-    field the drawn blocks' after them."""
-    hills, rough, ice = list(SMALL_HILLS), list(SMALL_ROUGH), list(SMALL_ICE)
-    for bx in range(BLOCKS):
-        for by in range(BLOCKS):
-            if (bx, by) != (0, 0):
-                h, r, i = _drawn_block(bx, by)
-                hills += h
-                rough += r
-                ice += i
-    return tuple(hills), tuple(rough), tuple(ice)
-
-
-HILLS, ROUGH_PATCHES, ICE_PATCHES = _layout()
-ICE_PATCH = ICE_PATCHES[0]  # the small field's ice patch
 
 
 def _hill_sum(bump):
@@ -433,8 +373,8 @@ def velocity_of(x):
 
 def zone_of(xy):
     """The survey sector of a position, numbered along x first from the south-west, a row of
-    sectors at a time (``ZONE_EDGES``): on the small field 0 low x and low y, 1 high x and low y,
-    2 low x and high y, 3 high x and high y."""
+    sectors at a time (``ZONE_EDGES``): 0 low x and low y, 1 high x and low y, 2 low x and high
+    y, 3 high x and high y."""
     xe, ye = ZONE_EDGES
     ix = sum((xy[0] >= e).astype(jnp.int32) for e in xe[1:-1])
     iy = sum((xy[1] >= e).astype(jnp.int32) for e in ye[1:-1])
@@ -654,18 +594,16 @@ def initial_state(given=None):
     return full
 
 
-def observe(key, state, fixed=False):
+def observe(key, state):
     """The readings at a state: the gauge (the energy level, noise ``GAUGE_SD``), the band meter
     (the level's band, right with ``GAUGE_ACC``), the position fix (noise ``sd_fix`` at the
     position) and the camera image: the render along the rover's heading (the camera is mounted
-    forward), or along ``CAMERA_HEADING`` with ``fixed`` (a comparison camera that does not turn
-    with the rover), plus pixel noise."""
+    forward), plus pixel noise."""
     k_gauge, k_band, k_fix, k_img = jax.random.split(key, 4)
     pos = state["x"][:2]
     level = level_of(state)
     band_p = jnp.asarray(gauge_table(), jnp.float32)[:, band_of(level)]  # readings given the band
-    view = CAMERA_HEADING if fixed else heading_of(state["x"])
-    image = render(state["x"], state["terrain"], view)
+    image = render(state["x"], state["terrain"], heading_of(state["x"]))
     return {
         "gauge": level[None] + GAUGE_SD * jax.random.normal(k_gauge, (1,)),
         "band": jax.random.categorical(k_band, jnp.log(band_p)).astype(jnp.int32),
@@ -720,14 +658,13 @@ def world_system(look=False):
     return black_box(ins={"v": (FLOAT, 2)}, outs=outs)
 
 
-def world_stepper(recognise=None, fixed=False):
+def world_stepper(recognise=None):
     """The world's step for ``run``: the carry is the true state (keyed by name), ``obs`` holds
     the velocity command under the name of ``v`` in ``system``, and the readings are returned
     under the names of the emissions. The first call (``obs is None``) starts the world, from
     ``initial_state`` with the carry as its overrides; every other call moves it one tick
     (``move``) and reads it (``observe``). With ``recognise`` (an image to a terrain class) the
-    camera's pipeline also reports that class, the ``look`` out-port; ``fixed`` points the camera
-    along ``CAMERA_HEADING`` (the comparison camera). It never learns, so
+    camera's pipeline also reports that class, the ``look`` out-port. It never learns, so
     ``params`` come back as given."""
 
     def step(system, key, obs, carry, params):
@@ -735,11 +672,11 @@ def world_stepper(recognise=None, fixed=False):
         name = {full.rpartition(".")[2]: full for full in (*names.emissions, *names.controls)}
         if obs is None:
             state = initial_state(carry)
-            readings = observe(key, state, fixed)
+            readings = observe(key, state)
         else:
             k_move, k_obs = jax.random.split(key)
             state = move(k_move, carry, obs[name["v"]])
-            readings = observe(k_obs, state, fixed)
+            readings = observe(k_obs, state)
         if recognise is not None:
             readings["look"] = jnp.asarray(recognise(readings["img"]), jnp.int32)
         return {name[k]: value for k, value in readings.items() if k in name}, state, params

@@ -59,13 +59,16 @@ as committed it reproduces `index.html` byte for byte.
 To regenerate the data:
 
 ```bash
-python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR            # both settings, one part file each
-python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR --assemble # OUT_DIR/bundle.json
+python examples/survey_run.py --ticks 800 --out OUT_DIR            # both settings, one part file each
+python examples/survey_run.py --ticks 800 --out OUT_DIR --assemble # OUT_DIR/bundle.json
 python examples/survey_trim.py OUT_DIR/bundle.json docs/site
 ```
 
 The first call trains and caches the camera's decoder in `OUT_DIR` on its first run. Settings can
-be run in parallel with `--settings two-level,one-level`.
+be run in parallel, one process each, with `--settings two-level` and `--settings one-level`.
+`--seed` sets the run key (default 0); `--camera none` and `--no-fix` are the page's two
+ablations, and `--camera look` has the rover observe the recogniser's reading instead of the
+image. `--level 2` is accepted and is the default (the two settings are the only grid).
 
 Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`, `one-level`),
 `mdl`, `description`.
@@ -150,32 +153,15 @@ says that the crosses are the satellite fix's raw readings, one each tick, and, 
 reads the camera's image, that the position belief is tighter than their scatter because the
 camera localises the rover too.
 
-On the small field the setting `two-level-nearest` is the scheduler whose charge option sends the
-rover to the sufficiently sunny cell nearest it (`charge_form` "nearest" in the setting's record)
-rather than to the one charging place. A bundle whose two-tier setting has that form carries
-`meta.tiers.charge_form` and `meta.tiers.sunny_cells` instead of `charge_site`, and each tick under
-charge records its destination as `charge_to`, which the viewer marks while the option is in force.
-
 Testing: open `index.html` from a local server (or from disk); the URL hash
 `#hero&t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` opens the viewer's pane
 and sets the initial view (without a pane id, settings open the viewer's pane), and
 `window.__app.set({...})` drives it from a script.
 
-The large field (`SURVEY_FIELD=large`, 18 by 18, a 48 by 48 grid, sixteen sectors): its bundles
-add `meta.tiers.zone_edges` (the sectors' edges per axis; the viewer draws and labels the sectors
-from it, else from `zone_split`), `meta.tiers.view` (`sectors`: the scheduler's coarse view),
-`meta.tiers.charge_form` and `meta.tiers.sunny_cells` (the charge option sends the rover to the
-sufficiently sunny cell nearest it when the option begins; each tick under charge records that
-place as `charge_to`, which the viewer marks in place of `charge_site`). The setting
-`two-level-priced` is the scheduler with its charge option priced, at each decision, from the
-rover's believed position instead of its sector's centre (`charge_pricing`). Its runs record `map` and
-`counts` every 24 ticks (null between) and `mapped` (which cells are mapped, packed bits) every
-tick. Trimmed for the page with `survey_trim.py --keep-every K --heavy-every H --play-stride P`:
-every K-th tick is kept (and every decision tick), the pictures and plans every H-th, and
-`meta.trim` says so; a kept tick without them shows those of the latest tick that has them, and
-the viewer plays P ticks a step. The viewer reads the options' count from `meta.tiers.options`,
-gives options beyond the page's five colours a hue each, and labels the timeline with the
-recorded ticks.
+The viewer also reads fields that the example's bundles do not hold: `meta.tiers.zone_edges`
+(sectors' edges per axis, else it draws the quadrants from `zone_split`), `meta.tiers.charge_form`
+with `charge_to` per tick (a charge destination per option, else `charge_site`), `meta.trim` (a
+thinned replay: kept ticks, heavy fields and a play stride) and a camera fixed along +y (`meta.image.camera_heading_degrees`).
 
 Images: after `survey_trim.py`, each tick's `img`, `recon` and `map` is one base64 string of the
 bytes in the layout `meta.image.layout` and `meta.map_layout` describe (`meta.image.encoding` and

@@ -10,34 +10,34 @@ the world's in-port ``v``, and the world's out-ports (the fix, the image and the
 rover's modalities. The rover's battery is a coordinate of its vehicle state: driving drains it, the
 sun charges it where the rover parks, and near empty the drive stalls, in the world and in the
 rover's model alike.
-With ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are first merged into
-one agent: the scheduler's option action node drives the rover's option control node (an
-``Identify``), the field is one parameter variable (an ``Identify``), and the scheduler's cell
-modality observes an emission of the rover, its position belief through the cell indicator
-realised by ``mode`` (the ``Link`` sugar); the control setting of ``--level 2`` is the rover
-alone, the fast tier with its own novelty term and no scheduler.
-The agent is coupled to the world as one component, and one ``run`` call over the closed System
-steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics kept in the
-carry's trace), the rover by a custom step (it learns the field, decodes the image for the page and
-emits the cell), and the world by its hand-written step. The scheduler's params declare a duration
-for every option, so it decides once per option, every ``SLOW_TICKS`` rounds, and the rover holds
-the option between decisions. What the rover learns is written back to the shared field each
-round, so the scheduler's novelty reads the counts gathered so far; the scheduler never learns. The
-order is sequential: the scheduler steps first, the
-rover as soon as the option it reads is realised, the world last on the command just realised; the
-scheduler's cell reading is the rover's emission of the round before, absent in round 0. A level-1
-setting is the epistemic terms (the field's novelty, the position fix's information gain, both or
-neither) and whether the image preference is declared. The runs of a grid are written to one
-bundle for the launch page, and a REPORT.md summarises them.
 
-    python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--level 2]
+The two settings are the scheduler over the rover (``two-level``) and the rover alone
+(``one-level``, the fast tier with its own novelty term and no scheduler). For ``two-level`` the
+rover and a survey scheduler (``survey_scheduler``) are first merged into one agent: the
+scheduler's option action node drives the rover's option control node (an ``Identify``), the
+field is one parameter variable (an ``Identify``), and the scheduler's cell modality observes an
+emission of the rover, its position belief through the cell indicator realised by ``mode`` (the
+``Link`` sugar). The agent is coupled to the world as one component, and one ``run`` call over the
+closed System steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics
+kept in the carry's trace), the rover by a custom step (it learns the field, decodes the image for
+the page and emits the cell), and the world by its hand-written step. The scheduler's params
+declare a duration for every option, so it decides once per option, every ``SLOW_TICKS`` rounds,
+and the rover holds the option between decisions. What the rover learns is written back to the
+shared field each round, so the scheduler's novelty reads the counts gathered so far; the
+scheduler never learns. The order is sequential: the scheduler steps first, the rover as soon as
+the option it reads is realised, the world last on the command just realised; the scheduler's
+cell reading is the rover's emission of the round before, absent in round 0. The two ablations
+of the page: ``--camera none`` (the rover's model without the image) and ``--no-fix`` (the fix
+arrives and is never read); ``--camera look`` has the rover observe the recogniser's reading of
+the terrain instead of the image. The runs are written to one bundle for the launch page, and
+a REPORT.md summarises them.
+
+    python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--seed 0]
     python examples/survey_run.py --out DIR --assemble     # merge the part files into bundle
     python examples/survey_trim.py DIR/bundle.json OUT_DIR   # the page's bundle.js
 """
 
 import argparse
-import base64
-import dataclasses
 import functools
 import json
 import math
@@ -74,42 +74,15 @@ FIELD_LR = 1.0  # weight of one tick's terrain counts in the field's Dirichlet (
 FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the field's uniform prior
 COVERED_MAX = 0.6  # a cell counts as mapped when its field's top probability exceeds this
 SEEN_COUNTS = 1.0  # a cell counts as seen once it has absorbed this many counts
-CELL_SIDE = (wd.FIELD[0][1] - wd.FIELD[0][0]) / sm.GRID_SHAPE  # a map cell's side
 MDL_RESOLUTION = 100.0
 MARKS = (50, 100, 200)  # the ticks REPORT.md gives coverage at
-MAP_SIDE = 61 if wd.FIELD_SIZE == "small" else 121  # the world maps' samples per axis, published
-#  the large field's runs record the map and its counts every MAP_EVERY ticks (with the share of
-#  cells mapped and seen, and which cells are mapped, every tick); the small field's every tick
-MAP_EVERY = 1 if wd.FIELD_SIZE == "small" else 24
+MAP_SIDE = 61  # the world maps' samples per axis, published
 EPI = ("transition:terrain", "obs:fix")
 #  how the rover sees through its camera (``camera_mode``): "image", the forward camera's picture
-#  through the decoder (the showcase); "fixed" and "look" are the comparison experiments B and A
+#  through the decoder (the showcase); "look", the recogniser's reading (the comparison
+#  experiment A); "none", no camera (the camera ablation)
 CAMERA = "image"
 NAMES = {"terrain": sm.TERRAIN_NAMES, "energy": sm.ENERGY_NAMES}
-
-
-def settings_grid():
-    """The three settings, each one seed: epistemic terms on (the default), off, and the field's
-    novelty alone."""
-
-    def setting(sid, label, epistemic):
-        return dict(
-            id=sid,
-            label=label,
-            epistemic=list(epistemic),
-            field_lr=FIELD_LR,
-            field_strength=FIELD_STRENGTH,
-            energy_preference=list(sm.ENERGY_PREFERENCE),
-            planning_belief=sm.PLANNING_BELIEF,
-            grid=sm.GRID_SHAPE,
-            seed=0,
-        )
-
-    return [
-        setting("epi", "Novelty and fix information gain", EPI),
-        setting("pragmatic", "No epistemic terms", ()),
-        setting("novelty-only", "Field novelty only", EPI[:1]),
-    ]
 
 
 def interval_pair(interval, i):
@@ -139,17 +112,12 @@ def term_record(tree, i, outer, offsets=None):
     return out
 
 
-def wall_offset(policy_len, around=None):
+def wall_offset(policy_len):
     """The wall preference's value over a plan that stays inside the field: ``policy_len`` steps
-    of ``-log C`` at the field's centre, where the preference's log density is flat (with a window
-    about ``around``, ``survey_model.WALL_WINDOW``, at the window's own centre). A constant across
-    plans (the mixture's normaliser), so the page's records show the leaf less it."""
-    if sm.WALL_WINDOW is not None and around is not None:
-        target = sm.wall_target(around=around)
-        centre = jnp.mean(target.means, axis=0, keepdims=True)
-    else:
-        target = sm.wall_target()
-        centre = jnp.asarray([[np.mean(wd.FIELD[0]), np.mean(wd.FIELD[1])]], jnp.float32)
+    of ``-log C`` at the field's centre, where the preference's log density is flat. A constant
+    across plans (the mixture's normaliser), so the page's records show the leaf less it."""
+    target = sm.wall_target()
+    centre = jnp.asarray([[np.mean(wd.FIELD[0]), np.mean(wd.FIELD[1])]], jnp.float32)
     return float(-policy_len * target.log_prob(centre)[0])
 
 
@@ -248,8 +216,7 @@ def field_record(params, strength, home="field"):
 class RoverCarry(NamedTuple):
     """The rover step's carry: the prior for the next round, the round's posterior and action
     (what the next round's learning reads), the plan it acted on (the next round's warm start),
-    the round's record for the page, the number of rounds stepped and the place the charge option
-    in force sends the rover to (``charge_target``)."""
+    the round's record for the page and the number of rounds stepped."""
 
     beliefs: Any = None
     previous: Any = None
@@ -257,7 +224,6 @@ class RoverCarry(NamedTuple):
     plan: Any = None
     record: Any = None
     rounds: int = 0
-    charge_to: Any = None
 
 
 class WarmPlanner(eqx.Module):
@@ -292,42 +258,7 @@ def shifted(plan):
     return jnp.concatenate([plan[1:], plan[-1:]], axis=0)
 
 
-def charge_form(setting):
-    """Where a setting's charge option sends the rover: its ``charge_form`` entry, else the field's
-    default ``survey_model.CHARGE_FORM`` ("site", the one charging place, or "nearest", the
-    sufficiently sunny cell nearest the rover when the option begins)."""
-    return setting.get("charge_form", sm.CHARGE_FORM)
-
-
-def charge_target(params, pre, held, position, form=None):
-    """Under the charge option with the charge form ``form`` (``survey_model.CHARGE_FORM`` when
-    ``None``) "nearest": ``(params, site)``,
-    the params with the rover's target on ``x`` moved to ``site``, the place the option sends the
-    rover: ``held`` (the place chosen when the option began) or else the sufficiently sunny cell
-    nearest ``position`` (``survey_model.nearest_sunny``). Otherwise ``(params, None)``. The
-    charge option is told by its target, narrower than a map cell."""
-    target = params.state_targets.get(pre + "x")
-    form = sm.CHARGE_FORM if form is None else form
-    if form != "nearest" or target is None or np.ndim(target.loc) != 1:
-        return params, None
-    if not np.all(np.sqrt(np.diag(np.asarray(target.cov)))[:2] < CELL_SIDE):
-        return params, None
-    site = held if held is not None else sm.nearest_sunny(position)
-    moved = dataclasses.replace(target, loc=target.loc.at[:2].set(jnp.asarray(site)))
-    return dataclasses.replace(
-        params, state_targets={**params.state_targets, pre + "x": moved}
-    ), site
-
-
-def mapped_bits(params, home):
-    """Which cells the field counts as mapped (top probability over ``COVERED_MAX``), packed one
-    bit a cell (row-major, ``numpy.packbits`` order) and base64-encoded."""
-    conc = np.asarray(params.parameters[home].concentration, np.float64)
-    mapped = (conc / conc.sum(axis=0)).max(axis=0) > COVERED_MAX
-    return base64.b64encode(np.packbits(mapped).tobytes()).decode("ascii")
-
-
-def rover_step(setting, steps, starts, pre, decoder, shared=None):
+def rover_step(setting, steps, starts, pre, decoder):
     """The rover's step for ``run``: infer, learn the field, plan, act, push the prior and emit.
     ``params`` arrive as the argument, and the params that learned the field are returned (the
     field is counted from the second round on, with the previous round's posterior and action
@@ -336,8 +267,7 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
     emissions (the cell the scheduler reads, two-tier only) are realised from the posterior.
     The step is handed its view sliced at the option it reads (``sliced``), as a planner is,
     since the rover plans over a horizon at one option. Each round's record for the page is the
-    carry's ``record``; ``decoder`` renders the reconstruction it holds. ``shared`` (a dict), when
-    given, receives the believed position each round (``position``), for ``priced_charge``."""
+    carry's ``record``; ``decoder`` renders the reconstruction it holds."""
     home = pre + "field"
     outer = pre.split(".", 1)[0] + "."  # the coupling's prefix of the agent's names
     faces = {}
@@ -367,27 +297,14 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
                 action=carry.action,
                 lr=setting["field_lr"],
             )
-        belief_now = position_belief(beliefs, pre)
-        if shared is not None:
-            shared["position"] = belief_now["mean"]
-        plan_params, site = charge_target(
-            params, pre, carry.charge_to, belief_now["mean"], charge_form(setting)
-        )
         first = (
             jnp.zeros((system.policy_len, 2), jnp.float32)
             if carry.plan is None
             else shifted(carry.plan)
         )
         planner = WarmPlanner(init=first, steps=steps, starts=starts)
-        if sm.WALL_WINDOW is not None and pre + "fix" in params.obs_targets:
-            #  the wall preference's window, moved to the rover for this plan
-            #  (``survey_model.wall_target``); the params the step returns keep their own
-            window = sm.wall_target(around=belief_now["mean"])
-            plan_params = dataclasses.replace(
-                plan_params, obs_targets={**plan_params.obs_targets, pre + "fix": window}
-            )
         q_pi, tree, policies = compiled.infer_policies(
-            plan_params, beliefs, planner=planner, metrics=True, return_policies=True
+            params, beliefs, planner=planner, metrics=True, return_policies=True
         )
         jax.block_until_ready(policies)
         t_plan = time.time()
@@ -410,7 +327,7 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
         #  the wall preference's leaf is recorded less its constant inside the field
         wall = page_name(pre + "fix", outer)
         walled = any(page_name(leaf, outer) == wall for leaf in tree.get("utility", {}))
-        offset = wall_offset(system.policy_len, belief_now["mean"]) if walled else 0.0
+        offset = wall_offset(system.policy_len) if walled else 0.0
         #  the position risk's leaf is recorded less its smallest value over the tick's plans
         x_risk = position_risk_offset(tree, page_name(pre + "x", outer), outer)
         offsets = {"utility": {wall: offset}, "risk": {page_name(pre + "x", outer): x_risk}}
@@ -426,14 +343,6 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
             for i in range(v_plans.shape[0])
         ]
         table, counts, coverage, seen = field_record(params, setting["field_strength"], home)
-        every = setting.get("map_every", 1)
-        extra = {}
-        if setting.get("mapped_bits"):
-            extra["mapped"] = mapped_bits(params, home)
-        if site is not None:
-            extra["charge_to"] = [float(c) for c in site]
-        if every > 1 and carry.rounds % every:
-            table, counts = None, None
         record = dict(
             seconds=time.time() - t_start,
             #  the belief update (every reading, the camera's dominant) and the plan's descent
@@ -452,7 +361,6 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
             counts=counts,
             coverage=coverage,
             seen=seen,
-            **extra,
         )
         #  the view's emissions (the cell the scheduler reads) are realised from the posterior
         emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs)
@@ -463,7 +371,6 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
             plan=v_plans[best],
             record=record,
             rounds=carry.rounds + 1,
-            charge_to=site,
         )
         return {**action, **emitted}, carry, params
 
@@ -525,7 +432,7 @@ def camera_mode(setting):
 
 def sees_image(mode):
     """Whether the rover's model inverts the image (through the decoder) under a camera mode."""
-    return mode in ("image", "fixed")
+    return mode == "image"
 
 
 def world_bindings(agent, mode="image"):
@@ -543,18 +450,17 @@ def world_bindings(agent, mode="image"):
 
 
 def sensors(mode, encoder):
-    """``(world step, readout)`` for a camera ``mode``: the world's step (its camera fixed along +y
-    for ``"fixed"``, reporting the recogniser's class for ``"look"``) and the recogniser's class
-    probabilities of an image for the page (``None`` without a recogniser)."""
-    fixed = mode == "fixed"
+    """``(world step, readout)`` for a camera ``mode``: the world's step (reporting the
+    recogniser's class for ``"look"``) and the recogniser's class probabilities of an image for
+    the page (``None`` without a recogniser)."""
     if encoder is None:
-        return wd.world_stepper(fixed=fixed), None
+        return wd.world_stepper(), None
 
     def readout(image):
         return cam.terrain_probs(encoder, image)
 
     if mode != "look":
-        return wd.world_stepper(fixed=fixed), readout
+        return wd.world_stepper(), readout
     return wd.world_stepper(lambda image: jnp.argmax(readout(image))), readout
 
 
@@ -584,7 +490,7 @@ def run_setting(
     confusion=None,
 ):
     """One run of a setting: the two-tier agent (``run_tiered``, ``tiers`` 2), or the rover alone
-    coupled to the world (level 1, and the one-level setting of the two-tier comparison). The
+    coupled to the world (the one-level setting). The
     camera's form is the setting's (``camera_mode``): the image through ``decoder``, or the
     reading of the recogniser ``encoder`` through its ``confusion`` table, or none."""
     if setting.get("tiers") == 2:
@@ -625,21 +531,14 @@ def run_setting(
 
 
 SLOW_TICKS = ss.SURVEY_TICKS  # fast ticks per slow step
-#  settings of the two-tier grid that run only when named (``--settings``): the small field's
-#  scheduler with the "nearest" charge form, a comparison beside the shipped pair
-NAMED_ONLY = ("two-level-nearest",)
-READINGS_AVAILABLE = "readings" in {f.name for f in dataclasses.fields(ss.System)}
 
 
 def settings_grid_l2():
     """The settings of the two-tier comparison: the scheduler over the rover (two levels), and
     the rover alone (one level), the fast tier with its own novelty term and no scheduler, free to
     go where it likes. Both share the rover's epistemic terms, its energy preference and its
-    field; the scheduler's ladder over the energy bands is ``energy_logits``. On the small field
-    a third is the scheduler whose charge option sends the rover to the sufficiently sunny cell
-    nearest it (``charge_form`` "nearest") rather than to the one charging place. On the large field
-    there is a third, the scheduler with survey options alone (``charge`` false), and the runs
-    record the map every ``MAP_EVERY`` ticks and which cells are mapped every tick."""
+    field; the scheduler's ladder over the energy bands is ``energy_logits``, and its map reading
+    is pooled over an option (``readings``)."""
 
     def setting(sid, label, tiers, **extra):
         out = dict(
@@ -654,35 +553,14 @@ def settings_grid_l2():
             planning_belief=sm.PLANNING_BELIEF,
             grid=sm.GRID_SHAPE,
             slow_ticks=SLOW_TICKS,
+            readings=True,
             seed=0,
         )
-        if wd.FIELD_SIZE != "small":
-            out.update(field_size=wd.FIELD_SIZE, map_every=MAP_EVERY, mapped_bits=True)
         out.update(extra)
         return out
 
-    if wd.FIELD_SIZE == "small":
-        return [
-            setting("two-level", "Scheduler over the rover", 2),
-            setting(
-                "two-level-nearest",
-                "Scheduler over the rover, charging on the nearest sunny ground",
-                2,
-                charge_form="nearest",
-            ),
-            setting("one-level", "Rover alone", 1),
-        ]
     return [
-        setting("two-level", "Scheduler over the rover, with a charge option", 2, charge=True),
-        setting("survey-only", "Scheduler over the rover, surveys only", 2, charge=False),
-        #  added after the first results: the charge option priced from the rover's position
-        setting(
-            "two-level-priced",
-            "Scheduler over the rover, charge priced from the rover's position",
-            2,
-            charge=True,
-            charge_pricing="position",
-        ),
+        setting("two-level", "Scheduler over the rover", 2),
         setting("one-level", "Rover alone", 1),
     ]
 
@@ -706,28 +584,23 @@ def agent_system(decoder, setting, confusion=None):
         energy_preference=energy_preference(setting),
         policy_len=setting.get("policy_len", sm.POLICY_LEN),
         tiered=True,
-        charge=setting.get("charge", True),
     )
-    common = dict(
-        energy_target=tuple(setting.get("scheduler_logits") or setting["energy_logits"]),
+    ms, mp = ss.scheduler(
+        grid,
+        centres,
+        energy_target=tuple(setting["energy_logits"]),
         field_strength=setting["field_strength"],
         policy_len=rs.policy_len,
         durations=True,  # the scheduler decides once per option, its duration read off these
         readings=setting.get("readings", False),
     )
-    if ss.VIEW == "cells":
-        ms, mp = ss.scheduler(grid, centres, charge_form=charge_form(setting), **common)
-        kernel = grid
-    else:  # the scheduler reads the sector the rover's position belief puts it in
-        ms, mp = ss.sector_scheduler(grid, centres, charge=setting.get("charge", True), **common)
-        kernel = ss.sector_grid()
     agent = merge(
         {"mission": ms, "rover": rs},
         {"mission": mp, "rover": rp},
         [
             Identify("mission.option", "rover.u_opt"),
             Identify("rover.field", "mission.field"),
-            Link("rover.x", "mission.cell_obs", realise="mode", kernel=kernel),
+            Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
         ],
     )
     return agent, grid
@@ -745,27 +618,6 @@ def survey_system(decoder, setting, confusion=None):
             Identify("world.band", "agent.mission.gauge"),
         ],
     )
-
-
-def priced_charge(step, shared, centres, prefix="agent.mission."):
-    """``step`` (the scheduler's ``plan()`` step) with the charge option priced, at each decision,
-    from the rover's believed position of the round before (``shared["position"]``) rather than
-    from its sector's centre (``survey_scheduler.priced_at``): the setting ``charge_pricing``
-    "position". The tables are changed for that call alone; the params the step returns are the
-    ones it was given."""
-
-    @functools.wraps(step)
-    def wrapper(system, key, obs, carry, params):
-        local = params
-        if obs is not None and "position" in shared:
-            local = dataclasses.replace(
-                params,
-                transition=ss.priced_at(params.transition, shared["position"], centres, prefix),
-            )
-        out, carry, _ = step(system, key, obs, carry, local)
-        return out, carry, params
-
-    return wrapper
 
 
 def timed(step, seconds):
@@ -845,18 +697,9 @@ def run_tiered(
     start = setting.get("start_energy")
     seconds = []
     decide = plan(trace=True, selection="deterministic", replace={"policy_len": 2})
-    shared = None
-    if setting.get("charge_pricing") == "position":
-        shared = {}
-        decide = priced_charge(decide, shared, sm.field_grid(setting["grid"])[1])
     mission = timed(decide, seconds)
     rover = rover_step(
-        setting,
-        steps,
-        starts,
-        "agent.rover.",
-        params.likelihood.get("agent.rover.img"),
-        shared,
+        setting, steps, starts, "agent.rover.", params.likelihood.get("agent.rover.img")
     )
     rec = run(
         system,
@@ -878,13 +721,7 @@ def run_tiered(
         present = bool(scheduler.present["cell_obs"][t])
         option = int(options[t])
         carry = scheduler.carries[t + 1]
-        decisions[t] = decision_record(
-            carry,
-            option,
-            reading if present else None,
-            secs,
-            n_options=sm.option_count(setting.get("charge", True)),
-        )
+        decisions[t] = decision_record(carry, option, reading if present else None, secs)
 
     def extra(t):
         return dict(option=int(options[t]), slow=decisions.get(t, dict(decision=False)))
@@ -1103,13 +940,6 @@ def meta_record(ticks, camera_report, grid, camera="image"):
                 "units, lit by the sun and textured in world coordinates with the class under "
                 "the rover, the dark ground beyond the field's walls, fading into haze under a "
                 "sky; the ground scrolls as the rover moves and swings as it turns"
-                if camera != "fixed"
-                else "a comparison camera fixed along the field's +y (not the showcase)"
-            ),
-            **(
-                {"camera_heading_degrees": float(np.degrees(wd.CAMERA_HEADING))}
-                if camera == "fixed"
-                else {}
             ),
             camera_mode=camera,
             heading_rule=(
@@ -1422,10 +1252,10 @@ def mdl_record(system, params):
 
 def assemble(out_dir, camera_report, decoder):
     """Merge the part files into the bundle and write the report. The bundle's model records
-    (``graph``, ``mdl``, ``description``) are of the model the page shows: at level 2 the agent's
-    joint planner (the scheduler and the rover planned as one model), not the coupled System that
+    (``graph``, ``mdl``, ``description``) are of the model the page shows: the agent's joint
+    planner (the scheduler and the rover planned as one model), not the coupled System that
     ``run`` steps, which adds the world, a black box declared by its ports alone (its description
-    length unscored); at level 1 the rover's System."""
+    length unscored)."""
     runs, settings = {}, {}
     for path in sorted(out_dir.glob("part_*.json")):
         part = json.loads(path.read_text())
@@ -1436,66 +1266,41 @@ def assemble(out_dir, camera_report, decoder):
     ticks = {len(r["ticks"]) for r in runs.values()}
     if len(ticks) != 1:
         raise SystemExit(f"the runs have different lengths: {sorted(ticks)}")
-    tiered = all("tiers" in s for s in settings.values())
-    order = [
-        s["id"] for s in (settings_grid_l2() if tiered else settings_grid()) if s["id"] in runs
-    ]
+    order = [s["id"] for s in settings_grid_l2() if s["id"] in runs]
     settings = [settings[sid] for sid in order]
     runs = {sid: runs[sid] for sid in order}
-    n_grid = settings[0].get("grid", sm.GRID_SHAPE)
-    grid, _ = sm.field_grid(n_grid)
-    if tiered:
-        #  the page's graph, description length and document are of the agent's joint planner
-        #  (each tier's option read as one decision), not of the coupled System that run steps:
-        #  the page shows the agent's model, and the world is a black box, its ports alone
-        confusion = camera_report.get("recogniser_confusion")
-        model = joint_planner(*agent_system(decoder, settings[0], confusion)[0])
-    else:
-        model = sm.rover(decoder, grid_shape=n_grid)[:2]
+    grid, _ = sm.field_grid(settings[0].get("grid", sm.GRID_SHAPE))
+    #  the page's graph, description length and document are of the agent's joint planner (each
+    #  tier's option read as one decision), not of the coupled System that run steps: the page
+    #  shows the agent's model, and the world is a black box, its ports alone
+    confusion = camera_report.get("recogniser_confusion")
+    model = joint_planner(*agent_system(decoder, settings[0], confusion)[0])
     n = ticks.pop()
     meta = meta_record(n, camera_report, grid, camera_mode(settings[0]))
-    if tiered:
-        charged = settings[0].get("charge", True)
-        two = next(s for s in settings if s.get("tiers") == 2)
-        if charge_form(two) == "site":
-            charging = {"charge_site": [float(c) for c in sm.charge_site()]}
-        else:
-            charging = {
-                "charge_form": (
-                    "the charge option sends the rover to the sufficiently sunny cell nearest "
-                    f"it when the option begins (mean solar yield at least {sm.SUNNY_YIELD}), "
-                    "held while the option lasts, to park and charge there; each tick of a "
-                    "charge option records it (charge_to)"
-                ),
-                "sunny_cells": [[float(c) for c in p] for p in sm.sunny_cells()],
-            }
-        if ss.VIEW == "sectors":
-            charging.update(zone_edges=[list(e) for e in wd.ZONE_EDGES], view=ss.VIEW)
-        meta["tiers"] = dict(
-            slow_ticks=settings[0]["slow_ticks"],
-            options=ss.OPTION_NAMES[: sm.option_count(charged)],
-            zones=ss.SECTOR_NAMES,
-            zone_split=list(wd.ZONE_SPLIT),
-            sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
-            **charging,
-            survey_readings=ss.SURVEY_READINGS,
-            one_level=(
-                "the one-level setting is the rover alone: the fast tier with its own objective "
-                "(the field's novelty, the fix's information gain, the energy preference and the "
-                "wall preference), no scheduler, no option and no sector or charging target, free "
-                "to go where it likes; its ticks have no option and no slow record"
-            ),
-        )
+    meta["tiers"] = dict(
+        slow_ticks=settings[0]["slow_ticks"],
+        options=ss.OPTION_NAMES,
+        zones=ss.SECTOR_NAMES,
+        zone_split=list(wd.ZONE_SPLIT),
+        sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
+        charge_site=[float(c) for c in sm.charge_site()],
+        survey_readings=ss.SURVEY_READINGS,
+        one_level=(
+            "the one-level setting is the rover alone: the fast tier with its own objective "
+            "(the field's novelty, the fix's information gain, the energy preference and the "
+            "wall preference), no scheduler, no option and no sector or charging target, free "
+            "to go where it likes; its ticks have no option and no slow record"
+        ),
+    )
     bundle = dict(meta=meta, graph=graph_record(*model), settings=settings, runs=runs)
     try:
         bundle["mdl"] = mdl_record(*model)
-        if tiered:
-            bundle["description"] = describe(*model)[0]
+        bundle["description"] = describe(*model)[0]
     except Exception as exc:  # the description refuses some models; say so and carry on
         print(f"mdl skipped: {type(exc).__name__}: {exc}")
     text = json.dumps(bundle)
     (out_dir / "bundle.json").write_text(text)
-    marks = (tuple(range(100, n + 1, 100)) or (n,)) if tiered else MARKS
+    marks = tuple(range(100, n + 1, 100)) or (n,)
     (out_dir / "REPORT.md").write_text(report_text(settings, runs, marks, bundle.get("mdl")))
     print(f"bundle: {len(runs)} runs, {len(text) / 1e6:.1f} MB")
 
@@ -1508,25 +1313,12 @@ def main():
     ap.add_argument("--assemble", action="store_true", help="merge the part files and stop")
     ap.add_argument("--steps", type=int, default=PLANNER_STEPS, help="descent steps per plan")
     ap.add_argument("--starts", type=int, default=PLANNER_STARTS, help="warm starts per plan")
-    ap.add_argument("--field-lr", type=float, default=FIELD_LR, help="weight of the counts")
-    ap.add_argument("--field-strength", type=float, default=FIELD_STRENGTH, help="prior counts")
-    ap.add_argument("--energy-logits", default=None, help="the scheduler's band ladder")
-    ap.add_argument("--energy-preference", default=None, help="the rover's centre,sd or none")
-    ap.add_argument("--planning-belief", default=sm.PLANNING_BELIEF, choices=("prior", "posterior"))
-    ap.add_argument("--start-energy", type=float, default=None, help="the world's initial energy")
-    ap.add_argument("--grid", type=int, default=sm.GRID_SHAPE, help="field cells per axis")
-    ap.add_argument("--level", type=int, default=1, choices=(1, 2), help="the settings grid")
-    ap.add_argument("--slow-ticks", type=int, default=SLOW_TICKS, help="fast ticks per slow step")
-    ap.add_argument("--scheduler-logits", default=None, help="the scheduler's own ladder")
     ap.add_argument(
-        "--readings",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="pool the scheduler's map reading over an option (default: on if available)",
+        "--level", type=int, default=2, choices=(2,), help="the two-tier settings (the one grid)"
     )
     ap.add_argument("--seed", type=int, default=None, help="the world's key (default: 0)")
     ap.add_argument(
-        "--camera", default=CAMERA, choices=("image", "fixed", "look", "none"), help="camera_mode"
+        "--camera", default=CAMERA, choices=("image", "look", "none"), help="camera_mode"
     )
     ap.add_argument(
         "--fix",
@@ -1543,32 +1335,13 @@ def main():
     if args.assemble:
         assemble(out_dir, camera_report, decoder)
         return
-    settings = settings_grid() if args.level == 1 else settings_grid_l2()
+    settings = settings_grid_l2()
     if args.settings:
         keep = set(args.settings.split(","))
         settings = [s for s in settings if s["id"] in keep]
-    else:
-        settings = [s for s in settings if s["id"] not in NAMED_ONLY]
     for s in settings:
-        s["field_lr"] = args.field_lr
         if args.seed is not None:
             s["seed"] = args.seed
-        s["field_strength"] = args.field_strength
-        s["planning_belief"] = args.planning_belief
-        s["grid"] = args.grid
-        if args.scheduler_logits:
-            s["scheduler_logits"] = [float(v) for v in args.scheduler_logits.split(",")]
-        if "tiers" in s:
-            s["readings"] = READINGS_AVAILABLE if args.readings is None else args.readings
-        if "slow_ticks" in s:
-            s["slow_ticks"] = args.slow_ticks
-        if args.start_energy is not None:
-            s["start_energy"] = args.start_energy
-        if args.energy_logits:
-            s["energy_logits"] = [float(v) for v in args.energy_logits.split(",")]
-        if args.energy_preference:
-            pref = args.energy_preference
-            s["energy_preference"] = None if pref == "none" else [float(v) for v in pref.split(",")]
         t0 = time.time()
         s["camera"] = args.camera
         if not args.fix:

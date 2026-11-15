@@ -60,23 +60,13 @@ N_SURVEY = wd.ZONES  # survey options: one per sector
 N_OPTIONS = N_SURVEY + 1  # and charge
 CHARGE = N_SURVEY  # the charge option's level
 STATE_DIM = 6  # position, heading pair, speed, energy level
-#  position sd of the survey target: half the width of a sector (1.5 on the small field's
-#  quadrants, 2.25 on the large field's sectors)
+#  position sd of the survey target: half the width of a sector (1.5 on the field's quadrants)
 SECTOR_SD = (wd.ZONE_EDGES[0][1] - wd.ZONE_EDGES[0][0]) / 2
 SITE_SD = 0.25  # position sd of the charge target: within a map cell of the charging place
 REST_SD = 0.05  # speed sd of the charge target: parked
 FREE_SD = 100.0  # the sd of a coordinate a target leaves free (no effective pull)
-#  a cell is sufficiently sunny when its mean solar yield is at least this (about the 90th
-#  percentile of the large field's ground)
-SUNNY_YIELD = 0.5
-#  where the charge option sends the rover: on the small field the charging place (the sunniest
-#  cell, "site"); on the large field the sufficiently sunny cell nearest the rover when the option
-#  begins ("nearest"), held while it lasts: the declared target is the site's, and the rover's step
-#  moves its centre there (``survey_run.charge_target``); a setting may choose either form
-#  (``survey_run.charge_form``)
-CHARGE_FORM = "site" if wd.FIELD_SIZE == "small" else "nearest"
-GRID_SHAPE = 16 * wd.BLOCKS  # field cells per axis: a cell of 0.375 at both sizes
-NOISE_NODES = 24 * wd.BLOCKS + 1  # fix-noise map nodes per axis, 0.25 apart
+GRID_SHAPE = 16  # field cells per axis: a cell of 0.375
+NOISE_NODES = 25  # fix-noise map nodes per axis, 0.25 apart
 POLICY_LEN = 12  # ticks the rover plans ahead: 9.6 map cells at the top speed of 0.3
 #  the initial belief's sd: position, heading pair, speed, energy level (a full battery is
 #  expected, but loosely: the first gauge reading sets the level)
@@ -84,10 +74,6 @@ START_SD = (0.3, 0.3, 0.05, 0.05, 0.02, 1.0)
 PROPAGATION = "first_order"  # how a belief is pushed through the vehicle's motion
 WALL_SPACING = 0.4  # the wall preference's component grid, field units
 WALL_SD = 0.2  # each component's sd: the preference falls off over this distance past a wall
-#  on the large field the wall preference's mixture is evaluated over a window of this many
-#  components per axis about the rover (``wall_target(around=)``), which covers more than a
-#  plan's reach (4.2 units each way against 3.6); ``None``: the whole mixture
-WALL_WINDOW = None if wd.FIELD_SIZE == "small" else 23
 FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the uniform field prior
 MIXTURE_K = 1  # one component: the motion does not switch, the camera conditions one Gaussian
 # the posterior chain does not reach a mixture-carried factor, so "posterior" would change nothing
@@ -131,32 +117,18 @@ def fix_noise_map():
     return GridNoiseMap(jnp.asarray(values), low, high, axes=(0, 1))
 
 
-def wall_target(around=None):
+def wall_target():
     """The wall preference over the position fix: an equal-weight mixture of Gaussians of sd
     ``WALL_SD`` on a grid of spacing ``WALL_SPACING`` filling the field (the first centre half a
     spacing inside each wall). Its log density is flat to a few hundredths of a nat more than
     ``2 WALL_SD`` inside the walls and falls off past them like a Gaussian tail: about ``log 2``
     lower at a wall and about 3.8 nats lower ``2 WALL_SD`` beyond one. A mixture preference is
-    scored as an interval, from the closed-form mixture cross-entropy bounds.
-
-    With ``WALL_WINDOW`` and a position ``around``, the mixture's components in a block of
-    ``WALL_WINDOW`` per axis about it (moved inward at the walls, so it always holds as many):
-    within the block's reach its log density is the whole mixture's plus a constant (the weights'
-    normaliser), so it ranks plans as the whole mixture does, at the cost of a fixed number of
-    components however large the field."""
+    scored as an interval, from the closed-form mixture cross-entropy bounds."""
     (x0, x1), (y0, y1) = wd.FIELD
     nx = int(round((x1 - x0) / WALL_SPACING))
     ny = int(round((y1 - y0) / WALL_SPACING))
     xs = x0 + (np.arange(nx) + 0.5) * (x1 - x0) / nx
     ys = y0 + (np.arange(ny) + 0.5) * (y1 - y0) / ny
-    if WALL_WINDOW is not None and around is not None:
-        half = WALL_WINDOW // 2
-
-        def block(axis, n, x):
-            i = int(np.clip(np.argmin(np.abs(axis - x)) - half, 0, n - WALL_WINDOW))
-            return axis[i : i + WALL_WINDOW]
-
-        xs, ys = block(xs, nx, around[0]), block(ys, ny, around[1])
     centres = np.stack(np.meshgrid(xs, ys, indexing="ij"), axis=-1).reshape(-1, 2)
     k = centres.shape[0]
     return MixtureGaussian(
@@ -218,19 +190,6 @@ def charge_site(shape=None):
     return centres[int(np.argmax(cell_yields(shape)))]
 
 
-def sunny_cells(shape=None):
-    """The centres of the sufficiently sunny cells, those of mean yield ``SUNNY_YIELD`` or more,
-    ``(n, 2)``."""
-    _, centres = field_grid(shape)
-    return centres[cell_yields(shape) >= SUNNY_YIELD]
-
-
-def nearest_sunny(xy, shape=None):
-    """The centre of the sufficiently sunny cell nearest to ``xy``, ``(2,)``."""
-    sunny = sunny_cells(shape)
-    return sunny[int(np.argmin(np.linalg.norm(sunny - np.asarray(xy)[None], axis=1)))]
-
-
 def sector_centres():
     """The centre of each survey sector, ``(N_SURVEY, 2)``, in zone order (``zone_of``)."""
     xe, ye = wd.ZONE_EDGES
@@ -240,20 +199,14 @@ def sector_centres():
     return np.asarray([(xs[z % nx], ys[z // nx]) for z in range(N_SURVEY)], np.float32)
 
 
-def option_count(charge=True):
-    """The number of options: one survey per sector, and charge with ``charge``."""
-    return N_SURVEY + (1 if charge else 0)
-
-
-def option_position_target(charge=True):
+def option_position_target():
     """The target over the vehicle's state conditional on the option, ``(options, 6)`` locations
     and ``(options, 6, 6)`` factors: under a survey option a Gaussian at the sector's centre
     (position sd ``SECTOR_SD``, heading pair and speed sd 2), the energy level left free (sd
-    ``FREE_SD``: the energy preference is over the gauge). Under charge (with ``charge``), a
-    Gaussian at the charging place (``charge_site``, position sd ``SITE_SD``) with the speed at
-    rest (sd ``REST_SD``) and the level free; with ``CHARGE_FORM`` "nearest" the rover's step
-    moves its centre to the sunny ground nearest the rover."""
-    n = option_count(charge)
+    ``FREE_SD``: the energy preference is over the gauge). Under charge, a Gaussian at the
+    charging place (``charge_site``, position sd ``SITE_SD``) with the speed at rest (sd
+    ``REST_SD``) and the level free."""
+    n = N_OPTIONS
     loc = np.zeros((n, STATE_DIM), np.float32)
     loc[:N_SURVEY, :2] = sector_centres()
     chol = np.zeros((n, STATE_DIM, STATE_DIM), np.float32)
@@ -286,7 +239,6 @@ def rover(
     wall=True,
     look=None,
     propagation=PROPAGATION,
-    charge=True,
 ):
     """``(System, SystemParams, Grid, centres)`` for the survey rover. ``decoder`` is the
     camera's likelihood (over five state coordinates or six; ``with_level_input``);
@@ -299,8 +251,7 @@ def rover(
     as they read any control node), with the target over the vehicle's state conditional on it;
     ``wall=False`` leaves the wall preference (``wall_target``) out; ``look`` (a confusion table
     ``[reading, terrain]``) adds the modality ``look``, the recogniser's reading of the terrain,
-    with that table as its likelihood; ``charge=False`` (tiered) leaves the charge option out of
-    the option control node."""
+    with that table as its likelihood."""
     grid, centres = field_grid(grid_shape)
     n_cells = grid.n_cells
     # factors: terrain 0, x 1, v 2 (float control), u_opt 3 (the option, tiered only)
@@ -367,9 +318,9 @@ def rover(
             "x": x0,
         },
         control={"v": Box(jnp.asarray(wd.COMMAND_LOW), jnp.asarray(wd.COMMAND_HIGH))},
-        state_targets={"x": option_position_target(charge)} if tiered else {},
+        state_targets={"x": option_position_target()} if tiered else {},
         obs_targets={
-            **({"fix": wall_target(around=wd.START)} if wall else {}),
+            **({"fix": wall_target()} if wall else {}),
             **({"gauge": energy_target(energy_preference)} if energy_preference else {}),
         },
     )
