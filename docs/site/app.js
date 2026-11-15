@@ -208,12 +208,13 @@
         el("circle", { cx: p[0], cy: p[1], r: 26, fill: css("--c1"), "fill-opacity": 0.16, stroke: css("--c1"), "stroke-width": 1.6 }, g);
       }
       else if (i.kind === "parameter") {
-        el("rect", { x: p[0] - 52, y: p[1] - 24, width: 104, height: 48, rx: 10, fill: css("--c3"), "fill-opacity": 0.16, stroke: css("--c3"), "stroke-width": 2.6 }, g);
+        var pw = /energy_table$/.test(name) ? 136 : 104;  // the energy table's name is the longer
+        el("rect", { x: p[0] - pw / 2, y: p[1] - 24, width: pw, height: 48, rx: 10, fill: css("--c3"), "fill-opacity": 0.16, stroke: css("--c3"), "stroke-width": 2.6 }, g);
       } else el("rect", { x: p[0] - 38, y: p[1] - 15, width: 76, height: 30, rx: 15, fill: fill, stroke: css("--c2"), "stroke-width": 1.8 }, g);
       el("text", { x: p[0], y: p[1] + 4, "text-anchor": "middle", "font-size": fs, "font-weight": i.kind === "parameter" ? 700 : 400 }, g, i.kind === "parameter" ? name : label);
       if (i.kind === "parameter" && /energy_table$/.test(name)) {
-        el("text", { x: p[0] - 58, y: p[1] - 12, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "one Dirichlet per band");
-        el("text", { x: p[0] - 58, y: p[1] + 1, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "and option, learned");
+        el("text", { x: p[0] - 74, y: p[1] - 12, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "one Dirichlet per band");
+        el("text", { x: p[0] - 74, y: p[1] + 1, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "and option, learned");
       } else if (i.kind === "parameter") {
         el("text", { x: p[0] - 58, y: p[1] - 2, "text-anchor": "end", "font-size": 10.5, class: "muted" }, g, "one Dirichlet table,");
         var gs = B.meta.grid && B.meta.grid.shape ? B.meta.grid.shape[0] * B.meta.grid.shape[1] : 256;

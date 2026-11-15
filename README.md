@@ -1,14 +1,37 @@
-# Hybrid-AIF: Hybrid continuous-discrete active inference & RL
+# Hybrid-AIF: Hybrid continuous-discrete-amortized active inference and machine learning
 
 A software package (in active development, and in many respects experimental; see `docs/capabilities.md`) enabling production-grade, potentially large-scale implementations of active inference (AIF), with efficient parallel policy search across multiple agents using JAX, both continuous and discrete observations and state factors including mixtures, various options for approximate inference (variational message-passing schemes, MCMC, etc.), and flexibility in specifying models and objective functions.
+
+## Solar rover demo
+
+<p align="center">
+  <img src="docs/site/static/rover-map.gif" width="52%" alt="The two-level run of the solar rover demo, one frame every 2 ticks of the 800-tick run">
+  <img src="docs/site/static/rover-graph.png" width="45%" alt="The generative model of the two-level agent: the mission tier over the rover tier">
+</p>
+
+*Contour map, with rover position/heading beliefs, satellite fixes, and patches colored by the
+rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, alternate
+plans thinner.*
+
+In this demo, a solar-powered rover builds a map of a 2.5D environment (a field with continuously
+varying height), classifying terrain into three kinds (firm, rough, and ice). The rover's battery
+charges in sunlight, which depends on which slopes are shaded. For navigation it relies on a forward
+camera and a GPS-like satellite signal whose quality varies over the field. The demo shows two
+variants: one with just the rover and one a hierarchical model (pictured here) whose second layer is a 
+discrete mission planner that provides options to map a given coarse-grained sector, or to charge the 
+battery. 
+
+See the [project page](https://noumenal-labs.github.io/hybrid-aif/) for the full demo, with details
+on objective terms, description length, and more. The [demo notebook](examples/demo.ipynb) 
+and the [API reference](https://noumenal-labs.github.io/hybrid-aif/api/) are the other two places to start.
 
 Status: see `docs/capabilities.md` (maintained per release) and
 `docs/project-brief.md`. Supporting docs in `/docs`:
 
-- `capabilities.md` — what ships, release by release, with each release's migration note (start here to use it)
-- `composing-systems.md` — the `System` and its fields, the term tree, merging Systems
-- `description-format.md` — the model description, a versioned JSON document of a model
-- `project-brief.md` — the design overview for team circulation (start here for the design)
+- `capabilities.md` — per-release capability descriptions, with each release's migration note
+- `composing-systems.md` — the main abstraction, `System`, and its fields, the term tree, merging Systems
+- `description-format.md` — model description, a versioned JSON document of a model
+- `project-brief.md` — design overview
 - `scoping-review.md` — vetting of this plan against the reference repos and papers (frozen snapshot)
 - `de-risk-report.md` — resolution of the three highest-uncertainty design items (MNLR inference, mixture propagation, model representation)
 - `design/system.md`, `design/conditional-families.md` — adopted architecture decisions
@@ -17,25 +40,30 @@ Status: see `docs/capabilities.md` (maintained per release) and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
-.venv/bin/python -m pytest              # 2,500+ tests
+.venv/bin/python -m pytest              # 3,800+ tests
 ```
 
-Requires jax>=0.11, equinox>=0.13.8, numpy>=2.0 (older jax minors break
+Requires jax>=0.11, equinox>=0.13.8, numpy>=2.0 (older JAX minor versions break
 mixture KL paths; the floors are load-bearing).
 
-## Seed idea
+## Seed ideas
 
-`pymdp` is great for fast active inference on discrete spaces; this project explores the complementary hybrid continuous-discrete (mixture-model) setting, which, to our knowledge, existing tools do not yet cover. Mixture/switching structure matters here because the epistemic term of expected free energy is provably constant in linear-Gaussian systems (Koudahl et al. 2021), so hybrid models are the minimal class in which continuous-state epistemic AIF does anything at all. No existing work propagates mixture beliefs through policy rollouts with a principled reduction schedule — the ingredients exist (tracking, information theory), the composition is open. Given the relative ease of agent-assisted coding, this seems like a good time to build the stack.
+This project aims to extend the discrete active-inference capabilities of libraries like `pymdp` (policy search scored by expected free energy) into the hybrid continuous-discrete (mixture-model) setting, augmented further with amortized (e.g. neural) factors, for things like [R-AIF](https://arxiv.org/abs/2409.14216)-style 
+learned preferences or [JEPA](https://arxiv.org/abs/2301.08243)-style latent-space objectives, and generally designed to facilitate slotting flexible AIF models 
+into broader ML systems. 
 
-The framework should also be expressive enough to *build* modern model-based agents inside it — e.g. R-AIF-style learned preferences, or JEPA-style latent-space objectives (which amount to moving prediction-error terms from observation space to latent space — something AIF in principle supports, plus anti-collapse machinery).
+Several further foundational design commitments motivated the creation of a new software package, and it seemed worth a shot to create one given the relative ease of agent-assisted coding these days. One such commitment was to make per-term specification and logging of expected-free-energy-like objectives available (e.g. ablation 
+of epistemic terms per-variable). Another was truly flexible model specification: within reasonable limits, any variable, whether it represents a latent state, a 
+sensory modality, a control state, or a parameter, should be conditionable on other variables, and should be able to take a homeostatic ("preference") target or 
+terminal-state constraint (this is still aspirational in full generality, but control and latent-state targets and terminals exist now). 
 
-## Use of software agents
-
-Most of this code was written by Claude, through Claude Code under the direction of the maintainers: we set the goals and made the design decisions, and agents proposed, implemented, tested and reviewed (using a Fable agent for most top-level design collaboration). The design records in `docs/design/` show how each decision was reached. This project is in part an exercise in learning how useful research software can be built leveraging coding agents, exploiting the efficiency that they afford without compromising on scientific or academic integrity (the jury is still out on the extent to which this is possible).
+The library's design philosophy also adopts the lens that any physical system (including classical "agents" as well as their components and environments) can be 
+formalized in terms of appropriately nested or coupled subsystems — this led to the main workhorse/abstraction in the library, the `System`. Each such system can
+be translated into a canonical document with an associated description length (model + optional data cost in nats), which might also serve as the basis of AI agent-assisted model search. See next README section for more detail.
 
 ## Design principles
 
-- **Modular** - can take whatever else we use in our stack that's relevant as input and produce outputs consumable by various environments including the real world
+- **Modular** - can take whatever else exists in a stack that's relevant as input and produce outputs consumable by various environments including the real world
 
 - **Multi-agent capability**: `vmap` not only across policies for policy search, but across agents. Homogeneous-shape agent batches first (the `pymdp`-jax pattern), built in at ground level; heterogeneous shapes via padding later.
 
@@ -60,39 +88,20 @@ Most of this code was written by Claude, through Claude Code under the direction
 
 - **Deployment-aware** - The three loops (state inference / policy search / learning) exchange only serializable sufficient statistics — belief snapshots, parameter pytrees, policy posteriors, the versioned model spec — so every deployment cut is available without API change (the loops are parts of one particle, so this is internal exchange; separate minds exchange only action and sensation, `docs/design/nesting-and-coupling.md` N1): fully fused in one jit'd program (the default in simulation), or split across compute tiers (edge / near-edge / cloud), where more capable tiers can absorb lower loops subject to control-loop deadlines. End-to-end gradients through planning require colocation. Expectations route through pluggable sampler backends (default PRNG Monte Carlo), so external samplers — including energy-efficient thermodynamic hardware — slot in behind one protocol without touching the engine. Teacher–student distillation (heavy planner → light amortized policy) is the supported path for moving capability down-tier; see `docs/project-brief.md` for the tier mapping.
 
-## Scope
+## Use of software agents
 
-### Must include
-
-- Mixture model support (GMM and MNLR nodes), including mixture-belief rollouts for planning
-- Core active inference functions (ablated -> model-based RL)
-- Continuous and discrete nodes
-- On-demand EFE/VFE metrics with term breakdowns
-
-### Out of scope
-
-- Fully general message-passing / factor graph engine — i.e., closed-form inference for arbitrary factor pairings. The node menu is deliberately closed; escape hatches are custom update functions and the sampling backend.
-- Giving arbitrary pretrained ML models *inference semantics* inside the engine (inverting, training, or message-passing through them). Frozen models are supported as **transducers**: sensory boundary components declared in the model spec (registry reference + declared output shape + declared uncertainty model), executed by the `System` runtime at the tick boundary — e.g. a frozen V-JEPA-class encoder feeding a latent pseudo-observation modality, or a frozen predictor wrapped as a custom transition map. A small blessed adapter set ships with the library; the adapter contract is library-owned (the format-registry pattern applied to perception).
-
-### v0.1 target
-
-Categorical node at parity with `pymdp`-jax on T-maze (their test suite as oracle) + Linear-Gaussian node on a mountain-car-class task + one GMM demo; single explicit planner; metrics tree exposed.
-
-## Stack choices (tentative)
-
-Equinox for the module system (per `pymdp`-jax precedent), optax for non-conjugate learning, NumPyro for sampling. Data pipeline behind a format registry (HDF5 and Lance backends, per `stable-worldmodel`'s design).
+Most of this code was written by Claude, through Claude Code under the direction of the maintainers: we set the goals and made the design decisions, and agents proposed, implemented, tested and reviewed (using a Fable agent for most top-level design collaboration). The design records in `docs/design/` show how each decision was reached. This project is in part an exercise in learning how useful research software can be built leveraging coding agents, exploiting the efficiency that they afford without compromising on scientific or academic integrity (the jury is still out on the extent to which this is possible).
 
 ## Reference designs
 
 Reference repos made available in `/reference` (note: not committed on remote; clone if needed)
 
-- `pymdp` (JAX): efficient multi-agent policy search in JAX for discrete models. We build on its skeleton (Agent-as-pytree, rollout/scan machinery, planner hook) and extend the model-specification layer to continuous and hybrid nodes. [repo](https://github.com/infer-actively/pymdp.git)
+- `pymdp` (JAX): efficient multi-agent policy search in JAX for discrete models. We build on its core structures (Agent-as-pytree, rollout/scan machinery, planner hook) and extend the model-specification layer to continuous and hybrid nodes. [repo](https://github.com/infer-actively/pymdp.git)
 - `stable-worldmodel`: reference for the data pipeline (format registry, Lance schema, replay buffer, goal relabeling) and solver protocol layering; not for vectorization. [repo](https://github.com/galilai-group/stable-worldmodel.git)
 - `pgmax`: pattern reference for discrete compute kernels (tempered log-space numerics, scan discipline); dense batched einsum is preferred where model shapes are homogeneous. Dormant; reference only. [repo](https://github.com/google-deepmind/PGMax.git)
+- `RxInfer`: inspiration for a general-purpose, factor-graph-first implementation [repo](https://github.com/ReactiveBayes/RxInfer.jl)
 
 ## Bibliography
-
-References, with links:
 
 - [arXiv:2201.03904](https://arxiv.org/abs/2201.03904) - PyMDP library spec
 - [arXiv:2202.04110](https://arxiv.org/abs/2202.04110) - `pgmax` library whitepaper

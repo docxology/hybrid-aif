@@ -4,7 +4,7 @@ description: hybrid-aif is a JAX library for active inference over models that m
 ---
 
 <!--
-The text of the launch page. Edit here, then run `python docs/site/build_page.py` from the
+The text of the project page. Edit here, then run `python docs/site/build_page.py` from the
 repository root; it regenerates index.html. Do not edit index.html by hand.
 
 Conventions:

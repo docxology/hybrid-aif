@@ -1142,7 +1142,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   (heading, speed and energy in the state, a modelled stall), a forward camera read as a neural
   likelihood, a terrain field it learns, and a scheduler merged over it that shares the field;
   the runner's `--settings` picks the scheduler over the rover or the rover alone. It records the
-  launch page's replay.
+  project page's replay.
 
 ## In the field / in flight
 

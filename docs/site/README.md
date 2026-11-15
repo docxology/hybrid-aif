@@ -1,4 +1,4 @@
-# The launch page
+# The project page
 
 A static page that replays a precomputed run of the survey rover showcase: a mapping rover with
 solar charging, a fast rover tier and a slow survey scheduler that read one learned terrain

@@ -46,7 +46,7 @@ intersphinx_timeout = 10
 
 html_theme = "sphinx_book_theme"
 html_title = f"hybrid-aif {release}"
-# The launch page sits one level above the reference when both are published together; the logo
+# The project page sits one level above the reference when both are published together; the logo
 # links back to it. HYBRID_AIF_SITE_URL overrides the address (the default is the server's root).
 html_logo = "../site/static/h-aif.svg"
 html_favicon = "../site/static/favicon.png"

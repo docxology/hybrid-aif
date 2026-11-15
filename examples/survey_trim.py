@@ -1,4 +1,4 @@
-"""Trim a survey bundle for the launch page.
+"""Trim a survey bundle for the project page.
 
     python examples/survey_trim.py IN.json OUT_DIR
 

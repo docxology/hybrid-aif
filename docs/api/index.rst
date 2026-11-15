@@ -14,7 +14,7 @@ are assembled from named terms rather than fixed.
 
 The requirements are ``jax>=0.11``, ``equinox>=0.13.8`` and ``numpy>=2.0``.
 
-Elsewhere: the `launch page <../index.html>`_, the `demo notebook
+Elsewhere: the `project page <../index.html>`_, the `demo notebook
 <https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/demo.ipynb>`_, and the longer guides ``docs/capabilities.md`` and ``docs/composing-systems.md`` in the
 repository.
 

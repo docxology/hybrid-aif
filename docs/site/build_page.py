@@ -1,4 +1,4 @@
-"""Build the launch page, index.html, from page-prose.md and page-blocks.html.
+"""Build the project page, index.html, from page-prose.md and page-blocks.html.
 
 The prose of the page lives in page-prose.md; everything that is not prose (the head, the viewer
 panels and controls, the code listings, the noscript fallback and the script tag) lives in

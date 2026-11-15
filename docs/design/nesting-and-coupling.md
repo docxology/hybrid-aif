@@ -2,7 +2,7 @@
 
 *Status: ADOPTED 2026-11-06 (Alex), N1 to N10, walked Alex + Fable the same day, superseding an
 earlier draft of the same day. Built so far: the N10 audit, N3 (A11) and N4 with N9 (A12); N5 to
-N8 are not built. Customer: the two-tier survey rover of the launch page (`terrain-field.md`,
+N8 are not built. Customer: the two-tier survey rover of the project page (`terrain-field.md`,
 "The slow tier"), whose runner is now one `run` call on the particle coupled to the world.
 Companions: `nesting-systems.md` principle 6 (no telepathy, no telekinesis),
 `control-states.md` C12 and C13 (the action node, coupling through blankets),
@@ -23,7 +23,7 @@ of binary states).*
 
 ## Why
 
-The launch page's two tiers are declared as one composite under `merge` and run as two
+The project page's two tiers are declared as one composite under `merge` and run as two
 `subsystem` views on two clocks. Four things cross between the tiers, and the runner carries
 every one of them by hand:
 

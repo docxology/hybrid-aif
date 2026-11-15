@@ -4,7 +4,7 @@
 (names `step`, `agent_step`, `ancestral_step`; the composite form takes over `particle`'s loop).
 Supersedes nothing: `nesting-and-coupling.md` N1 to N10 stand (what crosses, realisations,
 reads, write-back as bookkeeping); this note is about the shape of the engine that carries them.
-Customer: every caller of `run`, and the two-tier survey rover of the launch page.*
+Customer: every caller of `run`, and the two-tier survey rover of the project page.*
 
 ## What the engine should be
 

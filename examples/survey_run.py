@@ -32,7 +32,7 @@ the rover as soon as the option it reads is realised, the world last on the comm
 the scheduler's cell reading is the rover's emission of the round before, absent in round 0. The two
 ablations of the page: ``--camera none`` (the rover's model without the image) and ``--no-fix`` (the
 fix arrives and is never read); ``--camera look`` has the rover observe the recogniser's reading of
-the terrain instead of the image. The runs are written to one bundle for the launch page, and a
+the terrain instead of the image. The runs are written to one bundle for the project page, and a
 REPORT.md summarises them.
 
     python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--seed 0]
