@@ -1193,6 +1193,38 @@ def act(
     plan_key: Array | None = None,
     legal: "Mapping[str, Array] | Array | None" = None,
 ) -> tuple[dict[str, Array], Categorical, TermTree | None]:
+    return act_and_policies(
+        system,
+        key,
+        params,
+        beliefs,
+        selection,
+        alpha,
+        mode,
+        planner,
+        use_bound,
+        metrics,
+        plan_key,
+        legal,
+    )[:3]
+
+
+def act_and_policies(
+    system,
+    key: Array,
+    params: SystemParams,
+    beliefs: Mapping[str, Belief],
+    selection: Literal["stochastic", "deterministic"] = "stochastic",
+    alpha: float | None = None,
+    mode: Literal["marginal", "policy"] | None = None,
+    planner: Planner | None = None,
+    use_bound: UseBound = "midpoint",
+    metrics: bool = True,
+    plan_key: Array | None = None,
+    legal: "Mapping[str, Array] | Array | None" = None,
+):
+    """:func:`act` with the planner's policy set appended: ``(action, q_pi, tree, policies)``,
+    ``policies`` as the planner returned it (a :class:`PlanPosterior` included)."""
     system._plannable("act", params)
     params = system._params_in(params, "act")
     names = system._names(params)
@@ -1212,7 +1244,7 @@ def act(
             if selection == "deterministic"
             else policies.first_step(key)
         )
-        return keyed.actions_out(names, action), q_pi, tree
+        return keyed.actions_out(names, action), q_pi, tree, policies
     mixed_set = isinstance(policies, ControlStep)
     if mode is None:
         mode = "marginal" if names.layout is None and not mixed_set else "policy"
@@ -1225,4 +1257,4 @@ def act(
         selection=selection,
         alpha=alpha,
     )
-    return keyed.actions_out(names, action), q_pi, tree
+    return keyed.actions_out(names, action), q_pi, tree, policies

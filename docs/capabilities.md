@@ -1083,9 +1083,14 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   durations decides once per option, `clocks=` converting a duration into rounds. `black_box(ins=,
   outs=)` declares an external process by its typed ports, stepped by host Python
   (`env_step(env)` for a positional environment); its inside is listed unscored in the
-  description length and its ports priced. Design: `design/engine-consolidation.md`,
-  `design/couple-and-run.md`, `design/nesting-and-coupling.md`, `design/description-length.md`
-  (note of 2026-11-10); `composing-systems.md`; the entries under "In the field" below.
+  description length and its ports priced. `plan(warm_start=True)` plans receding-horizon: the
+  carry keeps the plan each round acted on (`MindCarry.plan`) and the next round's planner starts
+  from it shifted one step (a planner taking `init`, the gradient and mixed planners; others
+  refused), and `plan(trace=True)` also keeps the planner's policy set, the inference detail and
+  the parameter variables of the round (`Trace.plans`, `detail`, `parameters`). Design:
+  `design/engine-consolidation.md`, `design/couple-and-run.md`, `design/nesting-and-coupling.md`,
+  `design/description-length.md` (note of 2026-11-10); `composing-systems.md`; the entries under
+  "In the field" below.
   **Emissions and the mirror.** An emission is an out-port of a state factor (`System.emissions`,
   `Emission(parents, realise, kernel)`, `System.emit`, `System.ports`); `System.observes` maps a
   modality to the action node or emission it reads, which is how a belief read, in a component or
@@ -1194,8 +1199,12 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   `emitted`, `intended`, `start`, `carries`, `carry` and `decided`, with dotted lookup
   (`trajectory["agent.rover"]`). `steps` names a step for every leaf, or for a non-leaf node, which
   is then planned as one mind (`joint_planner`): `plan(planner=None, learn=None, trace=False,
-  replace=None, **act_kwargs)` for a planning mind (a `MindCarry` carries `previous`, `action` and
-  `trace`; `Trace` holds `q_pi`, the term tree and the enumerated policies), `sample()` for a
+  replace=None, warm_start=False, **act_kwargs)` for a planning mind (a `MindCarry` carries
+  `previous`, `action`, `trace` and `plan`; `Trace` holds `q_pi`, the term tree, the enumerated
+  policies, the planner's own policy set `plans`, the inference `detail` and the round's
+  `parameters`; under `warm_start=True` the planner, one that takes `init`, starts each round from
+  the plan the last round acted on shifted one step, zeros first, a held node shifting once per
+  decision), `sample()` for a
   process sampled forward from its System, or any `step(system, key, obs, carry, params)`. One
   value per variable per round: an action node is realised from its node's `params.actuator`
   kernel when the node decides, an emission by the step that owns it, and a reader reads a variable

@@ -274,12 +274,21 @@ def mixed_plan(
 
 def make_mixed_planner(**kwargs) -> Planner:
     """A mixed :class:`~hybrid_aif.planning.base.Planner` with ``kwargs`` bound (those of
-    :func:`mixed_plan`), e.g. ``make_mixed_planner(steps=100, discrete_policies=held)``."""
+    :func:`mixed_plan`), e.g. ``make_mixed_planner(steps=100, discrete_policies=held)``. It takes
+    a warm start of the continuous controls (``takes_init``): an ``init`` passed to the call
+    replaces a bound one."""
 
-    def planner(ctx: PlannerContext, use_bound: UseBound = "midpoint", metrics: bool = True):
-        return _face(mixed_plan(ctx, use_bound=use_bound, metrics=metrics, **kwargs), ctx)
+    def planner(
+        ctx: PlannerContext,
+        use_bound: UseBound = "midpoint",
+        metrics: bool = True,
+        init: Array | None = None,
+    ):
+        bound = kwargs if init is None else {**kwargs, "init": init}
+        return _face(mixed_plan(ctx, use_bound=use_bound, metrics=metrics, **bound), ctx)
 
     planner.needs_key = False  # type: ignore[attr-defined]
+    planner.takes_init = True  # type: ignore[attr-defined]
     return planner
 
 
@@ -289,13 +298,19 @@ def _face(result: MixedResult, ctx: PlannerContext):
 
 @register_planner("mixed")
 def mixed_planner(
-    ctx: PlannerContext, use_bound: UseBound = "midpoint", metrics: bool = True
+    ctx: PlannerContext,
+    use_bound: UseBound = "midpoint",
+    metrics: bool = True,
+    init: Array | None = None,
 ) -> tuple[Categorical, TermTree | None, ControlStep]:
     """The :class:`~hybrid_aif.planning.base.Planner` face of this module.
 
-    Registered as ``"mixed"`` with :func:`mixed_plan`'s defaults. Returns ``(q_pi, tree,
-    policies)``: the posterior over the discrete policies, their term trees, and the ``P``
-    clamped plans as a :class:`~hybrid_aif.controls.ControlStep` with leading axes
-    ``(P, policy_len)``.
+    Registered as ``"mixed"`` with :func:`mixed_plan`'s defaults; ``init`` is :func:`mixed_plan`'s
+    warm start of the continuous controls (``takes_init``). Returns ``(q_pi, tree, policies)``:
+    the posterior over the discrete policies, their term trees, and the ``P`` clamped plans as a
+    :class:`~hybrid_aif.controls.ControlStep` with leading axes ``(P, policy_len)``.
     """
-    return _face(mixed_plan(ctx, use_bound=use_bound, metrics=metrics), ctx)
+    return _face(mixed_plan(ctx, use_bound=use_bound, metrics=metrics, init=init), ctx)
+
+
+mixed_planner.takes_init = True  # type: ignore[attr-defined]

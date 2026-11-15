@@ -21,6 +21,7 @@ from hybrid_aif.planning.base import (
     planner_branches,
     planner_legal_depth,
     planner_needs_key,
+    planner_takes_init,
     register_planner,
 )
 from hybrid_aif.planning.cem import (
@@ -102,6 +103,7 @@ __all__ = [
     "planner_branches",
     "planner_legal_depth",
     "planner_needs_key",
+    "planner_takes_init",
     "policy_posterior",
     "register_planner",
     "sample_action",

@@ -132,12 +132,16 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   and its sd; `speed` and `speed_sd`), `true_speed`, `camera` (`log_evidence`, `scale_mean`, the
   decoder's noise at the belief), `policies` (the rover tier's four warm
   starts: `id`, `start`, `v_plan`, `terms`, `G`, `q_pi`), `chosen` (the index of the acted plan), `approximate`, `camera`,
-  `free_energy`, `seconds` and `seconds_parts` (`infer`, the belief update, and `plan`, the
-  plan's descent), `offsets` (`wall`, `position_risk`: the constants the plans' records are
+  `free_energy`, `seconds` (the wall time of the rover's `plan()` round, timed whole), `offsets` (`wall`, `position_risk`: the constants the plans' records are
   shown less), `map` (the field's posterior mean, three uint8 per cell, cells row-major with x
   first), `counts` (observations absorbed per cell), `coverage` (fraction of cells whose top
   probability exceeds 0.6), `seen` (fraction with at least one count), `option` (the option in
   force; absent in the rover-alone run).
+- Per run, `timing` (`infer`, the belief update, and `plan`, the plan's descent: medians over
+  `reps` compiled calls of a timing harness on the rover's own declaration at the run's last round,
+  apart from the run, since a compiled round is not timed by parts) and `planner` (`steps`,
+  `starts`). The rover's per-tick records are read after the run from what `plan(trace=True)`
+  kept in its carry (`rover_record`).
 - Per tick of the two-level run, `slow`: `decision` (true every 24th tick), and on a decision
   `option`, `cell` (the scheduler's cell reading: the cell holding most of the rover's position belief), `efe_by_option` (G of the best sequence per first option), `q_by_option`,
   `policies` (the best option sequences, trimmed to keep at least the best one per first option: `options`, `terms` with the `infogain`

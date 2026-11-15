@@ -130,6 +130,10 @@ class Planner(Protocol):
     from these policies. ``metrics=False`` returns ``None`` for the tree and must
     leave ``q_pi`` unchanged up to float reassociation. A planner that builds no
     tree returns ``{}`` under ``metrics=True``.
+
+    A planner that takes a warm start carries the mark ``takes_init = True`` and accepts the
+    keyword ``init``, the continuous plan ``(policy_len, action_dim)`` its search starts from
+    (the gradient and mixed planners; :func:`planner_takes_init`).
     """
 
     def __call__(
@@ -181,6 +185,12 @@ def planner_branches(planner: Planner | str) -> bool:
     if isinstance(planner, str):
         planner = _PLANNERS.get(planner)
     return bool(getattr(planner, "branching", False))
+
+
+def planner_takes_init(planner: Planner) -> bool:
+    """Whether ``planner`` takes a warm start: the mark ``takes_init`` and the keyword ``init``
+    (see :class:`Planner`)."""
+    return bool(getattr(planner, "takes_init", False))
 
 
 def planner_legal_depth(planner: Planner) -> bool:

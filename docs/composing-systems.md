@@ -877,16 +877,30 @@ take the process's tables as part of its model). A step is
   next view is taken from the new home; params that differ outside declared parameter variables
   are refused.
 
-`plan(planner=None, learn=None, trace=False, replace=None, **act_kwargs)` is the step of a
+`plan(planner=None, learn=None, trace=False, replace=None, warm_start=False, **act_kwargs)` is the
+step of a
 planning mind: infer from the carried prior (a `None` datum is an absent modality; a modality that
 observes a variable of its own view takes that variable's datum), learn when `learn` is set and a
 previous round exists (`True`: every learnable slot; a mapping of `System.learn` keywords; a
 sequence of slot keys, which learn at rate 1 and the rest at 0), act, push the posterior through
 the transition as the next prior and realise every emission of the view from the posterior. Its
-carry is a `MindCarry` (`beliefs`, `learn_state`, `previous`, `action`, and under `trace=True` the
-round's `Trace(q_pi, tree, policies)` in `carry.trace`). `replace={"policy_len": 2}` sets view
-fields, which on a non-leaf node is also where the joint view's configuration is given. A view with
-a driven continuous control node is refused for `plan()`, naming a custom step.
+carry is a `MindCarry` (`beliefs`, `learn_state`, `previous`, `action`, `trace`, `plan`). Under
+`trace=True` the round's `Trace` is in `carry.trace`: `q_pi`, the term `tree`, `policies` (the
+enumerated set, or `None`), `plans` (the policy set as the planner returned it: every start's final
+plan for the gradient planner, a `ControlStep` for the mixed one), `detail` (the round's
+`InferenceDetail`: the log-evidence per modality, the free energy) and `parameters` (the view's
+parameter variables the round planned with, after its learning). Under `warm_start=True` the plan
+is receding-horizon: `carry.plan` keeps the continuous controls of the plan the round acted on
+(the policy of highest `q_pi`, `(policy_len, action_dim)`), and the next round hands the planner
+that plan shifted one step on (its steps after the first, the last step repeated) as its `init`;
+the first round starts from zeros. The shift is by one of the node's own steps, so a node held
+by its durations shifts once per decision. The planner must take an `init` (the mark
+`takes_init`: the gradient and mixed planners, made or registered); any other is refused, on
+construction for a planner given and on the reset for a view's registered one. A per-part timing
+of a round (inference against planning) is not recorded: a round is one compiled program, timed
+whole or not at all. `replace={"policy_len": 2}` sets view fields, which on a non-leaf node is also
+where the joint view's configuration is given. A view with a driven continuous control node is
+refused for `plan()`, naming a custom step.
 `sample()` is the step of a process: its first call is `System.sample_initial` (or the partial
 point state `carries=` seeds), each round `System.sample_step` on the unsliced view with the
 driven control nodes taken from `obs`, returning its emissions and the action node of each control
@@ -959,7 +973,9 @@ standing values.
 
 ```python
 # the survey's two-tier agent: the scheduler decides once per option, three rounds long
-steps = {"agent.mission": plan(trace=True), "agent.rover": rover_step, "world": world_step}
+rover = plan(make_gradient_planner(steps=40, starts=4), learn={"lr": 1.0}, trace=True,
+             warm_start=True)
+steps = {"agent.mission": plan(trace=True), "agent.rover": rover, "world": world_step}
 traj = run(system, params, 400, key, steps, clocks={"agent.mission": 3 / SURVEY_TICKS})
 traj["agent.mission"].decided      # True on rounds 0, 3, 6, ...
 ```

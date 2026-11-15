@@ -110,12 +110,14 @@ from hybrid_aif.composition.merge import (
     subsystem,
     write_back,
 )
-from hybrid_aif.controls import FLOAT, LEVEL
+from hybrid_aif.controls import FLOAT, LEVEL, ControlStep
 from hybrid_aif.distributions import Categorical, ConditionalDirichlet, Dirichlet
 from hybrid_aif.envs.generative import ACTUATOR_TAG
-from hybrid_aif.planning.base import Planner
+from hybrid_aif.planning.base import Planner, get_planner, planner_takes_init
+from hybrid_aif.planning.gradient import PlanPosterior
 from hybrid_aif.reads import BLACK_BOX, EMIT_TAG
 from hybrid_aif.system import Belief, LearnState, System, SystemParams
+from hybrid_aif.system.faces import plan as _plan_face
 
 __all__ = ["Step", "Trace", "Trajectory", "plan", "run", "sample"]
 
@@ -151,6 +153,11 @@ class MindCarry(NamedTuple):
     action: Mapping[str, Array] | None = None
     #: The last round's :class:`Trace` under ``plan(trace=True)``.
     trace: object | None = None
+    #: Under ``plan(warm_start=True)``, the continuous controls of the plan the last round acted
+    #: on, ``(policy_len, action_dim)``: the policy of highest ``q_pi`` in the planner's set (the
+    #: gradient and mixed planners put all of ``q_pi`` on it). ``None`` before the first round
+    #: and without ``warm_start``.
+    plan: Array | None = None
 
 
 class Trace(NamedTuple):
@@ -164,6 +171,18 @@ class Trace(NamedTuple):
     #: The enumerated policy set ``q_pi`` is over (``System.policies``); ``None`` unless the plan
     #: is over an enumerated set.
     policies: Array | None
+    #: The policy set as the planner returned it, in the order of ``q_pi`` and the tree's
+    #: leaves: every start's final plan ``(starts, policy_len, action_dim)`` for the gradient
+    #: planner, a :class:`~hybrid_aif.controls.ControlStep` for the mixed planner, integer levels
+    #: for an enumerating one.
+    plans: Any = None
+    #: The round's :class:`~hybrid_aif.inference.InferenceDetail` (``System.infer_states`` with
+    #: ``detail=True``: the log-evidence per modality, the free energy); ``None`` on the
+    #: amortized path.
+    detail: Any = None
+    #: The view's parameter variables (``SystemParams.parameters``) the round planned with: after
+    #: the round's learning under ``learn``, else as handed in.
+    parameters: Mapping[str, Any] | None = None
 
 
 # ------------------------------------------------------------------------------------ plan
@@ -192,12 +211,70 @@ def _learn_keywords(items: tuple) -> dict[str, Any]:
     return out
 
 
+def _shifted(plan: Array) -> Array:
+    """A plan moved one step on: its steps after the first, the last step repeated."""
+    return jnp.concatenate([plan[1:], plan[-1:]], axis=0)
+
+
+def _continuous_width(ctx) -> int:
+    """The width of the planner context's continuous controls, concatenated in node order."""
+    if ctx.continuous_controls is not None:
+        return int(ctx.continuous_controls.action_dim)
+    return int(sum(size for size, kind in zip(ctx.sizes, ctx.kinds, strict=True) if kind == FLOAT))
+
+
+def _warm(planner, previous):
+    """``planner`` handed the warm start of :func:`plan` (``warm_start=True``) as its ``init``:
+    ``previous`` (the continuous plan the last round acted on) shifted one step on, or zeros
+    ``(policy_len, action_dim)`` in the first round; the planner's marks are carried over."""
+
+    def warm(ctx, use_bound="midpoint", metrics=True):
+        if previous is None:
+            init = jnp.zeros((ctx.policy_len, _continuous_width(ctx)), jnp.float32)
+        else:
+            init = _shifted(previous)
+        return planner(ctx, use_bound=use_bound, metrics=metrics, init=init)
+
+    for mark in ("needs_key", "branching", "legal_depth", "takes_init"):
+        if hasattr(planner, mark):
+            setattr(warm, mark, getattr(planner, mark))
+    return warm
+
+
+def _acted_plan(q_pi: Categorical, policies) -> Array:
+    """The continuous controls ``(policy_len, action_dim)`` of the policy of highest ``q_pi`` in
+    a planner's set: a float array, a :class:`~hybrid_aif.planning.gradient.PlanPosterior`'s
+    plans, or a :class:`~hybrid_aif.controls.ControlStep` (its float entries concatenated)."""
+    best = jnp.argmax(q_pi.probs)
+    if isinstance(policies, PlanPosterior):
+        return policies.mode[best]
+    if isinstance(policies, ControlStep):
+        blocks = [e[best] for e in policies.entries if jnp.issubdtype(e.dtype, jnp.floating)]
+        return jnp.concatenate(blocks, axis=-1)
+    return policies[best]
+
+
+def _check_warm_start(planner, system: System) -> None:
+    """Refuse ``plan(warm_start=True)`` for a planner that takes no ``init``."""
+    resolved = get_planner(system.planner) if planner is None else planner
+    if not planner_takes_init(resolved):
+        name = system.planner if planner is None else getattr(planner, "__name__", repr(planner))
+        raise ValueError(
+            f"plan(warm_start=True) hands the planner the plan it last acted on, shifted one "
+            f"step on, as its init, and the planner {name!r} takes no init: plan with the "
+            '"gradient" or "mixed" planner (make_gradient_planner, make_mixed_planner), or a '
+            "planner that accepts init= and carries the mark takes_init = True"
+        )
+
+
 @eqx.filter_jit
-def _plan_tick(system, params, planner, kwargs, trace, learn, key, seen, carry):
+def _plan_tick(system, params, planner, kwargs, trace, learn, warm_start, key, seen, carry):
     """One compiled round: infer, learn, act, push, emit; ``params`` is an argument, so equal
     views share one program. ``seen`` is keyed by variable where the view observes its own."""
     absent = {m: False for m, v in seen.items() if v is None}
-    beliefs, _ = system.infer_states(params, seen, priors=carry.beliefs, present=absent or None)
+    beliefs, detail = system.infer_states(
+        params, seen, priors=carry.beliefs, present=absent or None, detail=trace
+    )
     learned, learn_state = None, carry.learn_state
     if learn is not None and carry.previous is not None:
         extra = {} if carry.beliefs is None else {"priors": carry.beliefs}
@@ -213,8 +290,10 @@ def _plan_tick(system, params, planner, kwargs, trace, learn, key, seen, carry):
         )
         learned, learn_state = out if isinstance(out, tuple) else (out, carry.learn_state)
     held = params if learned is None else learned
-    action, q_pi, tree = system.act(
-        key, held, beliefs, planner=planner, metrics=trace, **dict(kwargs)
+    if warm_start:
+        planner = _warm(get_planner(system.planner) if planner is None else planner, carry.plan)
+    action, q_pi, tree, policies = _plan_face.act_and_policies(
+        system, key, held, beliefs, planner=planner, metrics=trace, **dict(kwargs)
     )
     pushed = system.update_empirical_prior(held, beliefs, action)
     emitted = {}
@@ -230,9 +309,15 @@ def _plan_tick(system, params, planner, kwargs, trace, learn, key, seen, carry):
         }
         emitted = system._emit(jax.random.fold_in(key, EMIT_TAG), held, values)
     stored = carry._replace(
-        beliefs=pushed, learn_state=learn_state, previous=beliefs, action=action, trace=None
+        beliefs=pushed,
+        learn_state=learn_state,
+        previous=beliefs,
+        action=action,
+        trace=None,
+        plan=_acted_plan(q_pi, policies) if warm_start else carry.plan,
     )
-    return action, emitted, stored, learned, (q_pi, tree) if trace else None
+    planned = (q_pi, tree, policies, detail, held.parameters) if trace else None
+    return action, emitted, stored, learned, planned
 
 
 class _Plan:
@@ -240,11 +325,14 @@ class _Plan:
     marks a step that is handed a view sliced at its driven control nodes; a wrapper around it
     copies the mark with ``functools.wraps``."""
 
-    def __init__(self, planner, learn, trace, replace, act_kwargs):
+    def __init__(self, planner, learn, trace, replace, act_kwargs, warm_start=False):
         self.sliced = True
         self.planner = planner
         self.learn = _learn_arguments(learn)
         self.trace = bool(trace)
+        self.warm_start = bool(warm_start)
+        if self.warm_start and planner is not None and not planner_takes_init(planner):
+            _check_warm_start(planner, None)
         self.replace = dict(replace or {})
         self.act_kwargs = tuple(sorted(act_kwargs.items()))
         self._replaced: dict[int, tuple[System, System]] = {}
@@ -291,6 +379,8 @@ class _Plan:
             legal = dict(self.act_kwargs).get("legal")
             if legal is not None:
                 _check_legal(system, params, legal, "plan")
+            if self.warm_start:
+                _check_warm_start(self.planner, system)
             if self.learn is not None and carry.learn_state is None:
                 carry = carry._replace(learn_state=system.init_learn_state(params))
             return {}, carry, params
@@ -303,13 +393,22 @@ class _Plan:
             self.act_kwargs,
             self.trace,
             self.learn,
+            self.warm_start,
             key,
             seen,
             carry._replace(trace=None),
         )
         if planned is not None:
+            q_pi, tree, plans, detail, parameters = planned
             stored = stored._replace(
-                trace=Trace(planned[0], planned[1], self._enumerated(system, params))
+                trace=Trace(
+                    q_pi,
+                    tree,
+                    self._enumerated(system, params),
+                    plans=plans,
+                    detail=detail,
+                    parameters=parameters,
+                )
             )
         return {**action, **emitted}, stored, params if learned is None else learned
 
@@ -319,6 +418,7 @@ def plan(
     learn=None,
     trace: bool = False,
     replace: Mapping[str, Any] | None = None,
+    warm_start: bool = False,
     **act_kwargs,
 ) -> Step:
     """The step of a planning mind: infer, learn, act, push the prior, emit.
@@ -338,14 +438,23 @@ def plan(
 
     ``learn`` is ``None`` (nothing is learned), ``True`` (every learnable slot), a mapping of
     ``System.learn`` keywords, or a sequence of slot keys (those slots learn at rate 1, the rest at
-    0). ``trace=True`` keeps each round's :class:`Trace` in ``carry.trace``. ``replace`` sets
+    0). ``trace=True`` keeps each round's :class:`Trace` in ``carry.trace``: the policy
+    posterior, the term tree, the planner's policy set, the inference detail and the parameter
+    variables the round planned with. ``warm_start=True`` makes the plan receding-horizon: the
+    carry keeps the continuous controls of the plan each round acted on (``MindCarry.plan``),
+    and the next round's planner starts from that plan shifted one step on (its steps after the
+    first, the last step repeated), passed as its ``init``; the first round starts from zeros.
+    The shift is by one of the node's own steps, so a node on a clock or holding an option
+    shifts once per decision. It needs a planner that takes an ``init`` (the gradient and mixed
+    planners, :func:`~hybrid_aif.planning.planner_takes_init`) and refuses any other.
+    ``replace`` sets
     fields of the view (``{"policy_len": 2}``) before it plans; on a non-leaf node it is also
     where the joint view's configuration is given (as ``joint_planner`` takes it). ``act_kwargs``
     pass to ``System.act`` (``selection=``, ``legal=``, ...); a ``legal`` is checked on the first
     call. A view with a driven continuous control node is refused, since a planner holds a driven
     input at one level: use a custom step.
     """
-    return _Plan(planner, learn, trace, replace, act_kwargs)
+    return _Plan(planner, learn, trace, replace, act_kwargs, warm_start)
 
 
 # ---------------------------------------------------------------------------------- sample

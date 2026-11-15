@@ -2,8 +2,8 @@
 while keeping its energy up.
 
 The rover (``survey_model``) infers its state, plans a velocity command by gradient descent from
-several warm starts (the plan it acted on in the round before, shifted one tick on, and spread
-points of the control box, ``WarmPlanner``), acts, and learns the terrain field by counting each
+several starts (the plan it acted on in the round before, shifted one tick on, and spread points
+of the control box), acts, and learns the terrain field by counting each
 terrain it sees into the cells it was in. The true world (``survey_world``) is a black box, declared
 by its ports alone and coupled to the rover with ``couple``: the rover's velocity action node drives
 the world's in-port ``v``, and the world's out-ports (the fix, the image and the gauge) feed the
@@ -19,8 +19,11 @@ field is one parameter variable (an ``Identify``), and the scheduler's cell moda
 emission of the rover, its position belief through the cell indicator realised by ``mode`` (the
 ``Link`` sugar). The agent is coupled to the world as one component, and one ``run`` call over the
 closed System steps three leaves: the scheduler by ``plan()`` (the enumerated planner, its metrics
-kept in the carry's trace), the rover by a custom step (it learns the field, decodes the image for
-the page and emits the cell), and the world by its hand-written step. The scheduler's params
+kept in the carry's trace), the rover by ``plan()`` too (the gradient planner warm-started from its
+last plan, learning the field, its trace kept; ``rover_plan``), and the world by its hand-written
+step. The page's per-tick records are read from the run's ``Trajectory`` afterwards
+(``rover_record``, ``decision_record``), and the timing of the rover's parts by a separate harness
+(``timing``). The scheduler's params
 declare a duration for every option, so it decides once per option, every ``SLOW_TICKS`` rounds,
 and the rover holds the option between decisions. What the rover learns is written back to the
 shared field each round, so the scheduler's novelty reads the counts gathered so far; the
@@ -44,7 +47,6 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -63,12 +65,12 @@ from hybrid_aif.description import describe
 from hybrid_aif.description.mdl import description_length
 from hybrid_aif.objectives import total
 from hybrid_aif.objectives.base import term_sign
-from hybrid_aif.planning.gradient import gradient_plan
-from hybrid_aif.reads import EMIT_TAG
+from hybrid_aif.planning.gradient import make_gradient_planner
 
 PLANNER_STEPS = 40
-PLANNER_STARTS = 4  # warm starts of the plan's descent (``WarmPlanner``); the best final plan
-#  is the policy
+PLANNER_STARTS = 4  # starts of the plan's descent (``rover_plan``); the best final plan is the
+#  policy
+TIMING_REPS = 20  # calls per part of the timing harness (``timing``)
 LIVE_WEIGHT = 1e-3
 FIELD_LR = 1.0  # weight of one tick's terrain counts in the field's Dirichlet (one observation)
 FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the field's uniform prior
@@ -197,11 +199,12 @@ def image_rows(flat):
     return [[int(v) for v in row] for row in wd.to_uint8(grid)]
 
 
-def field_record(params, strength, home="field"):
+def field_record(field, strength):
     """The field's posterior mean per cell as uint8 probabilities ``(cells, 3)``, the counts it
     has absorbed per cell beyond its prior, the fraction of cells whose top probability exceeds
-    ``COVERED_MAX`` and the fraction that has absorbed ``SEEN_COUNTS`` counts."""
-    conc = np.asarray(params.parameters[home].concentration, np.float64)
+    ``COVERED_MAX`` and the fraction that has absorbed ``SEEN_COUNTS`` counts; ``field`` is the
+    parameter variable (a ``ConditionalDirichlet``)."""
+    conc = np.asarray(field.concentration, np.float64)
     total_conc = conc.sum(axis=0)
     mean = conc / total_conc
     rows = np.asarray(np.round(mean.T * 255), np.uint8)
@@ -213,178 +216,106 @@ def field_record(params, strength, home="field"):
     )
 
 
-class RoverCarry(NamedTuple):
-    """The rover step's carry: the prior for the next round, the round's posterior and action
-    (what the next round's learning reads), the plan it acted on (the next round's warm start),
-    the round's record for the page and the number of rounds stepped."""
-
-    beliefs: Any = None
-    previous: Any = None
-    action: Any = None
-    plan: Any = None
-    record: Any = None
-    rounds: int = 0
-
-
-class WarmPlanner(eqx.Module):
-    """The rover's planner: ``gradient_plan`` with ``steps`` descent steps from ``starts`` warm
-    starts, built by the library (``hybrid_aif.planning.gradient.warm_starts``): ``init`` (a plan
-    ``(policy_len, 2)``) first, then ``starts - 1`` spread points of the control box
-    (``spread_starts``, a deterministic Latin hypercube over the whole plan). The rover's step
-    passes as ``init`` the plan it acted on in the round before, shifted one tick on (``shifted``;
-    zeros in the first round), so the descent starts from its own last output and from the same
-    spread points every round. ``init`` is an array field, so a new plan each round reuses the
-    compiled face."""
-
-    init: jax.Array
-    steps: int = eqx.field(static=True)
-    starts: int = eqx.field(static=True)
-    needs_key: ClassVar[bool] = False
-
-    def __call__(self, ctx, use_bound="midpoint", metrics=True):
-        result = gradient_plan(
-            ctx,
-            steps=self.steps,
-            starts=self.starts,
-            init=self.init,
-            use_bound=use_bound,
-            metrics=metrics,
-        )
-        return result.q_pi, result.start_tree, result.start_plans
-
-
-def shifted(plan):
-    """A plan moved one tick on: its steps after the first, the last step held."""
-    return jnp.concatenate([plan[1:], plan[-1:]], axis=0)
-
-
-def rover_step(setting, steps, starts, pre, decoder):
-    """The rover's step for ``run``: infer, learn the field, plan, act, push the prior and emit.
-    ``params`` arrive as the argument, and the params that learned the field are returned (the
-    field is counted from the second round on, with the previous round's posterior and action
-    from the carry); ``pre`` is the prefix of the view's names (``"agent.rover."`` for the
-    two-tier agent coupled to the world, ``"rover."`` for the rover coupled alone). The view's
+def rover_plan(setting, steps, starts, pre, seconds):
+    """The rover's step for ``run``: the library's ``plan()`` with the gradient planner
+    (``steps`` descent steps from ``starts`` starts, the best final plan acted on), the field
+    learned each round at the rate ``field_lr`` (from the second round on), the round's
+    :class:`~hybrid_aif.composition.Trace` kept (``trace``) and the plan the rover acted on,
+    shifted one tick on, as the next round's first start (``warm_start``; zeros in the first
+    round); the other starts are the library's spread points of the control box. The view's
     emissions (the cell the scheduler reads, two-tier only) are realised from the posterior.
-    The step is handed its view sliced at the option it reads (``sliced``), as a planner is,
-    since the rover plans over a horizon at one option. Each round's record for the page is the
-    carry's ``record``; ``decoder`` renders the reconstruction it holds."""
-    home = pre + "field"
+    Under the fix ablation (the setting's ``fix`` false) the fix reaches the step and is handed
+    on as absent (``None``), so it is never read. ``seconds`` receives each round's wall time
+    (``timed``)."""
+    step = plan(
+        make_gradient_planner(steps=steps, starts=starts),
+        learn={"lr": setting["field_lr"]},
+        trace=True,
+        warm_start=True,
+        selection="deterministic",
+    )
+    if not setting.get("fix", True):
+        step = unread(step, pre + "fix")
+    return timed(step, seconds)
+
+
+def unread(step, slot):
+    """``step`` with the reading of the modality ``slot`` handed on as absent (``None``) every
+    round: the fix ablation."""
+
+    @functools.wraps(step)
+    def wrapper(system, key, obs, carry, params):
+        if obs is not None:
+            obs = {**obs, slot: None}
+        return step(system, key, obs, carry, params)
+
+    return wrapper
+
+
+def rover_record(carry, setting, pre, decoder, policy_len):
+    """The page's record of one round of the rover, read from the carry its ``plan()`` step
+    left (``MindCarry``): the posterior (``previous``), and from the round's ``Trace`` every
+    start's plan with its term tree, ``G`` and ``q_pi``, the inference detail (the image's log
+    evidence, the free energy) and the field the round planned with. ``decoder`` renders the
+    picture it predicts at the belief. The wall preference's leaf and the position risk's leaf
+    are recorded less constants (``wall_offset``, ``position_risk_offset``), as is ``G``."""
     outer = pre.split(".", 1)[0] + "."  # the coupling's prefix of the agent's names
-    faces = {}
-
-    def step(system, key, obs, carry, params):
-        if obs is None:
-            return {}, RoverCarry(), params
-        t_start = time.time()
-        if faces.get("system") is not system:
-            faces.update(system=system, compiled=system.compiled())
-        compiled = faces["compiled"]
-        absent = {}
-        if not setting.get("fix", True):  # the fix ablation: the reading arrives and is not read
-            obs = {**obs, pre + "fix": jnp.zeros_like(obs[pre + "fix"])}
-            absent = {pre + "fix": False}
-        beliefs, detail = compiled.infer_states(
-            params, obs, priors=carry.beliefs, detail=True, present=absent or None
+    beliefs, trace = carry.previous, carry.trace
+    q_pi, tree, v_plans = trace.q_pi, trace.tree, np.asarray(trace.plans)
+    mean = np.asarray(beliefs[pre + "x"].mean())
+    terrain = int(jnp.argmax(beliefs[pre + "terrain"].probs))
+    camera = recon = None
+    if decoder is not None:  # the decoder's picture and noise at the belief, for the page
+        recon, recon_scale = decoder.diag_moments((jnp.asarray(mean), jax.nn.one_hot(terrain, 3)))
+        camera = dict(
+            log_evidence=float(trace.detail.log_evidence[pre + "img"]),
+            scale_mean=float(jnp.mean(recon_scale)),
         )
-        jax.block_until_ready(beliefs)
-        t_infer = time.time()
-        if carry.previous is not None:
-            params = compiled.learn(
-                params,
-                obs,
-                beliefs,
-                prev_beliefs=carry.previous,
-                action=carry.action,
-                lr=setting["field_lr"],
-            )
-        first = (
-            jnp.zeros((system.policy_len, 2), jnp.float32)
-            if carry.plan is None
-            else shifted(carry.plan)
+    g = total(tree)
+    wall = page_name(pre + "fix", outer)
+    walled = any(page_name(leaf, outer) == wall for leaf in tree.get("utility", {}))
+    offset = wall_offset(policy_len) if walled else 0.0
+    x_risk = position_risk_offset(tree, page_name(pre + "x", outer), outer)
+    offsets = {"utility": {wall: offset}, "risk": {page_name(pre + "x", outer): x_risk}}
+    records = [
+        dict(
+            id=i,
+            start=[float(mean[0]), float(mean[1])],
+            v_plan=[[float(c) for c in step] for step in v_plans[i]],
+            terms=term_record(tree, i, outer, offsets),
+            G=[v - offset - x_risk for v in interval_pair(g, i)],
+            q_pi=float(q_pi.probs[i]),
         )
-        planner = WarmPlanner(init=first, steps=steps, starts=starts)
-        q_pi, tree, policies = compiled.infer_policies(
-            params, beliefs, planner=planner, metrics=True, return_policies=True
-        )
-        jax.block_until_ready(policies)
-        t_plan = time.time()
-        v_plans = policies  # (starts, policy_len, 2): every warm start, q_pi on the picked one
-        best = int(jnp.argmax(q_pi.probs))
-        action = {pre + "a_v": v_plans[best, 0]}
-        pushed = compiled.update_empirical_prior(params, beliefs, action)
-        mean = np.asarray(beliefs[pre + "x"].mean())
-        terrain = int(jnp.argmax(beliefs[pre + "terrain"].probs))
-        camera = None
-        if decoder is not None:  # the decoder's picture and noise at the belief, for the page
-            recon, recon_scale = decoder.diag_moments(
-                (jnp.asarray(mean), jax.nn.one_hot(terrain, 3))
-            )
-            camera = dict(
-                log_evidence=float(detail.log_evidence[pre + "img"]),
-                scale_mean=float(jnp.mean(recon_scale)),
-            )
-        g = total(tree)
-        #  the wall preference's leaf is recorded less its constant inside the field
-        wall = page_name(pre + "fix", outer)
-        walled = any(page_name(leaf, outer) == wall for leaf in tree.get("utility", {}))
-        offset = wall_offset(system.policy_len) if walled else 0.0
-        #  the position risk's leaf is recorded less its smallest value over the tick's plans
-        x_risk = position_risk_offset(tree, page_name(pre + "x", outer), outer)
-        offsets = {"utility": {wall: offset}, "risk": {page_name(pre + "x", outer): x_risk}}
-        records = [
-            dict(
-                id=i,
-                start=[float(mean[0]), float(mean[1])],
-                v_plan=[[float(c) for c in step] for step in v_plans[i]],
-                terms=term_record(tree, i, outer, offsets),
-                G=[v - offset - x_risk for v in interval_pair(g, i)],
-                q_pi=float(q_pi.probs[i]),
-            )
-            for i in range(v_plans.shape[0])
-        ]
-        table, counts, coverage, seen = field_record(params, setting["field_strength"], home)
-        record = dict(
-            seconds=time.time() - t_start,
-            #  the belief update (every reading, the camera's dominant) and the plan's descent
-            seconds_parts=dict(infer=t_infer - t_start, plan=t_plan - t_infer),
-            #  the constants the page's records are shown less (``wall_offset``,
-            #  ``position_risk_offset``)
-            offsets=dict(wall=offset, position_risk=x_risk),
-            belief=position_belief(beliefs, pre),
-            policies=records,
-            chosen=best,
-            approximate=approximate_record(tree, outer),
-            camera=camera,
-            free_energy=float(detail.free_energy),
-            recon=None if camera is None else image_rows(recon),
-            map=table,
-            counts=counts,
-            coverage=coverage,
-            seen=seen,
-        )
-        #  the view's emissions (the cell the scheduler reads) are realised from the posterior
-        emitted = system.emit(jax.random.fold_in(key, EMIT_TAG), params, beliefs)
-        carry = RoverCarry(
-            beliefs=pushed,
-            previous=beliefs,
-            action=action,
-            plan=v_plans[best],
-            record=record,
-            rounds=carry.rounds + 1,
-        )
-        return {**action, **emitted}, carry, params
-
-    step.sliced = True
-    return step
+        for i in range(v_plans.shape[0])
+    ]
+    table, counts, coverage, seen = field_record(
+        trace.parameters[pre + "field"], setting["field_strength"]
+    )
+    return dict(
+        #  the constants the page's records are shown less
+        offsets=dict(wall=offset, position_risk=x_risk),
+        belief=position_belief(beliefs, pre),
+        policies=records,
+        chosen=int(jnp.argmax(q_pi.probs)),
+        approximate=approximate_record(tree, outer),
+        camera=camera,
+        free_energy=float(trace.detail.free_energy),
+        recon=None if recon is None else image_rows(recon),
+        map=table,
+        counts=counts,
+        coverage=coverage,
+        seen=seen,
+    )
 
 
-def tick_rows(rec, rover, ticks, extra=None, recognise=None):
+def tick_rows(rec, rover, ticks, record, seconds, extra=None, recognise=None):
     """The per-tick records of a run, read from its ``Trajectory``: the world's true state at the
     start of the tick (its carry), the readings the rover was handed and the command it chose
-    (the record of the stepped node ``rover``), and the rover's own record of the tick (its carry
-    after the tick). The camera image is the one the rover was handed, or, when its model has no
-    image, the one the world emitted for that round; ``recognise`` (an image to the recogniser's
-    class probabilities) adds the recogniser's readout of it."""
+    (the record of the stepped node ``rover``), the rover's record of the tick (``record`` of its
+    carry after the tick, ``rover_record``) and the tick's wall time (``seconds``). The camera
+    image is the one the rover was handed, or, when its model has no image, the one the world
+    emitted for that round; ``recognise`` (an image to the recogniser's class probabilities) adds
+    the recogniser's readout of it."""
     world, mind = rec["world"], rec[rover]
     rows = []
     for t in range(ticks):
@@ -410,7 +341,8 @@ def tick_rows(rec, rover, ticks, extra=None, recognise=None):
             fix=[float(c) for c in mind.received["fix"][t]],
             gauge=float(mind.received["gauge"][t][0]),
             img=image_rows(image),
-            **mind.carries[t + 1].record,
+            seconds=seconds[t],
+            **record(mind.carries[t + 1]),
         )
         if recognise is not None:
             row["recogniser"] = [float(p) for p in recognise(jnp.asarray(image))]
@@ -480,6 +412,68 @@ def energy_preference(setting):
     return tuple(pref) if pref else None
 
 
+def rover_of(setting, decoder, confusion=None, tiered=False):
+    """The rover's declaration for a setting, ``survey_model.rover``'s ``(System, SystemParams,
+    Grid, centres)``: its camera (``camera_mode``), epistemic terms, field prior, grid, planning
+    belief, energy preference and horizon; ``tiered`` adds the option control node."""
+    mode = camera_mode(setting)
+    return sm.rover(
+        decoder,
+        camera=sees_image(mode),
+        look=confusion if mode == "look" else None,
+        epistemic=epistemic_terms(setting),
+        field_strength=setting["field_strength"],
+        grid_shape=setting["grid"],
+        planning_belief=setting["planning_belief"],
+        energy_preference=energy_preference(setting),
+        policy_len=setting.get("policy_len", sm.POLICY_LEN),
+        tiered=tiered,
+    )
+
+
+def timing(rec, node, setting, decoder, confusion, steps, starts, reps=TIMING_REPS):
+    """The median wall time of the rover's two costly parts, measured apart from the run (a
+    compiled ``plan()`` round is timed whole, ``timed``): the belief update (``infer_states``,
+    every reading, the camera's the dominant cost) and the plan (``infer_policies`` with the
+    rover's gradient planner, ``steps`` descent steps from ``starts`` starts, the first the plan
+    it acted on shifted one tick on), each compiled and called ``reps`` times after two warm-up
+    calls. They are timed on the rover's own declaration (``rover_of``, without the option node
+    the scheduler drives) at the run's last round of ``node``: its readings, the prior it filtered
+    from and the plan it acted on."""
+    mind = rec[node]
+    pre = node + "."
+    carry_before, carry = mind.carries[-2], mind.carries[-1]
+    system, params, _, _ = rover_of(setting, decoder, confusion)
+    names = system.names
+    last = len(mind.received[names.modalities[0]]) - 2
+    obs = {m: mind.received[m][last] for m in names.modalities if m in mind.received}
+    prior = None
+    if carry_before.beliefs is not None:
+        prior = {f: carry_before.beliefs[pre + f] for f in names.states}
+    posterior = {f: carry.previous[pre + f] for f in names.states}
+    shifted = None
+    if carry_before.plan is not None:
+        shifted = jnp.concatenate([carry_before.plan[1:], carry_before.plan[-1:]])
+    planner = make_gradient_planner(steps=steps, starts=starts, init=shifted)
+    compiled = system.compiled()
+
+    def median(call):
+        for _ in range(2):
+            jax.block_until_ready(call())
+        times = []
+        for _ in range(reps):
+            t0 = time.time()
+            jax.block_until_ready(call())
+            times.append(time.time() - t0)
+        return float(np.median(times))
+
+    return dict(
+        infer=median(lambda: compiled.infer_states(params, obs, priors=prior)),
+        plan=median(lambda: compiled.infer_policies(params, posterior, planner=planner)),
+        reps=reps,
+    )
+
+
 def run_setting(
     setting,
     ticks,
@@ -496,38 +490,35 @@ def run_setting(
     if setting.get("tiers") == 2:
         return run_tiered(setting, ticks, decoder, steps, starts, encoder, confusion)
     mode = camera_mode(setting)
-    rs, rp, _, _ = sm.rover(
-        decoder,
-        camera=sees_image(mode),
-        look=confusion if mode == "look" else None,
-        epistemic=epistemic_terms(setting),
-        field_strength=setting["field_strength"],
-        grid_shape=setting["grid"],
-        planning_belief=setting["planning_belief"],
-        energy_preference=energy_preference(setting),
-        policy_len=setting.get("policy_len", sm.POLICY_LEN),
-    )
+    rs, rp, _, _ = rover_of(setting, decoder, confusion)
     system, params = couple(
         {"rover": (rs, rp), "world": wd.world_system(look=mode == "look")},
         world_bindings("rover", mode),
     )
     world_step, readout = sensors(mode, encoder)
     start = setting.get("start_energy")
+    seconds = []
     rec = run(
         system,
         params,
         ticks,
         jax.random.PRNGKey(setting["seed"]),
-        steps={
-            "rover": rover_step(setting, steps, starts, "rover.", rp.likelihood.get("img")),
-            "world": world_step,
-        },
+        steps={"rover": rover_plan(setting, steps, starts, "rover.", seconds), "world": world_step},
         tick_order="sequential",
         carries=None if start is None else {"world": {"energy": start}},
         record_carries=True,
     )
-    rows = tick_rows(rec, "rover", ticks, recognise=readout)
-    return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
+    decoder = params.likelihood.get("rover.img")
+
+    def record(carry):
+        return rover_record(carry, setting, "rover.", decoder, rs.policy_len)
+
+    rows = tick_rows(rec, "rover", ticks, record, seconds, recognise=readout)
+    return dict(
+        ticks=rows,
+        planner=dict(steps=steps, starts=starts),
+        timing=timing(rec, "rover", setting, decoder, confusion, steps, starts),
+    )
 
 
 SLOW_TICKS = ss.SURVEY_TICKS  # fast ticks per slow step
@@ -572,19 +563,7 @@ def agent_system(decoder, setting, confusion=None):
     rover's position belief through the cell indicator, realised by ``mode`` (the ``Link`` sugar:
     an emission ``rover.cell_obs`` of the rover, observed by ``mission.cell_obs``). The rover's
     camera is the setting's (``camera_mode``)."""
-    mode = camera_mode(setting)
-    rs, rp, grid, centres = sm.rover(
-        decoder,
-        camera=sees_image(mode),
-        look=confusion if mode == "look" else None,
-        epistemic=epistemic_terms(setting),
-        field_strength=setting["field_strength"],
-        grid_shape=setting["grid"],
-        planning_belief=setting["planning_belief"],
-        energy_preference=energy_preference(setting),
-        policy_len=setting.get("policy_len", sm.POLICY_LEN),
-        tiered=True,
-    )
+    rs, rp, grid, centres = rover_of(setting, decoder, confusion, tiered=True)
     ms, mp = ss.scheduler(
         grid,
         centres,
@@ -622,14 +601,15 @@ def survey_system(decoder, setting, confusion=None):
 
 def timed(step, seconds):
     """``step`` with the wall time of each of its calls after the first (the reset) appended to
-    ``seconds``; ``functools.wraps`` carries the marks ``run`` reads off a ``plan()`` step. The
-    page's ``seconds`` of a decision is this time, the ``plan()`` call alone (inference, planning
-    and the push of the prior); building the decision's record from the trace is not in it."""
+    ``seconds``, its outputs waited for; ``functools.wraps`` carries the marks ``run`` reads off a
+    ``plan()`` step. The page's ``seconds`` of a tick or a decision is this time, the ``plan()``
+    call alone (inference, learning, planning, the push of the prior and the emissions);
+    building the page's record from the trace is not in it."""
 
     @functools.wraps(step)
     def wrapper(system, key, obs, carry, params):
         t_start = time.time()
-        out = step(system, key, obs, carry, params)
+        out = jax.block_until_ready(step(system, key, obs, carry, params))
         if obs is not None:
             seconds.append(time.time() - t_start)
         return out
@@ -698,9 +678,8 @@ def run_tiered(
     seconds = []
     decide = plan(trace=True, selection="deterministic", replace={"policy_len": 2})
     mission = timed(decide, seconds)
-    rover = rover_step(
-        setting, steps, starts, "agent.rover.", params.likelihood.get("agent.rover.img")
-    )
+    rover_seconds = []
+    rover = rover_plan(setting, steps, starts, "agent.rover.", rover_seconds)
     rec = run(
         system,
         params,
@@ -726,8 +705,19 @@ def run_tiered(
     def extra(t):
         return dict(option=int(options[t]), slow=decisions.get(t, dict(decision=False)))
 
-    rows = tick_rows(rec, "agent.rover", ticks, extra, recognise=readout)
-    return dict(ticks=rows, planner=dict(steps=steps, starts=starts))
+    pre = "agent.rover."
+    decoder = params.likelihood.get(pre + "img")
+    horizon = setting.get("policy_len", sm.POLICY_LEN)
+
+    def record(carry):
+        return rover_record(carry, setting, pre, decoder, horizon)
+
+    rows = tick_rows(rec, "agent.rover", ticks, record, rover_seconds, extra, recognise=readout)
+    return dict(
+        ticks=rows,
+        planner=dict(steps=steps, starts=starts),
+        timing=timing(rec, "agent.rover", setting, decoder, confusion, steps, starts),
+    )
 
 
 def downsampled_maps():

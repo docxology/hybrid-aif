@@ -21,6 +21,7 @@ The registry
    ~hybrid_aif.planning.planner_needs_key
    ~hybrid_aif.planning.planner_branches
    ~hybrid_aif.planning.planner_legal_depth
+   ~hybrid_aif.planning.planner_takes_init
 
 Enumeration and policy scoring
 ------------------------------
