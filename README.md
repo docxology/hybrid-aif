@@ -1,4 +1,4 @@
-# Hybrid-AIF: Hybrid continuous-discrete-amortized active inference and machine learning
+# Hybrid-AIF: Hybrid continuous-discrete-amortized active inference
 
 A software package (in active development, and in many respects experimental; see `docs/capabilities.md`) enabling production-grade, potentially large-scale implementations of active inference (AIF), with efficient parallel policy search across multiple agents using JAX, both continuous and discrete observations and state factors including mixtures, various options for approximate inference (variational message-passing schemes, MCMC, etc.), and flexibility in specifying models and objective functions.
 
@@ -60,33 +60,6 @@ terminal-state constraint (this is still aspirational in full generality, but co
 The library's design philosophy also adopts the lens that any physical system (including classical "agents" as well as their components and environments) can be 
 formalized in terms of appropriately nested or coupled subsystems — this led to the main workhorse/abstraction in the library, the `System`. Each such system can
 be translated into a canonical document with an associated description length (model + optional data cost in nats), which might also serve as the basis of AI agent-assisted model search. See next README section for more detail.
-
-## Design principles
-
-- **Modular** - can take whatever else exists in a stack that's relevant as input and produce outputs consumable by various environments including the real world
-
-- **Multi-agent capability**: `vmap` not only across policies for policy search, but across agents. Homogeneous-shape agent batches first (the `pymdp`-jax pattern), built in at ground level; heterogeneous shapes via padding later.
-
-- **Flexibility** - Rich options for specifying agents and policy objectives:
-    - Hierarchical priors on any slow lower-level parameter ("parametric depth" — the $\gamma$/precision mechanism of [Deeply Felt Affect](https://direct.mit.edu/neco/article/33/2/398/95642/Deeply-Felt-Affect-The-Emergence-of-Valence-in) is one instance)
-    - Enable or disable epistemic and prior/KL terms per variable — at mean-field-block granularity (the additive per-variable decomposition exists exactly where the posterior factorizes; structured posteriors get documented approximations)
-    - Preferences as flexibly specifiable as any distribution: any node can carry a "phenotypic prior" / homeostatic target; online preference learning as an option
-    - Hierarchical latent variable models
-    - Any variable can be made conditional/time-dependent
-    - Ablations recover standard model-based RL: EFE ⊃ KL-control ⊃ expected utility
-
-- **Model representation** - A typed **node menu** (Categorical, Linear-Gaussian, GMM, MNLR, custom) composed in hierarchical templates, rather than a general factor-graph language. Source of truth: typed Python spec (pydantic) carrying distribution type, mean-field block id, inference method, and wiring-by-name; exported/imported as a versioned JSON schema so external tools can author models without touching Python. Custom functions by registry reference. Time via 2-slice (`lag`) tags, unrolled by the compiler.
-    - An overarching `System` class defines both agents and envs — an env *is* a `System` (anything on either side of a Markov blanket), nestable/composable, by `merge` into one particle or by `couple` as separate particles; the outermost `System` boundary interfaces with external environments (the real world, simulators, other software)
-
-- **Backend/inference** - Should enable the usual flavors of VI but leave user free to use other techniques including efficient sampling — [NumPyro](https://github.com/pyro-ppl/numpyro) as a sampling backend where it fits (NUTS on exact likelihoods; note NumPyro provides no model representation of its own).
-    - Closed-form updates on genuine conjugate pairs (Categorical–Dirichlet, Linear-Gaussian–NIW, GMM via indicator CAVI, MNLR via Pólya-Gamma-augmented CAVI — a pure `tanh`+Gaussian update, no sampling); never *assume* conjugacy in the architecture
-    - Mixture beliefs propagate with static component counts: exact grow, then Runnalls/IMM reduction; mixture-entropy EFE terms via closed-form differentiable bounds (see `docs/de-risk-report.md`)
-    - Allow custom functions to be used for any map (e.g. likelihood, transition), with quadrature/RTS-style Gaussian message rules for deterministic nonlinear nodes (Petersen et al. 2018; transitions so far: `NonlinearGaussianTransition`, first-order or unscented, since 0.14)
-    - Interacting state factors supported (as in `pymdp`-jax `B_dependencies`), not just per-factor dynamics
-
-- **Metrics** - Quantities like expected free energy as well as its risk/epistemic breakdown, per-variable/per-policy, available on demand — the objective layer returns structured term trees, with estimator bounds surfaced (e.g. entropy estimates as lower/upper pairs)
-
-- **Deployment-aware** - The three loops (state inference / policy search / learning) exchange only serializable sufficient statistics — belief snapshots, parameter pytrees, policy posteriors, the versioned model spec — so every deployment cut is available without API change (the loops are parts of one particle, so this is internal exchange; separate minds exchange only action and sensation, `docs/design/nesting-and-coupling.md` N1): fully fused in one jit'd program (the default in simulation), or split across compute tiers (edge / near-edge / cloud), where more capable tiers can absorb lower loops subject to control-loop deadlines. End-to-end gradients through planning require colocation. Expectations route through pluggable sampler backends (default PRNG Monte Carlo), so external samplers — including energy-efficient thermodynamic hardware — slot in behind one protocol without touching the engine. Teacher–student distillation (heavy planner → light amortized policy) is the supported path for moving capability down-tier; see `docs/project-brief.md` for the tier mapping.
 
 ## Use of software agents
 
