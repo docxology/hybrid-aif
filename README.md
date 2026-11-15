@@ -1,6 +1,12 @@
 # Hybrid-AIF: <br> Continuous-discrete-amortized active inference +
 
-A software package (in active development, and in many respects experimental; see `docs/capabilities.md`) enabling production-grade, potentially large-scale implementations of active inference (AIF), with efficient parallel policy search across multiple agents using JAX, both continuous and discrete observations and state factors including mixtures, various options for approximate inference (variational message-passing schemes, MCMC, etc.), and flexibility in specifying models and objective functions.
+A software package (in active development, and in many respects experimental; see
+`docs/capabilities.md`) aimed at production-grade, potentially large-scale implementations of
+active inference (AIF): parallel policy search in JAX, vectorised over policies and vmappable
+over agents; continuous and discrete observations and state factors, including mixtures and
+switching structure; closed-form conjugate updates, fixed-point variational inference for 
+discrete factors, and linearised and amortized (neural) inference in the same model"; and 
+flexibility in specifying models and objective functions.
 
 ## Solar rover demo
 
