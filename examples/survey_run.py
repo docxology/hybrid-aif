@@ -2,13 +2,14 @@
 while keeping its energy up.
 
 The rover (``survey_model``) infers its state, plans a velocity command by gradient descent from
-several warm starts, acts, and learns the terrain field by counting each terrain it sees into the
-cells it was in. The true world (``survey_world``) is a black box, declared by its ports alone and
-coupled to the rover with ``couple``: the rover's velocity action node drives the world's in-port
-``v``, and the world's out-ports (the fix, the image and the gauge) feed the rover's modalities.
-The rover's battery is a coordinate of its vehicle state: driving drains it, the sun charges it
-where the rover parks, and near empty the drive stalls, in the world and in the rover's model
-alike.
+several warm starts (the plan it acted on in the round before, shifted one tick on, and spread
+points of the control box, ``WarmPlanner``), acts, and learns the terrain field by counting each
+terrain it sees into the cells it was in. The true world (``survey_world``) is a black box, declared
+by its ports alone and coupled to the rover with ``couple``: the rover's velocity action node drives
+the world's in-port ``v``, and the world's out-ports (the fix, the image and the gauge) feed the
+rover's modalities. The rover's battery is a coordinate of its vehicle state: driving drains it, the
+sun charges it where the rover parks, and near empty the drive stalls, in the world and in the
+rover's model alike.
 With ``--level 2`` the rover and a survey scheduler (``survey_scheduler``) are first merged into
 one agent: the scheduler's option action node drives the rover's option control node (an
 ``Identify``), the field is one parameter variable (an ``Identify``), and the scheduler's cell
@@ -66,7 +67,8 @@ from hybrid_aif.planning.gradient import gradient_plan
 from hybrid_aif.reads import EMIT_TAG
 
 PLANNER_STEPS = 40
-PLANNER_STARTS = 4  # warm starts of the plan's descent; the best final plan is the policy
+PLANNER_STARTS = 4  # warm starts of the plan's descent (``WarmPlanner``); the best final plan
+#  is the policy
 LIVE_WEIGHT = 1e-3
 FIELD_LR = 1.0  # weight of one tick's terrain counts in the field's Dirichlet (one observation)
 FIELD_STRENGTH = 0.1  # pseudo-counts per cell of the field's uniform prior
@@ -259,9 +261,14 @@ class RoverCarry(NamedTuple):
 
 
 class WarmPlanner(eqx.Module):
-    """The rover's planner: ``gradient_plan`` with ``steps`` descent steps from the warm starts
-    ``init`` (``(starts, policy_len, 2)``, ``warm_starts``). ``init`` is an array field, so a new
-    plan each round reuses the compiled face."""
+    """The rover's planner: ``gradient_plan`` with ``steps`` descent steps from ``starts`` warm
+    starts, built by the library (``hybrid_aif.planning.gradient.warm_starts``): ``init`` (a plan
+    ``(policy_len, 2)``) first, then ``starts - 1`` spread points of the control box
+    (``spread_starts``, a deterministic Latin hypercube over the whole plan). The rover's step
+    passes as ``init`` the plan it acted on in the round before, shifted one tick on (``shifted``;
+    zeros in the first round), so the descent starts from its own last output and from the same
+    spread points every round. ``init`` is an array field, so a new plan each round reuses the
+    compiled face."""
 
     init: jax.Array
     steps: int = eqx.field(static=True)
@@ -283,86 +290,6 @@ class WarmPlanner(eqx.Module):
 def shifted(plan):
     """A plan moved one tick on: its steps after the first, the last step held."""
     return jnp.concatenate([plan[1:], plan[-1:]], axis=0)
-
-
-def toward(position, heading, target, horizon):
-    """A plan of (drive, turn) commands that turns the vehicle from ``heading`` toward
-    ``target`` (at most ``TURN_MAX`` a tick, in place while it faces more than 45 degrees away)
-    and then drives at it at full speed."""
-    plan = np.zeros((horizon, 2), np.float32)
-    gap = np.arctan2(target[1] - position[1], target[0] - position[0]) - heading
-    gap = (gap + np.pi) % (2 * np.pi) - np.pi
-    for k in range(horizon):
-        turn = float(np.clip(gap / float(wd.TURN_MAX), -1.0, 1.0))
-        plan[k] = (1.0 if abs(gap) < np.pi / 4 else 0.0, turn)
-        gap -= turn * float(wd.TURN_MAX)
-    return plan
-
-
-def park_at(position, heading, speed, target, horizon):
-    """A plan that turns toward ``target``, drives at it and stops on it: ``toward``, with the
-    drive cut once the rest of the way is within the distance the speed coasts to a stop (the
-    speed keeps ``KEEP`` of itself a tick with no drive), rolled forward from ``speed``."""
-    plan = toward(position, heading, target, horizon)
-    left = float(np.linalg.norm(np.asarray(target) - np.asarray(position)))
-    for k in range(horizon):
-        coast = speed * wd.KEEP / (1.0 - wd.KEEP)
-        if left - speed <= coast:
-            plan[k:, 0] = 0.0
-            break
-        left -= speed
-        speed = wd.KEEP * speed + wd.GAIN * plan[k, 0]
-    return plan
-
-
-def warm_starts(previous, belief, counts, centres, horizon, starts, target=None, explore=True):
-    """The planner's warm starts, ``(starts, horizon, 2)``: the plan acted on in the round before,
-    shifted one tick on (zeros in the first round); a plan toward the nearest cell the field has
-    not yet seen (fewer than ``SEEN_COUNTS`` counts, by the rover's own field), so a rover whose
-    neighbourhood is mapped still has a start that reaches new ground; full speed ahead; and
-    standing still. ``target`` (the position target's centre and sd per axis, the sector under a
-    survey option) keeps the unseen cells to those within two sd of it, when there are any; a
-    target narrower than a map cell (the charging place under charge) has, in place of the start
-    toward an unseen cell, one that drives to the target and parks there (``park_at``). With
-    ``explore`` false the start toward an unseen cell is left out (and ``starts`` counts the
-    others). The descent then
-    moves each by the objective's gradient, and the best final plan is acted on."""
-    position, heading = np.asarray(belief["mean"]), belief["heading"]
-    unseen = np.flatnonzero(np.asarray(counts) < SEEN_COUNTS)
-    if target is not None:
-        loc, sd = target
-        near = unseen[np.all(np.abs(centres[unseen] - loc) <= 2 * sd, axis=1)]
-        unseen = near if len(near) else unseen
-    if target is not None and np.all(target[1] < CELL_SIDE):
-        explore_plan = park_at(position, heading, max(belief["speed"], 0.0), target[0], horizon)
-    elif len(unseen):
-        near = unseen[np.argmin(np.linalg.norm(centres[unseen] - position, axis=1))]
-        explore_plan = toward(position, heading, centres[near], horizon)
-    else:
-        explore_plan = np.tile(np.asarray([1.0, 0.0], np.float32), (horizon, 1))
-    first = np.zeros((horizon, 2), np.float32) if previous is None else np.asarray(previous)
-    candidates = [
-        first,
-        *(
-            [explore_plan]
-            if explore or (target is not None and np.all(target[1] < CELL_SIDE))
-            else []
-        ),
-        np.tile(np.asarray([1.0, 0.0], np.float32), (horizon, 1)),
-        np.zeros((horizon, 2), np.float32),
-    ]
-    return jnp.asarray(np.stack(candidates[:starts]), jnp.float32)
-
-
-def position_target(params, pre):
-    """The rover's position target in its view, ``(centre, sd)`` over ``(x, y)``, or ``None``:
-    the two-tier rover's view is sliced at the option in force, so its target on ``x`` is that
-    option's Gaussian (the sector's under a survey, the charging place's under charge)."""
-    target = params.state_targets.get(pre + "x")
-    if target is None or np.ndim(target.loc) != 1:
-        return None
-    sd = np.sqrt(np.diag(np.asarray(target.cov)))[:2]
-    return np.asarray(target.loc)[:2], sd
 
 
 def charge_form(setting):
@@ -413,7 +340,6 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
     given, receives the believed position each round (``position``), for ``priced_charge``."""
     home = pre + "field"
     outer = pre.split(".", 1)[0] + "."  # the coupling's prefix of the agent's names
-    _, centres = sm.field_grid(setting["grid"])
     faces = {}
 
     def step(system, key, obs, carry, params):
@@ -444,21 +370,15 @@ def rover_step(setting, steps, starts, pre, decoder, shared=None):
         belief_now = position_belief(beliefs, pre)
         if shared is not None:
             shared["position"] = belief_now["mean"]
-        counts_now = field_record(params, setting["field_strength"], home)[1]
         plan_params, site = charge_target(
             params, pre, carry.charge_to, belief_now["mean"], charge_form(setting)
         )
-        init = warm_starts(
-            None if carry.plan is None else shifted(carry.plan),
-            belief_now,
-            counts_now,
-            centres,
-            system.policy_len,
-            starts,
-            position_target(plan_params, pre),
-            explore=setting.get("explore_start", True),
+        first = (
+            jnp.zeros((system.policy_len, 2), jnp.float32)
+            if carry.plan is None
+            else shifted(carry.plan)
         )
-        planner = WarmPlanner(init=init, steps=steps, starts=int(init.shape[0]))
+        planner = WarmPlanner(init=first, steps=steps, starts=starts)
         if sm.WALL_WINDOW is not None and pre + "fix" in params.obs_targets:
             #  the wall preference's window, moved to the rover for this plan
             #  (``survey_model.wall_target``); the params the step returns keep their own
