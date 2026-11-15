@@ -24,13 +24,15 @@ converter for exactly the subset page-prose.md uses:
   class in either order): a child section, a pane of its own listed under the nearest preceding
   section without ``.sub``; ``### text`` or ``### text {#id}``: a subheading inside a section,
   listed under its pane in the contents, with the given id or one derived from its words;
-- paragraphs (consecutive lines, joined with single spaces); a line ``{.name}`` directly above a
+  ``#### text``: a minor heading inside a section, with an id but not listed in the contents;
+- paragraphs (consecutive lines, joined with single spaces); an indented paragraph right after
+  a list is a further paragraph of the list's last item; a line ``{.name}`` directly above a
   paragraph gives it that class; by default paragraphs inside a section are ``lead``
   paragraphs and paragraphs in the header and footer have no class; the ``links`` block, named in
   the header, goes to the sidebar instead;
 - lists of ``- `` items (continuation lines indented);
 - ``> `` lines right after a block placeholder: that block's caption, which fills the block's
-  ``{{caption}}`` slot;
+  ``{{caption}}`` slot; a blank line between groups of ``> `` lines starts a new paragraph;
 - the markers ``<!-- tldr -->`` (opens the header's TLDR, plain prose) and ``<!-- footer -->``
   (ends the sections; the paragraphs after it form the footer under every pane);
 - a comment opened by a line ``<!--`` and closed by a line ``-->`` is ignored;
@@ -128,6 +130,12 @@ def inline(s: str, blocks: dict[str, str]) -> str:
     def block(m: re.Match) -> str:
         return keep(get_block(blocks, m.group(1)))
 
+    def math(m: re.Match) -> str:
+        # TeX between $...$ or $$...$$, kept verbatim for the page's math renderer
+        body = m.group(0).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return keep(body)
+
+    s = re.sub(r"\$\$.+?\$\$|\$(?=\S)[^$]*?(?<=\S)\$", math, s)
     s = re.sub(r"`([^`]+)`", code, s)
     s = PLACEHOLDER.sub(block, s)
     s = escape_text(s)
@@ -187,7 +195,7 @@ def list_items(chunk: list[str]) -> list[str]:
     for line in chunk:
         if line.startswith("- "):
             items.append(line[2:].strip())
-        elif line.startswith(" ") and items:
+        elif items:
             items[-1] += " " + line.strip()
         else:
             raise PageError(f"unexpected line in a list: {line!r}")
@@ -233,7 +241,7 @@ class Pane:
     def __init__(self, ident: str, label: str, parent: str | None = None) -> None:
         self.ident, self.label, self.parent = ident, label, parent
         self.title = label  # the heading's HTML
-        self.subs: list[tuple[str, str]] = []
+        self.subs: list[tuple[str, str, list[tuple[str, str]]]] = []  # id, label, minors
         self.children: list[Pane] = []
 
 
@@ -246,7 +254,16 @@ def toc_items(panes: list[Pane], depth: int) -> list[str]:
             if pane.subs:
                 inner = "  " * (2 * depth + 5)
                 out.append(f"{inner[:-2]}<ul>")
-                out += [f'{inner}<li><a href="#{i}">{t}</a></li>' for i, t in pane.subs]
+                for i, t, minors in pane.subs:
+                    if not minors:
+                        out.append(f'{inner}<li><a href="#{i}">{t}</a></li>')
+                        continue
+                    deep = inner + "    "
+                    out.append(f'{inner}<li><a href="#{i}">{t}</a>')
+                    out.append(f"{deep[:-2]}<ul>")
+                    out += [f'{deep}<li><a href="#{mi}">{mt}</a></li>' for mi, mt in minors]
+                    out.append(f"{deep[:-2]}</ul>")
+                    out.append(f"{inner}</li>")
                 out.append(f"{inner[:-2]}</ul>")
             if pane.children:
                 out += toc_items(pane.children, depth + 1)
@@ -383,8 +400,25 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError(f"subheading id {sub_id!r} is used twice; give one '{{#id}}'")
             ids.add(sub_id)
             if region == "main":
-                current.subs.append((sub_id, toc_label(title)))
+                current.subs.append((sub_id, toc_label(title), []))
             out.append(f'  <h3 id="{sub_id}">{title}</h3>')
+        elif first.startswith("#### "):
+            text, minor_id, _ = heading_attrs(first[5:], set())
+            title = inline(text, blocks)
+            minor_id = minor_id or slug(title)
+            if minor_id in ids:
+                raise PageError(f"heading id {minor_id!r} is used twice; give one '{{#id}}'")
+            ids.add(minor_id)
+            out.append(f'  <h4 id="{minor_id}">{title}</h4>')
+            out += [f"  <p>{inline(' '.join(chunk[1:]), blocks)}</p>"] if len(chunk) > 1 else []
+        elif first.startswith(" ") and out and out[-1].strip() == "</ul>":
+            # an indented paragraph after a list: a second paragraph of the list's last item
+            end = out.pop()
+            item = out.pop()
+            assert item.endswith("</li>")
+            para = inline(" ".join(line.strip() for line in chunk), blocks)
+            out.append(f"{item[:-5]}<p>{para}</p></li>")
+            out.append(end)
         elif first.startswith("- "):
             out.append(f"{indent}<ul>")
             out += [f"{indent}  <li>{inline(t, blocks)}</li>" for t in list_items(chunk)]
@@ -396,10 +430,13 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError(f"{first!r} must be followed by a blank line or '> ' caption lines")
             name = BLOCK_OPEN.match(first).group(1)
             html = get_block(blocks, name)
-            caption = chunk[1:]
-            if not caption and i < len(groups) and groups[i][0].startswith(">"):
-                caption = groups[i]
+            # the caption: the '> ' lines of this chunk and every following chunk of '> ' lines,
+            # a blank line between them starting a new paragraph of the caption
+            paragraphs = [chunk[1:]] if chunk[1:] else []
+            while i < len(groups) and groups[i][0].startswith(">"):
+                paragraphs.append(groups[i])
                 i += 1
+            caption = [line for para in paragraphs for line in para]
             if (CAPTION_SLOT in html) != bool(caption):
                 need = "needs" if caption == [] else "has no slot for"
                 raise PageError(f"block {first!r} {need} a caption ('> ' lines after it)")
@@ -410,8 +447,12 @@ def build(prose: str, blocks_text: str) -> str:
                     raise PageError(f"block {name!r} belongs in one section")
                 demo = current
             if caption:
-                text = " ".join(line[1:].strip() for line in caption)
-                html = html.replace(CAPTION_SLOT, inline(text, blocks))
+                texts = [
+                    inline(" ".join(line[1:].strip() for line in para), blocks)
+                    for para in paragraphs
+                ]
+                text = texts[0] if len(texts) == 1 else "".join(f"<p>{x}</p>" for x in texts)
+                html = html.replace(CAPTION_SLOT, text)
             out.append(html)
         else:
             text = inline(" ".join(line.strip() for line in chunk), blocks)

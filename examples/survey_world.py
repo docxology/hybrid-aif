@@ -15,7 +15,7 @@ the command is a target speed, as a share of the top speed ``TOP_SPEED`` (the ro
 only, and turns in place), and a turn rate (at most ``TURN_MAX`` a tick). The speed closes the
 share ``1 - KEEP`` of its gap to the target each tick, so a held command reaches its speed within a
 few ticks, and the top speed stays under one map cell per tick. Driving drains the battery (more
-at speed and on slopes); sunlight charges it, mainly while the rover is parked, and far more on
+at speed and uphill); sunlight charges it, mainly while the rover is parked, and far more on
 sun-facing ground than in shade. As the level nears empty the drive fails: the speed and turn the
 command can reach fall smoothly to zero (the stall), so an empty rover stands where it is and
 charges only as fast as the light there allows. The camera is mounted forward and looks along the
@@ -70,18 +70,25 @@ HORIZON_RANGE = 4.0
 HORIZON_STEP = 0.1
 AMBIENT = 0.1
 
-ENERGY_MAX = 4.0  # a full battery; the bands empty, low, medium and full are a unit each
+ENERGY_MAX = 4.0  # a full battery
+N_BANDS = 8  # the energy bands a coarse meter shows, each BAND_WIDTH wide; band 0 is the empty band
+BAND_WIDTH = ENERGY_MAX / N_BANDS
 #  the stall: the share of the command the drive can deliver, a logistic in the energy level,
 #  one half at STALL_LEVEL, near one above STALL_LEVEL + 4 STALL_WIDTH and near zero below
 #  STALL_LEVEL - 4 STALL_WIDTH
 STALL_LEVEL = 0.4
 STALL_WIDTH = 0.08
-#  the energy per tick: a drain at rest, a drain per unit of speed that grows with the slope, and
-#  a solar charge in proportion to the yield of the ground the rover stands on, nearly all of it
-#  while parked (at speed only the share MOVING_CHARGE)
+#  the energy per tick: a drain at rest, a drain per unit of speed that grows with the climb (the
+#  slope along the heading, through a smooth ramp: about zero going down or across, about linear
+#  going up; no regeneration downhill), and a solar charge in proportion to the yield of the
+#  ground the rover stands on, nearly all of it while parked (at speed only the share
+#  MOVING_CHARGE)
 BASE_DRAIN = 0.01  # energy per tick at rest
 MOVE_DRAIN = 0.045  # energy per tick per unit of speed on flat ground
-SLOPE_DRAIN = 1.5 * MOVE_DRAIN  # extra per tick per unit of slope and of speed
+SLOPE_DRAIN = 1.5 * MOVE_DRAIN  # extra per tick per unit of climb and of speed
+#  the climb's ramp, softplus(k c) / k for a slope c along the heading: within log(2) / k (0.035)
+#  of zero on level ground, going down or across, and within it of c going up
+CLIMB_SHARPNESS = 20.0
 CHARGE_RATE = 0.07  # energy per tick parked on ground of full solar yield
 MOVING_CHARGE = 0.1  # the share of the parked charge collected at speed
 PARK_SPEED = 0.05  # the charge falls from parked to moving over about this speed
@@ -94,7 +101,7 @@ CLAMP_SHARPNESS = 20.0  # the level is held in [0, ENERGY_MAX] by softplus walls
 #  the build record); the scheduler's tables are built at it
 CRUISE_SPEED = 0.17
 GAUGE_SD = 0.05  # the gauge's noise on the energy level
-GAUGE_ACC = 0.88
+GAUGE_ACC = 0.88  # the band meter is right with at least this probability, else one band off
 #  the survey sectors: the field's quadrants, split at x 2 and y 1, the edges per axis
 ZONE_SPLIT = (2.0, 1.0)
 ZONE_EDGES = (
@@ -238,6 +245,8 @@ height = _lookup(HEIGHT)
 openness = _lookup(OPEN)
 light = _lookup(LIGHT)
 slope = _lookup(SLOPE)
+slope_x = _lookup(_HX)  # the height's rate of change along +x
+slope_y = _lookup(_HY)  # and along +y
 sun = _lookup(SUN)
 sd_fix = _lookup(SD_FIX)
 
@@ -287,22 +296,34 @@ def _soft_clamp(level):
     return ENERGY_MAX - jax.nn.softplus(k * (ENERGY_MAX - low)) / k
 
 
-def energy_rates(xy, speed):
-    """``(drain, charge)`` of energy per tick at a position and forward speed: the drain at rest
-    plus a drain per unit of speed that grows with the slope; the charge is the solar yield there
-    (``sun``), all of it parked and the share ``MOVING_CHARGE`` at speed, falling smoothly over
-    ``PARK_SPEED``."""
+def climb(xy, heading):
+    """The climb at a position along a heading (a pair ``(cos theta, sin theta)``, renormalised):
+    the slope along the heading (the height's directional derivative, from the tabulated
+    gradient) through the ramp ``softplus(CLIMB_SHARPNESS c) / CLIMB_SHARPNESS``, smooth, about
+    zero going down or across and about the slope going up."""
+    h = jnp.asarray(heading)
+    norm = jnp.sqrt(h[0] ** 2 + h[1] ** 2) + 1e-6
+    along = (slope_x(xy) * h[0] + slope_y(xy) * h[1]) / norm
+    return jax.nn.softplus(CLIMB_SHARPNESS * along) / CLIMB_SHARPNESS
+
+
+def energy_rates(xy, heading, speed):
+    """``(drain, charge)`` of energy per tick at a position, heading (a pair ``(cos theta, sin
+    theta)``) and forward speed: the drain at rest plus a drain per unit of speed that grows with
+    the climb along the heading (``climb``: uphill only, descending costs what level ground
+    costs); the charge is the solar yield there (``sun``), all of it parked and the share
+    ``MOVING_CHARGE`` at speed, falling smoothly over ``PARK_SPEED``."""
     s = jnp.sqrt(speed * speed + 1e-6)
-    drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * slope(xy)) * s
+    drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * climb(xy, heading)) * s
     parked = jnp.exp(-((speed / PARK_SPEED) ** 2))
     charge = CHARGE_RATE * sun(xy) * (MOVING_CHARGE + (1.0 - MOVING_CHARGE) * parked)
     return drain, charge
 
 
-def next_level(xy, speed, level):
-    """The energy level after one tick at a position, speed and level: the level plus the charge
-    less the drain (``energy_rates``), held in ``[0, ENERGY_MAX]`` (``_soft_clamp``)."""
-    drain, charge = energy_rates(xy, speed)
+def next_level(xy, heading, speed, level):
+    """The energy level after one tick at a position, heading, speed and level: the level plus the
+    charge less the drain (``energy_rates``), held in ``[0, ENERGY_MAX]`` (``_soft_clamp``)."""
+    drain, charge = energy_rates(xy, heading, speed)
     return _soft_clamp(level + DT * (charge - drain))
 
 
@@ -316,7 +337,7 @@ class VehicleStep(eqx.Module):
         x += DT * s * cos theta,   y += DT * s * sin theta
         theta += DT * TURN_MAX * g * turn      (a rotation of the unit vector; in place too)
         s = KEEP * s + (1 - KEEP) * TOP_SPEED * g * drive
-        e = next_level((x, y), s, e)           (drain and solar charge, before the tick's move)
+        e = next_level((x, y), theta, s, e)    (drain and solar charge, before the tick's move)
 
     The speed moves toward the target, so a constant command holds a constant speed (full speed
     ahead is ``(1, 0)``, a stop is ``(0, 0)``) and the rover never reverses. Near empty the drive
@@ -342,7 +363,7 @@ class VehicleStep(eqx.Module):
                 c * jnp.cos(w) - s * jnp.sin(w),
                 s * jnp.cos(w) + c * jnp.sin(w),
                 KEEP * x[4] + GAIN * g * a[0],
-                next_level(x[:2], x[4], x[5]),
+                next_level(x[:2], x[2:4], x[4], x[5]),
             ]
         )
 
@@ -382,8 +403,9 @@ def zone_of(xy):
 
 
 def band_of(energy):
-    """The energy band of a level: 0 empty, 1 low, 2 medium, 3 full, a unit each."""
-    return jnp.clip(jnp.floor(energy), 0, 3).astype(jnp.int32)
+    """The energy band of a level: ``N_BANDS`` bands of ``BAND_WIDTH`` from 0 (the empty band,
+    where the drive stalls) to ``N_BANDS - 1`` (full)."""
+    return jnp.clip(jnp.floor(energy / BAND_WIDTH), 0, N_BANDS - 1).astype(jnp.int32)
 
 
 def stalled(energy):
@@ -567,9 +589,15 @@ def to_uint8(image):
 
 def gauge_table():
     """The band meter's confusion ``(reading, band)``: the true band with probability
-    ``GAUGE_ACC``, the rest spread over the other bands."""
-    eye = np.eye(4)
-    return GAUGE_ACC * eye + (1 - GAUGE_ACC) / 3 * (1 - eye)
+    ``GAUGE_ACC``, the rest split equally between the two adjacent bands; at the bottom and the top
+    band the share of the missing neighbour reads the true band. No reading two or more bands
+    away."""
+    table = np.zeros((N_BANDS, N_BANDS))
+    for band in range(N_BANDS):
+        for b in (band - 1, band + 1):
+            table[min(max(b, 0), N_BANDS - 1), band] += (1 - GAUGE_ACC) / 2
+        table[band, band] += GAUGE_ACC
+    return table
 
 
 def level_of(state):
@@ -643,15 +671,16 @@ def world_system(look=False):
     The in-port ``v`` is the velocity command, a float vector of width 2 that the rover's action
     node drives once the two are coupled; the out-ports are the readings, ``fix`` (a float vector
     of width 2, the position fix), ``img`` (a float vector of ``IMG_PIXELS``, the camera image),
-    ``gauge`` (a float vector of width 1, the energy level's reading) and ``band`` (four levels,
-    the band meter's reading), and with ``look`` the terrain class a recogniser reads off the
-    image (three levels; ``world_stepper``). What lies between them is the hand-written step; the
-    world states no factor and no table, so its description length is reported unscored."""
+    ``gauge`` (a float vector of width 1, the energy level's reading) and ``band``
+    (``N_BANDS`` levels, the band meter's reading), and with ``look`` the terrain class a
+    recogniser reads off the image (three levels; ``world_stepper``). What lies between them is the
+    hand-written step; the world states no factor and no table, so its description length is
+    reported unscored."""
     outs = {
         "fix": (FLOAT, 2),
         "img": (FLOAT, IMG_PIXELS),
         "gauge": (FLOAT, 1),
-        "band": (LEVEL, 4),
+        "band": (LEVEL, N_BANDS),
     }
     if look:
         outs["look"] = (LEVEL, len(TERRAIN_NAMES))
@@ -702,17 +731,23 @@ def world_summary():
         print(f"{n:9s} {np.mean(TERRAIN_GRID == k):.3f} of the field")
 
 
-def calibration(speed=CRUISE_SPEED):
-    """The energy calibration table: the net energy per tick driving at ``speed`` on flat ground
-    and up a steep slope at the median solar yield, and parked on ground of high, median and low
-    yield."""
-    med = float(np.median(SUN))
+def net_rate(speed, slope, solar_yield):
+    """The declared net energy per tick (charge less drain) at a steady ``speed`` with the climb
+    ``slope`` along the heading on ground of solar yield ``solar_yield``: the arithmetic of
+    ``energy_rates`` for a held state, in floats."""
+    s_eff = np.sqrt(speed * speed + 1e-6)
+    ramp = np.logaddexp(0.0, CLIMB_SHARPNESS * slope) / CLIMB_SHARPNESS
+    drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * ramp) * s_eff
+    parked = np.exp(-((speed / PARK_SPEED) ** 2))
+    return CHARGE_RATE * solar_yield * (MOVING_CHARGE + (1 - MOVING_CHARGE) * parked) - drain
 
-    def net(s, slope_, yield_):
-        s_eff = np.sqrt(s * s + 1e-6)
-        drain = BASE_DRAIN + (MOVE_DRAIN + SLOPE_DRAIN * slope_) * s_eff
-        parked = np.exp(-((s / PARK_SPEED) ** 2))
-        return CHARGE_RATE * yield_ * (MOVING_CHARGE + (1 - MOVING_CHARGE) * parked) - drain
+
+def calibration(speed=CRUISE_SPEED):
+    """The energy calibration table: the net energy per tick driving at ``speed`` on flat ground,
+    up a steep slope and down it at the median solar yield, and parked on ground of high, median
+    and low yield (``net_rate``)."""
+    med = float(np.median(SUN))
+    net = net_rate
 
     lines = [
         f"top forward speed {top_speed():.3f}; speed {speed:.3f}",
@@ -722,7 +757,8 @@ def calibration(speed=CRUISE_SPEED):
     steep = float(np.percentile(SLOPE, 98))
     for name, value in (
         ("drive, flat, median yield", net(speed, 0.0, med)),
-        (f"drive, slope {steep:.2f} (98th pct), median yield", net(speed, steep, med)),
+        (f"drive up slope {steep:.2f} (98th pct), median yield", net(speed, steep, med)),
+        (f"drive down slope {steep:.2f} (98th pct), median yield", net(speed, -steep, med)),
         ("drive at the top speed, flat, median yield", net(top_speed(), 0.0, med)),
     ):
         lines.append(f"{name}: net {value:+.4f}/tick, {24 * value:+.3f} per 24 ticks")

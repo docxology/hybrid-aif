@@ -55,7 +55,7 @@ from hybrid_aif.factors import GridNoiseMap, NonlinearGaussianTransition
 from hybrid_aif.system import System, SystemParams
 
 N_TERRAIN = 3
-N_BANDS = 4  # the energy bands the slow tier reads: empty, low, medium, full
+N_BANDS = wd.N_BANDS  # the energy bands the slow tier reads, band 0 the empty band
 N_SURVEY = wd.ZONES  # survey options: one per sector
 N_OPTIONS = N_SURVEY + 1  # and charge
 CHARGE = N_SURVEY  # the charge option's level
@@ -81,14 +81,13 @@ PLANNING_BELIEF = "prior"
 #  the rover's preference over its energy level: a Gaussian over the gauge's reading, (centre,
 #  sd), centred on a full battery
 ENERGY_PREFERENCE = (wd.ENERGY_MAX, 1.0)
-#  the scheduler's log-preference per energy band, full is best. The empty band is the stall, a
-#  dead end whose cost lies mostly beyond the scheduler's two-option view (the novelty of every
-#  option a stalled rover forfeits, several nats each), so it is priced at several options'
-#  novelty, and the low band, one survey from it, at about one option's; the medium band costs a
-#  nat, so that a trip to sunny ground is taken before the low band rather than in it
-ENERGY_TARGET = (-40.0, -12.0, -1.0, 0.0)
 TERRAIN_NAMES = list(wd.TERRAIN_NAMES)
-ENERGY_NAMES = ["empty", "low", "medium", "full"]
+#  the bands by their levels: the empty band, the bands between by their bounds, the full band
+ENERGY_NAMES = (
+    ["empty"]
+    + [f"{b * wd.BAND_WIDTH:g}-{(b + 1) * wd.BAND_WIDTH:g}" for b in range(1, N_BANDS - 1)]
+    + ["full"]
+)
 
 
 def field_grid(shape=None):
@@ -139,9 +138,9 @@ def wall_target():
 
 
 def gauge_table():
-    """The gauge's confusion ``(reading, band)``: the true band with the world's accuracy."""
-    acc = wd.GAUGE_ACC
-    return acc * np.eye(N_BANDS) + (1 - acc) / (N_BANDS - 1) * (1 - np.eye(N_BANDS))
+    """The band meter's confusion ``(reading, band)``, the world's own table
+    (``survey_world.gauge_table``)."""
+    return wd.gauge_table()
 
 
 def with_level_input(decoder):

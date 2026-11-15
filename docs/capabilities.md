@@ -1,4 +1,4 @@
-# hybrid-aif capabilities — v0.20.0 (2026-11-13)
+# hybrid-aif capabilities — v0.20.0 (2026-11-15)
 
 One page, shipped-only. Details: `project-brief.md` (architecture),
 `design/*` (decisions).
@@ -1009,7 +1009,7 @@ One page, shipped-only. Details: `project-brief.md` (architecture),
   that does not call `hold`. Design: `design/step-durations.md` T9.
   `examples/demo.ipynb` re-executes clean under this release.
 
-- **v0.20.0 (2026-11-13)**: one engine for composed Systems (`merge` and `couple` return a System,
+- **v0.20.0 (2026-11-15)**: one engine for composed Systems (`merge` and `couple` return a System,
   `run` steps it), emissions and the mirror, parameters as named variables, a System's nodes named
   by kind, a neural likelihood's update in state space, transition noise that depends on the state
   and the control, compiled faces and warm-started planners, and an API reference.

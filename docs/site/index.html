@@ -3,10 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hybrid-aif: a survey rover, one table, two timescales</title>
-<meta name="description" content="hybrid-aif is a JAX library for active inference over models that mix discrete and continuous state. This page replays a precomputed run of a mapping rover with a slow survey scheduler, two tiers that read one learned terrain table.">
+<title>hybrid-aif</title>
+<meta name="description" content="hybrid-aif is a JAX library for active inference over models that mix discrete and continuous state, as well as closed-form updates and amortized inference. This demo page replays precomputed runs of two variants of a solar mapping rover model.">
 <link rel="icon" type="image/png" href="static/favicon.png">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}], ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']})"></script>
 </head>
 <body>
 <script>document.documentElement.classList.add("js");</script>
@@ -19,15 +22,15 @@
   <nav class="toc" aria-label="Contents">
     <ul>
       <li><a href="#intro" data-pane="intro">Intro</a></li>
-      <li><a href="#hero" data-pane="hero">A survey rover, one table, two readers</a>
+      <li><a href="#hero" data-pane="hero">Solar rover demo</a>
         <ul>
-          <li><a href="#timescales" data-pane="timescales">Two timescales</a>
-            <ul>
-              <li><a href="#the-schedulers-decision">The scheduler's decision</a></li>
-            </ul>
-          </li>
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#model">Model</a></li>
+        </ul>
+        <ul>
+          <li><a href="#timescales" data-pane="timescales">Performance comparison</a></li>
           <li><a href="#camera" data-pane="camera">The camera</a></li>
-          <li><a href="#objective" data-pane="objective">Objectives as intervals</a></li>
+          <li><a href="#objective" data-pane="objective">Term-by-term objectives</a></li>
           <li><a href="#mdl" data-pane="mdl">Description length</a></li>
         </ul>
       </li>
@@ -37,7 +40,7 @@
     </ul>
   </nav>
   <div class="smallprint">
-    <p>Noumenal Labs &middot; <span class="version">v0.19.0</span> &middot; MIT</p>
+    <p>Noumenal Labs &middot; <span class="version">v0.20.0</span> &middot; MIT</p>
   <nav class="links" aria-label="Links">
     <a href="https://github.com/noumenal-labs/hybrid-aif">Repository</a>
     <a href="https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/demo.ipynb">Demo notebook</a>
@@ -51,44 +54,66 @@
 <div class="column">
 <main id="main">
 <div class="demobar" id="demobar" data-panes="hero timescales camera objective mdl" hidden>
-  <a class="demobar-title" href="#hero">A survey rover, one table, two readers</a>
+  <a class="demobar-title" href="#hero">Solar rover demo</a>
   <div class="demobar-controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
+  </div>
+  <div class="demobar-controls demobar-setting" role="group" aria-label="Setting">
     <label class="setting">Setting <select id="setting" aria-label="Setting"></select></label>
+    <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
   </div>
 </div>
 <section class="pane" id="intro" aria-label="Intro">
   <h1 class="intro-title"><img class="title-image" src="static/hybrid-aif.svg" alt="hybrid-aif"></h1>
   <p class="sub">Continuous-discrete-amortized active inference in JAX</p>
-  <p class="byline">Noumenal Labs &middot; <span id="version">v0.19.0</span> &middot; MIT</p>
+  <p class="byline">Noumenal Labs &middot; <span id="version">v0.20.0</span> &middot; MIT</p>
   <div class="tldr">
-    <p><strong>TLDR.</strong> <code>hybrid-aif</code> is a JAX library for active inference over models that mix discrete and continuous state, and that allow for combining various inference methods and approximations (e.g. closed-form messages alongside amortized recognition densities; conjugate parameter updates alongside gradient-based learning; planning over discrete and continuous variables). Other core features of the package:</p>
+    <p><code>hybrid-aif</code> is a Python/JAX library for production-grade active inference and probabilistic machine learning. It supports inference, learning, and planning on models with heterogeneous pieces: continuous, discrete, and mixture factors as well as amortized functions (e.g. neural nets). Models and objectives can be specified flexibly and come with detailed model comparison and logging tools. Core features:</p>
     <ul>
-      <li><strong>Closed-loop active inference on mixture models.</strong> For example, switching linear-Gaussian dynamics can be planned through, with mixtures collapsing to a fixed number of components each step. Scores on analytically intractable factors come back as intervals rather than point estimates: the mixture-entropy terms are bounded above and below in closed form, with planning ranking policies based on the midpoints of the bounds. The package supports growing mixtures for "structure learning", as in <a href="https://arxiv.org/abs/2505.24784">AXIOM</a>.</li>
-      <li><strong>Expressive model and objective construction.</strong> The usual expected free energy objective of active inference is a default, but information gain terms can be switched on or off per variable, and different objective terms such as entropy bonuses or cross-entropies with arbitrary sign can be used. Preferences or end-state constraints can be placed on any variable, including control states, and conditioned on any variable. Latent control variables and realized actions are distinct nodes in the graph, and any variable may play multiple roles simultaneously, e.g. a control state may be observed.</li>
-      <li><strong>Robust agent/environment composition, hierarchical models, and scheduling.</strong> One declaration serves as agent and as environment. Declared systems are joined in one of two ways: <code>merge</code> makes them one particle, such as a hierarchy whose slow tier reads the fast tier&rsquo;s belief as sensing and sets its option; <code>couple</code> joins separate particles, which exchange only actions and sensations across their Markov blankets. This page replays a precomputed run of a two-tiered rover model so you can watch all of that happen without installing anything.</li>
-      <li><strong>Model description.</strong> Expected free energy can not only be "ablated" per term and per variable, but its components are (optionally) returned in every log. Each model can be scored (data-independently or on a dataset) for its free energy and minimum description length. Models can be rendered as JSON documents for easy modification and scoring using software agents. Bound pairs are returned in logs where available, and each number carries a derivation status (approximations are flagged as such, and categorized by quality and guarantee).</li>
+      <li><strong>Factor-graph primitives beyond the exponential family.</strong> Core distributions like conditional categoricals and Gaussians, as well as various types of mixture model (e.g. Gaussian mixtures, switching linear dynamical systems, and mixture dynamics), but also user-defined nonlinear and deterministic functions and amortized neural factors.</li>
     </ul>
+    <ul>
+      <li><strong>Hybrid inference engine.</strong> Generative models are compiled and differentiable using JAX, and closed-form conjugate message-passing can run alongside gradient- and sample-based inference and learning in the same model.</li>
+    </ul>
+    <ul>
+      <li><strong>Flexible generative model declaration.</strong> Control states and parameters are first-class variables in a factor graph, and can thus be conditioned on other variables or used as targets for preferences or terminal-state constraints. Latent control states and realized actions are distinct variables in the model, linked via actuator kernels.</li>
+    </ul>
+    <ul>
+      <li><strong>Compositionality.</strong> Agents, environments, and their interactions are described as nested physical systems using a single underlying <code>System</code> primitive, so hierarchical and nested systems are expressed in the same language as coupled agent-environment interactions.</li>
+    </ul>
+    <ul>
+      <li><strong>Fine-grained objective specification.</strong> The objective for planning is standard expected free energy by default, but information gain and parameter novelty terms can be ablated per-variable, and a handful of term primitives can be used to express AIF-adjacent objectives such as maximum-occupancy and others (on the roadmap: empowerment).</li>
+    </ul>
+    <ul>
+      <li><strong>Runtime enabling parallelism and scheduling.</strong> Simulations can be duplicated along a batch dimension. Layers in hierarchical and other multi-component systems can run at different relative speeds. User-defined update schedules with sensible defaults allow both synchronous (Jacobi) and fixed-schedule (Gibbs) or random (Glauber-style) sequential dynamics.</li>
+    </ul>
+    <ul>
+      <li><strong>Model description and description length.</strong> Each model can be expressed as a document, which can be assigned a Shannon description length (~= free energy), on its own or with a data- likelihood component given some data, so that models can be compared by the minimum description length principle. This facilitates using coding agents to search over models.</li>
+    </ul>
+    <ul>
+      <li><strong>Detailed logging.</strong> Term-by-term, per-factor, per-policy objective function records can be returned at each step, or turned off for a slight gain in speed.</li>
+    </ul>
+  <h3 id="related-work">Related work</h3>
+    <p><code>hybrid-aif</code> owes its discrete core to <a href="https://github.com/infer-actively/pymdp">pymdp</a>, the reference implementation of active inference for discrete state spaces in JAX, which in turn ports many functions from Karl Friston's <a href="https://www.fil.ion.ucl.ac.uk/spm/software/">SPM</a> software. We aim to extend the core idea&mdash;of posterior inference over policies using an expected-free-energy objective&mdash;natively to continuous and mixed states, to learned and amortized components, and to nested and hierarchical systems.</p>
+    <p>At the same time, we are inspired by the elegance of factor-graph formulations of probabilistic inference as in <a href="https://rxinfer.com/">RxInfer.jl</a>, a reactive message-passing engine for factor graphs in Julia, whose authors have shown that expected-free-energy-based planning can be accomplished purely via message passing. <code>hybrid-aif</code>'s design philosophy treats the active inference API as an abstraction over a more generic factor-graph layer, in which algorithms for explicit counterfactual policy search (enumeration, sophisticated inference) are optional planners.</p>
+    <p>Our development of a new software package was based on the need both to develop active inference models in a research setting and to embed them in larger machine-learning systems. A single canonical model description facilitates the port from research into production code, and also potentially allows one to use alternate backends for models specified in this common language (in particular, <code>pymdp</code> and <code>RxInfer</code> backend support via a thin translation layer are on the roadmap).</p>
   </div>
 </section>
 
 <section class="pane" id="hero">
-  <h2>A survey rover, one table, two readers</h2>
-  <p class="lead">A rover is mapping a field of three kinds of ground (firm, rough and ice) by driving over it and learning which kind lies where. Its energy drains on inclines and rough ground and charges wherever sunlight falls; there is no dock. It finds its position from a satellite fix, whose noise grows where terrain blocks the sky, and it looks ahead through a forward camera. A fast rover tier steers every tick. A slow tier, the scheduler, picks an <em>option</em> every twelve ticks, a choice held for that long: survey one quarter of the field (a sector), or stop and charge.</p>
-  <p class="lead">What the rover learns is one table: for each of 256 cells, how likely each kind of ground is. The model holds it as a <em>parameter variable</em>, a node of its own with a prior and an edge to every factor that reads it. The rover's terrain factor reads it to predict the ground under it; the scheduler's map factor reads the same table to value a sector. The model graph draws it once, with an edge to each reader. Drag the tick, switch the setting, and watch the map fill in.</p>
+  <h2>Solar rover demo</h2>
+  <h3 id="overview">Overview</h3>
+  <p class="lead">In this demo, a solar-powered rover builds a map of a 2.5D environment (a field with continuously varying height), classifying terrain into three kinds (firm, rough, and ice). The rover's battery charges in sunlight, which depends on which slopes are shaded. For navigation it relies on a forward camera and a GPS-like satellite signal whose quality varies over the field. The demo shows two variants: one with just the rover and one a hierarchical model whose second layer is a discrete mission planner that provides options to map a given coarse-grained sector, or to charge the battery.</p>
   <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
-  <div class="controls">
-    <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
-      <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
-      <label><input type="radio" name="layer" value="light"> illumination</label>
-      <label><input type="radio" name="layer" value="fix"> satellite fix quality</label>
-    </fieldset>
-    <label class="restart"><input type="checkbox" id="restart" checked> Restart on new setting</label>
-  </div>
   <div class="hero-grid">
     <figure class="fieldfig">
       <div class="canvaswrap"><canvas id="field" width="520" height="520" role="img" aria-label="Rover field with the learned map"></canvas></div>
+      <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
+        <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
+        <label><input type="radio" name="layer" value="light"> illumination</label>
+        <label><input type="radio" name="layer" value="fix"> satellite fix quality</label>
+      </fieldset>
       <div class="hud" id="hud"></div>
       <div class="legend" id="fieldlegend"></div>
     </figure>
@@ -97,54 +122,98 @@
       <div class="legend" id="graphlegend"></div>
     </figure>
   </div>
-  <p class="figcap">The field: the true ground (green-grey firm, tan rough, blue ice) with height contours, under the map the rover has learned so far (a cell is tinted by its most probable ground, more strongly the surer the rover is, and left clear until the rover has seen it), the sector grid with the option in force shaded, the rover with its heading, its belief about its position, and the plan it chose for the next three ticks (bold), with the planner&rsquo;s other warm starts drawn fainter. Plans are rolled forward by the world&rsquo;s rule: <span id="dynrule"></span>. The graph: the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The scheduler&rsquo;s cell reading, the cell holding most of the rover&rsquo;s position belief, is not drawn: it is a read across the tiers, taken once per decision, of a belief that stays the rover&rsquo;s own. The belief over position is a weighted sum of Gaussians, and each such <em>mixture component</em> is drawn as one 2&sigma; ellipse; they are long and thin by design, because the camera and the fix constrain position unequally.</p>
+  <div class="figcap"><p><strong>Left:</strong> Contour map, with rover position/heading beliefs, satellite fixes, and patches colored by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, alternate plans thinner in the text color. Plans are rolled forward by the same nonlinear functions the generative process uses: The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, and spread $w$. This is near one above the stall level and near zero near empty. Then $$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad \theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad s_{t+1} = \kappa \, s_t + a \, g \, d,$$  with position $\mathbf{p}$, heading angle $\theta$, forward speed $s$, battery level $\ell$ (0 to 4), max turn rate $\tau_{\max}$ = 20 degrees per tick, $\kappa = 0.5$ speed damping and $a$ speed gain. The speed closes on $s_{\mathrm{top}} \, g \, d$ with $s_{\mathrm{top}} = a / (1 - \kappa)$, and the rover drives forward only. The energy level is updated as:  $$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big] - \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$</p><p>with a solar charge in proportion to the yield $y$ of the ground, mostly when parked, less a drain at rest, per unit of speed, and per unit of uphill climb $c^{+}_t$ (a smooth ramp of the slope along the heading; downhill costs what level ground costs). Gaussian noise of a fixed sd per coordinate is added, and the world clips the position to the field. A rover that hits a wall stops (the model does not know the walls; it knows the stall).</p><p>The graph: the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The belief over position is a Gaussian, drawn as its 2&sigma; ellipse with a minimum size so it stays visible; the camera and the fix together keep it to about a centimeter.</p></div>
+  <h3 id="model">Model</h3>
+  <h4 id="rover-tier">Rover tier</h4>
+  <ul>
+    <li><strong>Sensation.</strong> The vehicle's position is inferred via Bayesian fusion of the satellite <code>fix</code> with the camera image (<code>img</code>), whose neural likelihood is inverted during inference. The camera also informs a heading estimate, and the rover's beliefs about terrain classes. The rover senses its battery level via a continuous gauge.</li>
+  </ul>
+  <ul>
+    <li><strong>Action.</strong> The rover chooses continuous two-dimensional (target speed, turn rate) commands <code>v</code>.</li>
+  </ul>
+  <ul>
+    <li><strong>Inference and learning.</strong> Continuous state appears in the generative model as a six-dimensional <code>x</code> (2D position, 2D heading vector, speed, energy). The terrain map is a table of Dirichlet counts <code>rover.field</code>, whose cells are updated in proportion to the rover's discretized position belief, according to the inferred <code>terrain</code> classes.</li>
+  </ul>
+  <ul>
+    <li><strong>Objectives.</strong> The rover has a continuous preference for its energy <code>gauge</code> to be more full. It also has a preference to stay within the square region of the map, implemented via a Gaussian mixture over the GPS modality. When driven by the mission planner (see below), the rover has either a broad preference to be in a given quadrant of the map for surveying, or a precise one to drive to a good charging location and wait.<p>Exploration is driven primarily by novelty on the Dirichlet counts, and also by infogain about position from GPS, which drives the rover to find spots good for localizing. The camera's own infogain is left out: in trials the pose information in its pixels outweighed the rest of the objective and drove the rover to the walls, the only landmarks the renderer offers. A version scoped to the terrain class is the planned follow-up.</p></li>
+  </ul>
+  <ul>
+    <li><strong>Planning.</strong> Planning is via gradient descent on the rover level's expected free energy, from four starts and over a horizon of 12 discrete time-steps.</li>
+  </ul>
+  <h4 id="mission-tier">Mission tier</h4>
+  <ul>
+    <li><strong>Sensation.</strong> The mission tier observes a discretized (8-level) <code>gauge</code> reading of the rover's <code>energy</code>, as well as the rover's believed position, mapped to a 16 x 16 cell grid over the landscape.</li>
+  </ul>
+  <ul>
+    <li><strong>Action.</strong> Options <code>u_option</code> are to survey one of the quadrants of the map, or to head for a good charging location. The mission planner's actions accomplish this by setting the rover tier's state preferences (effectively, location and speed) for the next 24 ticks at its timescale.</li>
+  </ul>
+  <ul>
+    <li><strong>Inference and learning.</strong> The rover's discrete location <code>visit</code> is inferred from an observation <code>cell_obs</code> that maps the rover's believed location to a grid. The Dirichlet table filled out by the rover's survey is a parameter shared by the higher-level model, which then informs option selection. The mission tier also learns a transition model of the rover's energy conditional on which option is pursued, starting from weak priors grounded in the rover's machinery.</li>
+  </ul>
+  <ul>
+    <li><strong>Objectives.</strong> Option choice is driven by expected novelty (parameter infogain) about the map cells, aggregated over the number of distinct cells the rover will visit under the option (measured empirically), and by a terminal-state prior that discourages ending an option with an empty battery. There's no infogain about location or battery level at this tier.</li>
+  </ul>
+  <ul>
+    <li><strong>Planning.</strong> Planning at the mission tier is "vanilla" expected-free-energy based policy search with the terms just described, with a horizon of 4 options (= 96 lower-tier steps).</li>
+  </ul>
 </section>
 
 <section class="pane" id="timescales" data-parent="hero">
-  <h2>Two timescales</h2>
-  <p class="lead">Run on its own, the rover tier maps its neighbourhood and then stalls. The reason is that <em>novelty</em>, the information a plan expects to gain about the table, is local: once the cells the rover can reach in a few ticks have been seen, nothing pulls it further. The scheduler scores a whole sector at once. Its <em>pooled reading</em> of a sector is the twelve readings a survey takes, counted together as one slow reading, so a trip to unsurveyed ground earns enough novelty to pay for its energy.</p>
-  <p class="lead">Both runs below use the same rover, model and world. In one the option is pinned to sector 1; in the other the scheduler chooses it. Coverage, the fraction of cells whose most probable kind of ground has probability above 0.6, ends at 0.45 against 0.24. Sector 4 is never chosen: at every decision its energy risk outweighs its novelty. The rover reaches it by crossing.</p>
+  <h2>Performance comparison</h2>
+  <p class="lead">Both runs compared here use the same rover, model and world. In the rover-only condition there is no preferred sector. Coverage is defined as the fraction of cells whose maximum posterior class probability is above 0.6. After a small early lead for the mission-assisted run, both runs end at similar coverage in the run shown (seed 4). The mission tier decides to charge about 1/3 of the time, and spends most time surveying sector 3. Over five seeds the mission planner ends at 0.657 against 0.670 alone, having led at tick 400 on every seed and on the mean at every checkpoint before 800.</p>
   <figure>
     <div id="timeline" class="chartbox"></div>
     <div class="legend" id="tlegend"></div>
-    <figcaption>Top to bottom: the option in force (a tick above the band marks each decision, every twelve ticks), the energy level against its four bands, and coverage over the run, solid for the selected setting and dashed for the other. The line follows the tick; drag on the chart to move it.</figcaption>
+    <figcaption>Top to bottom: the option in force (a tick above the band marks each decision, every 24 ticks), the energy level against its eight bands, and coverage over the run, solid for the selected setting and dashed for the other.</figcaption>
   </figure>
-  <h3 id="the-schedulers-decision">The scheduler's decision</h3>
+  <div id="decfig" class="decfig">
   <p class="lead" id="decnote"></p>
   <figure>
     <div id="decision" class="chartbox"></div>
     <div class="legend" id="declegend"></div>
     <figcaption id="deccap"></figcaption>
   </figure>
+  </div>
 </section>
 
 <section class="pane" id="camera" data-parent="hero">
   <h2>The camera</h2>
-  <p class="lead">The rover's forward camera is a 48 by 48 greyscale picture looking along the field's +y axis. The panels below show it at four times scale (192 pixels, no smoothing). The rover's model holds the camera as a neural likelihood, a network that predicts the picture from the rover's position and the ground type; inference runs that likelihood backwards, so the picture informs both the ground type and the position.</p>
+  <p class="lead">The rover's forward camera is a 32 by 32 grayscale image along the current actual heading direction. The panels show it at 6x scale. The rover's model includes a neural likelihood for the camera image, a 4-layer MLP that predicts the picture from the rover's (position, heading) pose and the inferred ground type. Inference inverts the likelihood given the empirical prior over state, linearizing around the belief's mean.</p>
   <figure class="camerafig" id="camerafig">
     <div class="camgrid" id="camgrid"></div>
-    <figcaption id="camcap"><strong>Observed image:</strong> what the camera sees now. <strong>Decoder prediction:</strong> the picture the model expects at the current belief. <strong>Terrain readout:</strong> the belief over the three kinds of ground, one bar each, with the true one marked. Overall brightness is the illumination at the rover&rsquo;s position; the ground texture marks the terrain class; the top quarter is sky.</figcaption>
+    <figcaption id="camcap"><strong>Observed image:</strong> what the camera sees now. <strong>Decoder prediction:</strong> the image the model expects at the current belief. <strong>Terrain readout:</strong> the rover's belief over the three kinds of ground, with the true class marked with a dot. Brightness of a ground point depends on how much sun reaches it, taking slopes into account. Terrain classes differ by ground texture, and the ground under the rover is visible; the ground beyond the field's walls is dark, and far ground fades toward a gray haze.</figcaption>
   </figure>
 </section>
 
 <section class="pane" id="objective" data-parent="hero">
-  <h2>Objectives as intervals</h2>
-  <p class="lead">Every plan is scored by every objective term, and every score is an interval. The bar spans the lower and upper bound and the mark is the midpoint, which is what the planner ranks on. A term that is exact is a point; a term over a mixture, such as the risk on the rover's position, carries a bracket from closed-form entropy bounds. Terms that read the camera go through the decoder's linearisation at the belief and are marked approximate. Switch tiers to compare the rover's gradient planner with the scheduler's exact enumeration of option sequences.</p>
+  <h2>Term-by-term objectives</h2>
+  <p class="lead">The objective depends on the risk + infogain terms described earlier. For intervals, the bar spans the derived lower and upper bounds and the mark is the midpoint, which is what the planner ranks on. Exact terms are points. Switch tiers to compare the rover's gradient planner with the mission's exact enumeration of option sequences.</p>
+  <p class="lead">The objective is the sum of the risk and information gain terms described above, and every score is reported as an interval: the bar spans the lower and upper bound and the mark is the midpoint, which the planner ranks on. Exact terms are points. A term over a mixture carries a bracket from closed-form entropy bounds; in this demo that is the wall preference on the fix. The rover's terms are marked approximate because its plans use a first-order approximation of beliefs pushed through the vehicle's nonlinear motion. Below are the rover's gradient planner and the mission tier's exact enumeration of option sequences.</p>
   <p class="lead" id="objnote"></p>
   <div class="controls">
-    <label>Tier <select id="objtier"><option value="rover">Rover tier</option><option value="mission">Mission tier</option></select></label>
-    <label>View <select id="objmode"><option value="total">G per policy</option><option value="terms">By term</option></select></label>
-    <button id="objall" type="button" hidden></button>
-    <span class="legend" id="objlegend"></span>
+    <label>Detail <select id="objmode"><option value="total">G total</option><option value="terms">G per term</option></select></label>
+    <label id="objaggwrap">Aggregation <select id="objagg"><option value="policy">per policy</option><option value="action">per first action</option></select></label>
   </div>
-  <figure><div id="objective-chart" class="chartbox"></div>
-  <figcaption id="objcap"></figcaption></figure>
+  <section class="objtier" id="objtier-rover">
+    <div class="objhead"><h4 id="objhead-rover"></h4></div>
+    <p class="note" id="objnote-rover"></p>
+    <figure><div id="objective-rover" class="chartbox"></div>
+    <figcaption id="objcap-rover"></figcaption></figure>
+    <div class="legend" id="objlegend-rover"></div>
+  </section>
+  <section class="objtier" id="objtier-mission" hidden>
+    <div class="objhead"><h4 id="objhead-mission"></h4><button id="objall" type="button" hidden></button></div>
+    <p class="note" id="objnote-mission"></p>
+    <figure><div id="objective-mission" class="chartbox"></div>
+    <figcaption id="objcap-mission"></figcaption></figure>
+    <div class="legend" id="objlegend-mission"></div>
+  </section>
   <div id="tip" class="tip" role="status" hidden></div>
 </section>
 
 <section class="pane" id="mdl" data-parent="hero">
   <h2>Description length</h2>
-  <p class="lead">What each part of the model costs to write down, in nats, grouped by tier. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table, density or network is priced by its family alone and flagged approximate. The parameter variable <code>rover.field</code> is priced once, under its own entry; the two factors that read it, <code>rover.terrain</code> and <code>mission.map</code>, pay for their structure only.</p>
+  <p class="lead">What each part of the model costs to write down, in nats, grouped by tier. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table, density or network is priced by its family alone and flagged approximate.</p>
   <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">entries</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody></table></div>
   <p class="mdlfoot" id="mdlfoot"></p>
 </section>
@@ -152,18 +221,19 @@
 <section class="pane" id="start">
   <h2>Install and quickstart</h2>
 <pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
-.venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
-  <p class="lead"><strong>The scheduler, as declared.</strong> This is the slow tier from <code>examples/survey_scheduler.py</code>: three factors (the cell the rover is in, its energy band and the terrain at that cell) plus the option as a control node, two modalities (the cell reading, which is the cell the rover&rsquo;s position belief puts it in, and the energy gauge), and a novelty term on the map. The <code>readings</code> entry says a survey pools twelve fast readings of the map into one slow reading, and the map's table is not its own: it is the parameter variable <code>field</code>.</p>
+.venv/bin/python -m pytest          # full test suite, about 12 minutes</code></pre>
+  <p class="lead"><strong>The mission tier, as declared.</strong> This is the slow tier from <code>examples/survey_scheduler.py</code>: three state factors (the cell the rover is in, its energy band and the terrain at that cell) plus the option as a control node, two modalities (the cell reading, which is the cell the rover&rsquo;s position belief puts it in, and the energy gauge), and a novelty term on the map. The <code>readings</code> entry says a survey pools 11 fast readings of the map for a survey and 6 for a charge.</p>
 <pre><code>system = System(
     A_deps=((0,), (1,)),                      # cell_obs reads visit, gauge reads energy
-    B_deps=((0, 3), (1, 0, 3), (0,), ()),     # the option moves visit and energy
+    B_deps=((0, 1, 3), (1, 3), (0,), ()),     # the option moves visit and energy
     controls=(3,),
     action_names=("option",),
-    factor_names=("visit", "energy", "map", "u_option"),
+    state_names=("visit", "energy", "map"),
+    control_names=("u_option",),
     modality_names=("cell_obs", "gauge"),
-    policy_len=2,
+    policy_len=4,                             # four options ahead: 625 sequences
     planner="enumeration",
-    mixture_k=3,
+    mixture_k=1,
     mixture_schedule="mode_aligned",
     planning_belief="prior",
     epistemic=("transition:map",),            # the novelty of the map's table
@@ -171,22 +241,30 @@
     readings=(("map", "u_option"),),          # pooled readings, one count per option level
 )
 params = SystemParams(
-    parameters={"field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength)},
-    transition={"visit": ..., "energy": ..., "map": Parameter("field")},   # the shared table
-    readings={"map": READINGS},               # 12 for each survey sector, 1 for charge
+    parameters={
+        "field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength),
+        "energy_table": ConditionalDirichlet(concentration=energy_prior(), parent_ndims=2),
+    },
+    transition={
+        "visit": ...,
+        "energy": Parameter("energy_table"),  # learned from the band readings
+        "map": Parameter("field"),            # the shared table
+    },
+    readings={"map": READINGS},               # 11 for each survey sector, 6 for charge
+    terminal_targets={"energy": Categorical(logits=terminal_logits(penalty))},  # the plan's end
     ...
 )</code></pre>
-  <p class="lead"><strong>Joining the tiers.</strong> From <code>examples/survey_run.py</code>: <code>merge</code> joins the scheduler and the rover into one particle. <code>Link</code> from the scheduler's option action node makes the scheduler's option the rover's control node, so the rover plans no decision for it. <code>Identify</code> identifies the two tiers' tables as one, which is the single <code>rover.field</code> node in the graph above: the tiers share it outright, because the rover's counts and the scheduler's novelty are one belief by design. The scheduler also needs the rover's position, which it takes as a sensation: the cell holding most of the position belief, passed in once per decision. The mission and rover views of the composite then run on their own clocks, the rover every tick and the scheduler once per option.</p>
-<pre><code>cs, cp = merge(
+  <p class="lead"><strong>Joining the tiers.</strong> From <code>examples/survey_run.py</code>: <code>merge</code> joins the mission planner and the rover into one <code>System</code>. <code>Identify</code> merges variables: it declares the mission tier's option as the switch over the rover's position preference, and it declares <code>rover.field</code> as a single shared parameter variable. The mission also needs the rover's position, which it takes as a sensation: the most probable cell under the position belief, passed in once per decision. The mission and rover views of the composite then run on their own clocks, the rover every tick and the mission once per option (= 24 ticks at the lower level).</p>
+<pre><code>agent = merge(
     {"mission": ms, "rover": rs},
     {"mission": mp, "rover": rp},
     [
-        Link("mission.option", "rover.u_opt"),
+        Identify("mission.option", "rover.u_opt"),
         Identify("rover.field", "mission.field"),
+        Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
     ],
-)
-mview, mparams = subsystem(cs, cp, "mission")</code></pre>
-  <p class="lead"><strong>Running it.</strong> The scheduler alone needs no trained network, so it runs in a few seconds. This builds it, feeds it one cell reading and one gauge reading, plans, and prints, for each first option, the pooled novelty (nats of information about the field), the energy risk and the expected free energy G of the best two-option sequence that starts with it. From the <code>examples</code> folder:</p>
+)</code></pre>
+  <p class="lead"><strong>Running it.</strong> The mission tier alone needs no trained network, so it runs in a few seconds. This builds it, feeds it one cell reading and one gauge reading, plans, and prints, for each first option, the pooled novelty (nats of information about the field), the terminal-target energy risk and the expected free energy G of the best four-option sequence that starts with it. From the <code>examples</code> folder:</p>
 <pre><code>import jax.numpy as jnp
 import numpy as np
 import survey_model as sm
@@ -194,28 +272,28 @@ import survey_scheduler as ss
 from hybrid_aif.objectives import total
 
 grid, centres = sm.field_grid()          # the rover's 16 x 16 grid and its cell centres
-scheduler, params = ss.scheduler(grid, centres, readings=True)   # pooled: 12 per survey, 1 charge
+scheduler, params = ss.scheduler(grid, centres, readings=True)   # pooled: 11 per survey, 6 charge
 faces = scheduler.compiled()
 
-reading = {"cell_obs": jnp.asarray(35), "gauge": jnp.asarray(3)}   # in cell 35, band "full"
+reading = {"cell_obs": jnp.asarray(35), "gauge": jnp.asarray(7)}   # in cell 35, band "full"
 beliefs, _ = faces.infer_states(params, reading)
-q_pi, tree = faces.infer_policies(params, beliefs)   # enumerates the 2-step option sequences
+q_pi, tree = faces.infer_policies(params, beliefs)   # enumerates the 4-step option sequences
 
 G = total(tree).lower                                 # signed sum of the terms, per sequence
 novelty = tree["infogain"]["transition:map"].lower    # nats about the field, pooled
-risk = tree["risk"]["energy"].lower                   # energy risk, nats
+risk = tree["terminal_risk"]["energy"].lower          # the energy at the plan's end, nats
 first = np.asarray(scheduler.policies(params))[:, 0, 0]   # each sequence's first option
 for k, name in enumerate(ss.OPTION_NAMES):
     # the best sequence that starts with option k
     i = min(np.flatnonzero(first == k), key=lambda i: float(G[i]))
     print(f"{name:16s} novelty {float(novelty[i]):6.2f}  risk {float(risk[i]):5.2f}  G {float(G[i]):7.2f}")
 
-# survey sector 1  novelty  23.97  risk  0.32  G  -23.65
-# survey sector 2  novelty  23.97  risk  1.74  G  -22.23
-# survey sector 3  novelty  23.97  risk  2.17  G  -21.80
-# survey sector 4  novelty  23.97  risk  3.33  G  -20.64
-# charge           novelty  12.98  risk  0.58  G  -12.40</code></pre>
-  <p class="lead">The whole showcase, both tiers over both settings on this page, is <code>python examples/survey_run.py --level 2 --ticks 400 --out OUT_DIR</code>, then the same command with <code>--assemble</code>, then <code>python examples/survey_trim.py OUT_DIR/bundle.json docs/site</code>; <code>docs/site/README.md</code> says how the page's data is rebuilt from it.</p>
+# survey sector 1  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 2  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 3  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 4  novelty  43.94  risk  0.96  G  -42.99
+# charge           novelty  38.95  risk  1.10  G  -37.85</code></pre>
+  <p class="lead">The whole showcase, both tiers over both settings on this page, is <code>python examples/survey_run.py --ticks 800 --seed 4 --out OUT_DIR</code>, then the same command with <code>--assemble</code>, then <code>python examples/survey_trim.py OUT_DIR/bundle.json docs/site</code>; <code>docs/site/README.md</code> says how the page's data is rebuilt from it.</p>
 </section>
 
 <section class="pane" id="cite">
@@ -224,7 +302,7 @@ for k, name in enumerate(ss.OPTION_NAMES):
   title   = {hybrid-aif: hybrid continuous-discrete active inference in {JAX}},
   author  = {Kiefer, Alex and {Noumenal Labs}},
   year    = {2026},
-  version = {0.19.0},
+  version = {0.20.0},
   url     = {https://github.com/noumenal-labs/hybrid-aif},
   license = {MIT}
 }</code></pre>
@@ -232,16 +310,18 @@ for k, name in enumerate(ss.OPTION_NAMES):
 
 <section class="pane" id="documentation">
   <h2>Documentation</h2>
-  <p class="lead">The documentation will be linked from here.</p>
+  <p class="lead">The <a href="api/index.html">API reference</a> lists every public name of the
+  library, grouped by what a user does with it: declaring a model, composing and running systems,
+  inference, planning and objectives, learning, and records.</p>
 </section>
 
 </main>
-<footer class="pagefoot"><p>Noumenal Labs, 2026. Most of this code was written by Claude through Claude Code under the direction of the maintainers; the design records in <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">docs/design/</a> show how each decision was reached. Licensed MIT.</p></footer>
+<footer class="pagefoot"><p>Noumenal Labs, 2026. Most of <code>hybrid-aif</code>'s code was written with Claude under the direction of the maintainers; the design records in <a href="https://github.com/noumenal-labs/hybrid-aif/tree/main/docs/design">docs/design/</a> show how each decision was reached. Licensed MIT.</p></footer>
 </div>
 <noscript><div class="wrap static"><p>This page replays precomputed data and needs JavaScript. Without it, here are the rendered views of one setting.</p>
 <img src="static/hero.png" alt="The survey rover&#39;s field with its learned map, and the two-tier model graph with the shared terrain table">
 <img src="static/timeline.png" alt="The timeline of option bands, energy and coverage over the run, with the one-level run dashed">
-<img src="static/objective.png" alt="Expected free energy of the scheduler&#39;s option sequences as intervals">
+<img src="static/objective.png" alt="Expected free energy of the scheduler&#39;s option sequences">
 </div></noscript>
 <script src="nav.js" defer></script>
 <script src="app.js" defer></script>

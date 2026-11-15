@@ -21,6 +21,9 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 <meta name="description" content="{{description}}">
 <link rel="icon" type="image/png" href="static/favicon.png">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}], ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']})"></script>
 </head>
 <body>
 <!-- /block -->
@@ -68,16 +71,14 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 
 <!-- block: hero-viewer -->
   <p id="status" class="lead" role="status">Loading replay data&hellip;</p>
-  <div class="controls">
-    <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
-      <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
-      <label><input type="radio" name="layer" value="light"> illumination</label>
-      <label><input type="radio" name="layer" value="fix"> satellite fix quality</label>
-    </fieldset>
-  </div>
   <div class="hero-grid">
     <figure class="fieldfig">
       <div class="canvaswrap"><canvas id="field" width="520" height="520" role="img" aria-label="Rover field with the learned map"></canvas></div>
+      <fieldset class="layers" aria-label="Background layer"><legend>Background</legend>
+        <label><input type="radio" name="layer" value="terrain" checked> terrain only</label>
+        <label><input type="radio" name="layer" value="light"> illumination</label>
+        <label><input type="radio" name="layer" value="fix"> satellite fix quality</label>
+      </fieldset>
       <div class="hud" id="hud"></div>
       <div class="legend" id="fieldlegend"></div>
     </figure>
@@ -86,7 +87,7 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
       <div class="legend" id="graphlegend"></div>
     </figure>
   </div>
-  <p class="figcap">{{caption}}</p>
+  <div class="figcap">{{caption}}</div>
 <!-- /block -->
 
 <!-- block: dynrule -->
@@ -102,12 +103,14 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 <!-- /block -->
 
 <!-- block: decision-figure -->
+  <div id="decfig" class="decfig">
   <p class="lead" id="decnote"></p>
   <figure>
     <div id="decision" class="chartbox"></div>
     <div class="legend" id="declegend"></div>
     <figcaption id="deccap"></figcaption>
   </figure>
+  </div>
 <!-- /block -->
 
 <!-- block: camera-figure -->
@@ -120,13 +123,23 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 <!-- block: objective-viewer -->
   <p class="lead" id="objnote"></p>
   <div class="controls">
-    <label>Tier <select id="objtier"><option value="rover">Rover tier</option><option value="mission">Mission tier</option></select></label>
-    <label>View <select id="objmode"><option value="total">G per policy</option><option value="terms">By term</option></select></label>
-    <button id="objall" type="button" hidden></button>
-    <span class="legend" id="objlegend"></span>
+    <label>Detail <select id="objmode"><option value="total">G total</option><option value="terms">G per term</option></select></label>
+    <label id="objaggwrap">Aggregation <select id="objagg"><option value="policy">per policy</option><option value="action">per first action</option></select></label>
   </div>
-  <figure><div id="objective-chart" class="chartbox"></div>
-  <figcaption id="objcap"></figcaption></figure>
+  <section class="objtier" id="objtier-rover">
+    <div class="objhead"><h4 id="objhead-rover"></h4></div>
+    <p class="note" id="objnote-rover"></p>
+    <figure><div id="objective-rover" class="chartbox"></div>
+    <figcaption id="objcap-rover"></figcaption></figure>
+    <div class="legend" id="objlegend-rover"></div>
+  </section>
+  <section class="objtier" id="objtier-mission" hidden>
+    <div class="objhead"><h4 id="objhead-mission"></h4><button id="objall" type="button" hidden></button></div>
+    <p class="note" id="objnote-mission"></p>
+    <figure><div id="objective-mission" class="chartbox"></div>
+    <figcaption id="objcap-mission"></figcaption></figure>
+    <div class="legend" id="objlegend-mission"></div>
+  </section>
   <div id="tip" class="tip" role="status" hidden></div>
 <!-- /block -->
 
@@ -137,21 +150,21 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
 
 <!-- block: install-code -->
 <pre><code>uv venv &amp;&amp; uv pip install -e ".[dev]"
-.venv/bin/python -m pytest          # the full suite, about twelve minutes</code></pre>
+.venv/bin/python -m pytest          # full test suite, about 12 minutes</code></pre>
 <!-- /block -->
 
 <!-- block: scheduler-code -->
 <pre><code>system = System(
     A_deps=((0,), (1,)),                      # cell_obs reads visit, gauge reads energy
-    B_deps=((0, 3), (1, 0, 3), (0,), ()),     # the option moves visit and energy
+    B_deps=((0, 1, 3), (1, 3), (0,), ()),     # the option moves visit and energy
     controls=(3,),
     action_names=("option",),
     state_names=("visit", "energy", "map"),
     control_names=("u_option",),
     modality_names=("cell_obs", "gauge"),
-    policy_len=2,
+    policy_len=4,                             # four options ahead: 625 sequences
     planner="enumeration",
-    mixture_k=3,
+    mixture_k=1,
     mixture_schedule="mode_aligned",
     planning_belief="prior",
     epistemic=("transition:map",),            # the novelty of the map's table
@@ -159,23 +172,31 @@ the column over the demo's panes; {{title}} is the demo section's heading, {{hre
     readings=(("map", "u_option"),),          # pooled readings, one count per option level
 )
 params = SystemParams(
-    parameters={"field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength)},
-    transition={"visit": ..., "energy": ..., "map": Parameter("field")},   # the shared table
-    readings={"map": READINGS},               # 12 for each survey sector, 1 for charge
+    parameters={
+        "field": ConditionalDirichlet.from_table(uniform, 1, strength=field_strength),
+        "energy_table": ConditionalDirichlet(concentration=energy_prior(), parent_ndims=2),
+    },
+    transition={
+        "visit": ...,
+        "energy": Parameter("energy_table"),  # learned from the band readings
+        "map": Parameter("field"),            # the shared table
+    },
+    readings={"map": READINGS},               # 11 for each survey sector, 6 for charge
+    terminal_targets={"energy": Categorical(logits=terminal_logits(penalty))},  # the plan's end
     ...
 )</code></pre>
 <!-- /block -->
 
 <!-- block: merge-code -->
-<pre><code>cs, cp = merge(
+<pre><code>agent = merge(
     {"mission": ms, "rover": rs},
     {"mission": mp, "rover": rp},
     [
-        Link("mission.option", "rover.u_opt"),
+        Identify("mission.option", "rover.u_opt"),
         Identify("rover.field", "mission.field"),
+        Link("rover.x", "mission.cell_obs", realise="mode", kernel=grid),
     ],
-)
-mview, mparams = subsystem(cs, cp, "mission")</code></pre>
+)</code></pre>
 <!-- /block -->
 
 <!-- block: run-code -->
@@ -186,27 +207,27 @@ import survey_scheduler as ss
 from hybrid_aif.objectives import total
 
 grid, centres = sm.field_grid()          # the rover's 16 x 16 grid and its cell centres
-scheduler, params = ss.scheduler(grid, centres, readings=True)   # pooled: 12 per survey, 1 charge
+scheduler, params = ss.scheduler(grid, centres, readings=True)   # pooled: 11 per survey, 6 charge
 faces = scheduler.compiled()
 
-reading = {"cell_obs": jnp.asarray(35), "gauge": jnp.asarray(3)}   # in cell 35, band "full"
+reading = {"cell_obs": jnp.asarray(35), "gauge": jnp.asarray(7)}   # in cell 35, band "full"
 beliefs, _ = faces.infer_states(params, reading)
-q_pi, tree = faces.infer_policies(params, beliefs)   # enumerates the 2-step option sequences
+q_pi, tree = faces.infer_policies(params, beliefs)   # enumerates the 4-step option sequences
 
 G = total(tree).lower                                 # signed sum of the terms, per sequence
 novelty = tree["infogain"]["transition:map"].lower    # nats about the field, pooled
-risk = tree["risk"]["energy"].lower                   # energy risk, nats
+risk = tree["terminal_risk"]["energy"].lower          # the energy at the plan's end, nats
 first = np.asarray(scheduler.policies(params))[:, 0, 0]   # each sequence's first option
 for k, name in enumerate(ss.OPTION_NAMES):
     # the best sequence that starts with option k
     i = min(np.flatnonzero(first == k), key=lambda i: float(G[i]))
     print(f"{name:16s} novelty {float(novelty[i]):6.2f}  risk {float(risk[i]):5.2f}  G {float(G[i]):7.2f}")
 
-# survey sector 1  novelty  23.97  risk  0.32  G  -23.65
-# survey sector 2  novelty  23.97  risk  1.74  G  -22.23
-# survey sector 3  novelty  23.97  risk  2.17  G  -21.80
-# survey sector 4  novelty  23.97  risk  3.33  G  -20.64
-# charge           novelty  12.98  risk  0.58  G  -12.40</code></pre>
+# survey sector 1  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 2  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 3  novelty  43.94  risk  0.96  G  -42.99
+# survey sector 4  novelty  43.94  risk  0.96  G  -42.99
+# charge           novelty  38.95  risk  1.10  G  -37.85</code></pre>
 <!-- /block -->
 
 <!-- block: citation -->
@@ -224,7 +245,7 @@ for k, name in enumerate(ss.OPTION_NAMES):
 <noscript><div class="wrap static"><p>This page replays precomputed data and needs JavaScript. Without it, here are the rendered views of one setting.</p>
 <img src="static/hero.png" alt="The survey rover&#39;s field with its learned map, and the two-tier model graph with the shared terrain table">
 <img src="static/timeline.png" alt="The timeline of option bands, energy and coverage over the run, with the one-level run dashed">
-<img src="static/objective.png" alt="Expected free energy of the scheduler&#39;s option sequences as intervals">
+<img src="static/objective.png" alt="Expected free energy of the scheduler&#39;s option sequences">
 </div></noscript>
 <script src="nav.js" defer></script>
 <script src="app.js" defer></script>

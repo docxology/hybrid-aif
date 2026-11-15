@@ -3,7 +3,7 @@
   --accent:#1f5fbf;--c1:#1f5fbf;--c2:#c2571a;--c3:#2a8a5a;--c4:#8a5cc2;--c5:#9a7b12;--warn:#b3261e;
   --o0:#6f9bd6;--o1:#e29a62;--o2:#6dbb8f;--o3:#a67fd1;--o4:#e0bb3a;
   --tf:#dfe6d8;--tr:#e4d3b9;--ti:#d3e3ef;--mf:#2a8a5a;--mr:#b8651a;--mi:#1f5fbf;--contour:rgba(70,55,30,.38);--cellline:rgba(0,0,0,.07);--plan:#c4175a;--ell:#7a2bd1;--washfix:#7a2bd1;
-  --qg:#2a8a5a;--qb:#c2571a;--qs:#9a9fa5;
+  --qg:#2a8a5a;--qb:#c2571a;--qs:#9a9fa5;--inactive:.3;
   --side-bg:#f3f4f2;--toc-current:#e1e9f6;--toc-parent:#eef2f9;
   --side-w:17rem;--measure:42rem;--wide:64rem;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -14,13 +14,13 @@
   --accent:#6aa3f0;--c1:#6aa3f0;--c2:#f0a060;--c3:#5cc596;--c4:#b08af0;--c5:#d4b24a;--warn:#f08a82;
   --o0:#4f80c0;--o1:#c07a45;--o2:#4a9a72;--o3:#9a76cc;--o4:#d4a92a;
   --tf:#2b3a30;--tr:#4a3e2c;--ti:#2c4254;--mf:#5cc596;--mr:#f0a060;--mi:#6aa3f0;--contour:rgba(255,255,255,.28);--cellline:rgba(255,255,255,.07);--plan:#ff6fa0;--ell:#b98af5;--washfix:#b98af5;
-  --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;
+  --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;--inactive:.42;
   --side-bg:#1b1d20;--toc-current:#22324a;--toc-parent:#1f2633;}}
 :root[data-theme="dark"]{--bg:#16181a;--fg:#e6e7e8;--muted:#9aa0a6;--line:#34383c;--panel:#1f2225;
   --accent:#6aa3f0;--c1:#6aa3f0;--c2:#f0a060;--c3:#5cc596;--c4:#b08af0;--c5:#d4b24a;--warn:#f08a82;
   --o0:#4f80c0;--o1:#c07a45;--o2:#4a9a72;--o3:#9a76cc;--o4:#d4a92a;
   --tf:#2b3a30;--tr:#4a3e2c;--ti:#2c4254;--mf:#5cc596;--mr:#f0a060;--mi:#6aa3f0;--contour:rgba(255,255,255,.28);--cellline:rgba(255,255,255,.07);--plan:#ff6fa0;--ell:#b98af5;--washfix:#b98af5;
-  --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;
+  --qg:#5cc596;--qb:#f0a060;--qs:#6c7178;--inactive:.42;
   --side-bg:#1b1d20;--toc-current:#22324a;--toc-parent:#1f2633;}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -43,6 +43,7 @@ h2{font-size:1.4rem;margin:0 0 .4rem;padding-top:.2rem}
 .toc{font-size:.92rem;padding:0 .75rem}
 .toc ul{list-style:none;margin:0;padding:0}
 .toc ul ul{margin:.1rem 0 .3rem .9rem;padding-left:.5rem;border-left:1px solid var(--line);font-size:.86rem}
+.toc ul ul ul{margin-left:.6rem;font-size:.82rem}
 .toc a{display:block;padding:.3rem .5rem;border-radius:4px;color:var(--fg);text-decoration:none;line-height:1.35}
 .toc ul ul a:not([data-pane]){color:var(--muted);padding:.2rem .5rem}
 .toc a:hover{color:var(--accent);text-decoration:underline}
@@ -59,7 +60,7 @@ main{max-width:var(--wide)}
 .pane:focus{outline:none}
 .js .pane:not(.is-current){display:none}
 .pane>p,.pane>ul,.pane>h2,.pane>h3,.pane>.tldr,.pane>.sub,.pane>.byline{max-width:var(--measure)}
-.pane h2,.pane h3{scroll-margin-top:calc(var(--stuck-h,0px) + 12px)}
+.pane h2,.pane h3,.pane h4{scroll-margin-top:calc(var(--stuck-h,0px) + 12px)}
 .intro-title{margin:0;max-width:var(--measure)}
 /* the demo bar: title and playback controls, stuck to the top over the demo's panes */
 .demobar{position:sticky;top:var(--topbar-h,0px);z-index:15;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;margin:-.6rem 0 1.4rem;padding:.6rem 0;background:var(--bg);border-bottom:1px solid var(--line);font-size:.92rem}
@@ -138,7 +139,11 @@ select{max-width:100%;min-width:0}
 .setting select{width:calc(100% - 4.5rem)}
 html,body{overflow-x:clip}
 
-h3{font-size:1.05rem;margin:1.2rem 0 .4rem}
+h3{font-size:1.25rem;margin:1.3rem 0 .4rem}
+h4{font-size:1rem;margin:1.1rem 0 .3rem}
+.pane li p{margin:.5rem 0 0}
+figcaption p,.figcap p{margin:.4rem 0 0}
+figcaption p:first-child,.figcap p:first-child{margin-top:0}
 .badge{display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;line-height:1.2;padding:.2rem .55rem;border:1px solid var(--line);border-radius:999px;background:var(--panel);white-space:nowrap}
 .badge i{width:.7em;height:.7em;border-radius:50%;display:inline-block;flex:none}
 .badge span{color:var(--muted)}
@@ -153,6 +158,10 @@ h3{font-size:1.05rem;margin:1.2rem 0 .4rem}
 tr.grp td{background:var(--panel);font-weight:600;border-top:2px solid var(--line)}
 td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 #objall[hidden]{display:none}
+.objtier{margin:0 0 1.6rem}
+.objtier[hidden]{display:none}
+.objhead{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1rem;margin:1.2rem 0 .2rem}
+.objhead h4{margin:0}
 #status:empty,#status[hidden]{display:none}
 .legend{font-size:.82rem;color:var(--muted);margin-top:.4rem}
 .legend span{white-space:nowrap}
@@ -168,17 +177,23 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .cam .cl{font-size:.82rem;color:var(--muted)}
 .cam .cv{font:.78rem var(--mono);color:var(--muted)}
 .readout{width:192px;height:192px;display:flex;flex-direction:column;justify-content:space-around;font-size:.85rem;border:1px solid var(--line);border-radius:2px;background:var(--panel);padding:.5rem}
-.readout .rb.true .rn{font-weight:700}
-.readout .rb.true .bar{outline:1.5px solid var(--fg)}
-.readout .bar{height:1.3rem;background:var(--bg);border:1px solid var(--line);border-radius:2px;overflow:hidden}
-.readout .bar i{display:block;height:100%}
-.readout .rp{font-family:var(--mono);text-align:right}
+/* the terrain readout: a heat strip of the belief, one cell per class, a dot on the true class */
+.readout .heat{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem}
+.readout .hc{display:flex;flex-direction:column;align-items:center;gap:.2rem;min-width:0}
+.readout .hcell{position:relative;display:block;width:100%;height:72px;border:1px solid var(--line);border-radius:2px}
+.readout .hp{position:absolute;left:0;right:0;bottom:3px;text-align:center;font:.74rem var(--mono)}
+.readout .hdot{position:absolute;left:50%;top:42%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#000;box-shadow:0 0 0 1.5px #fff}
+.readout .hc .rn{font-size:.8rem}
+.readout .hc .rn.true{font-weight:700}
+.readout .hkey{position:relative;padding-left:16px;font-size:.72rem;color:var(--muted);line-height:1.25}
+.readout .hkey .hdot{left:5px;top:.55em;width:10px;height:10px;margin:-5px 0 0 -5px}
 .tldr p{margin:0 0 .8rem}.tldr ul{margin:0;padding-left:1.2rem}.tldr li{margin:.5rem 0}
 .tldr code{font:.9em var(--mono)}
 .approx{color:var(--c2)}
 .tip .ap{color:var(--c2);font-size:.75rem}
 .static img{max-width:100%;display:block;margin:1rem 0;border:1px solid var(--line);border-radius:4px}
 #graph .now{fill:var(--accent)}
+#graph .inactive{opacity:var(--inactive)}
 
 .restart{display:inline-flex;align-items:center;gap:.4rem}
 .camnote{font-size:.85rem;color:var(--muted);margin:.5rem 0 .2rem;max-width:68ch}
@@ -189,8 +204,9 @@ tr.grp.light td{font-weight:600;color:var(--muted);background:transparent;border
 .mdlfoot{font-size:.85rem;color:var(--muted);margin:.4rem 0}
 
 /* survey page */
-.layers{display:flex;flex-wrap:wrap;gap:.2rem 1rem;border:1px solid var(--line);border-radius:4px;padding:.1rem .7rem .3rem;margin:0;flex:1 1 100%}
-.layers legend{font-size:.78rem;color:var(--muted);padding:0 .3rem}
+.fieldfig .canvaswrap{border-radius:4px 4px 0 0}
+.layers{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem 1rem;border:1px solid var(--line);border-top:0;border-radius:0 0 4px 4px;background:var(--panel);padding:.35rem .7rem;margin:0;min-width:0;font-size:.9rem}
+.layers legend{float:left;font-size:.78rem;color:var(--muted);padding:0;margin-right:.2rem}
 .layers label{display:inline-flex;align-items:center;gap:.35rem}
 .hero-grid{grid-template-columns:1fr 1fr}
 .fieldfig canvas{aspect-ratio:1}
@@ -202,8 +218,14 @@ tr.grp.light td{font-weight:600;color:var(--muted);background:transparent;border
 .figcap{font-size:.85rem;color:var(--muted);max-width:none;margin:.8rem 0 0}
 .graphfig svg{aspect-ratio:520/600}
 tr.grp.total td{font-weight:700;border-top:2px solid var(--fg);background:transparent}
-@media (max-width:720px){.hero-grid{grid-template-columns:1fr}.hud .hl{display:block}}
+@media (max-width:720px){.hero-grid{grid-template-columns:1fr}.hero-grid>figure{min-width:0}.hud .hl{display:block}}
 .legend{gap:.15rem .9rem}
 td.kind{word-break:normal;white-space:nowrap}
-.readout .rb{display:grid;grid-template-columns:1fr auto;gap:.15rem .3rem;align-items:end}
-.readout .rb .bar{grid-column:1 / -1;height:1.1rem}
+/* the scheduler's learned energy table, under its decision chart */
+.decenergy{margin-top:.6rem;overflow-x:auto}
+.decenergy table{font-size:.8rem;width:auto;font-variant-numeric:tabular-nums}
+.decenergy caption{caption-side:top;text-align:left;font-size:.82rem;color:var(--muted);padding-bottom:.3rem}
+.decenergy th,.decenergy td{padding:.1rem .55rem .1rem 0;text-align:right;white-space:nowrap}
+.decenergy tbody th{text-align:left;font-weight:400}
+.decenergy tr.here th,.decenergy tr.here td{font-weight:700}
+.decenergy .muted{color:var(--muted);font-weight:400}

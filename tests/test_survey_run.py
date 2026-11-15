@@ -2,11 +2,12 @@
 world, camera and planner.
 
 ``tests/data/survey_run.npz`` holds short runs of the survey runner recorded from this tree: the
-two-tier run (``two-level``) and the rover alone (``one-level``), each with a small untrained
-camera (``small_camera``), a 4 by 4 field grid and a short plan, the two-tier run with an option two
-rounds long. It is a pin against accidental change of the runner's output, not a parity claim:
-every number of every tick record (``seconds`` aside) is compared with the runner's own, to a
-float32 rounding tolerance. A deliberate change of the showcase regenerates it.
+two-tier run (``two-level``) and the rover alone (``one-level``), each with a small untrained camera
+(``small_camera``), a 4 by 4 field grid and a short plan, the two-tier run with an option two rounds
+long and the scheduler looking two options ahead. It is a pin against accidental change of the
+runner's output, not a parity claim: every number of every tick record (``seconds`` aside) is
+compared with the runner's own, to a float32 rounding tolerance. A deliberate change of the showcase
+regenerates it.
 
 The pin covers the runner's and the renderer's plumbing; the test camera is an untrained width-8
 network, so the pin says nothing of the decoder's quality or the camera's calibration. The
@@ -17,7 +18,10 @@ the rover moves and turns a little); the rover alone drives forward under its pl
 position and heading beliefs are calibrated without the camera, and with a small trained camera
 (``slow``); the rover's plans respect the wall preference; the scheduler decides on the slow clock;
 the battery drains when driving and charges when parked in the sun, far more on sunny ground than in
-shade; near empty the drive fails (the stall), in the world and in the model's own motion alike, and
+shade, and driving drains more uphill than downhill or across (descending costs what level ground
+costs), smoothly enough for the planner's gradient; the scheduler learns its energy table, a
+Dirichlet with a weak prior, at each decision, and its terminal target penalises the empty band
+alone; near empty the drive fails (the stall), in the world and in the model's own motion alike, and
 a rover started near empty stalls without losing its position; the charge option sends the rover to
 sunny ground and parks it there; the rover can observe the recogniser's reading instead of the image
 (experiment A).
@@ -41,6 +45,7 @@ CASES = ("two-level", "one-level")
 TICKS = {"two-level": 5, "one-level": 3}
 GRID = 4  # field cells per axis
 SLOW_TICKS = 2  # rounds an option lasts in the two-tier run: decisions at rounds 0, 2 and 4
+HORIZON = 2  # options the scheduler looks ahead in the two-tier run: 25 sequences, a small pin
 STEPS = 3  # descent steps of the rover's plan
 STARTS = 2  # its warm starts
 CELL = 0.375  # one cell of the showcase's 16 by 16 map grid over the 6 by 6 field
@@ -62,6 +67,10 @@ def case_setting(module, case):
     setting = dict(next(s for s in module.settings_grid_l2() if s["id"] == case))
     setting["grid"] = GRID
     setting.update(slow_ticks=SLOW_TICKS)
+    if case == "two-level":
+        ss = example("survey_scheduler")
+        penalty = ss.terminal_penalty(HORIZON, setting["field_strength"])
+        setting.update(horizon=HORIZON, terminal_penalty=penalty)
     return setting, TICKS[case]
 
 
@@ -167,13 +176,52 @@ def test_the_battery_drains_when_driving_and_charges_when_parked_in_the_sun():
     )
     shade = jnp.stack(shade)
     level = jnp.asarray(2.0)
-    parked_sun = float(wd.next_level(sunny, 0.0, level) - level)
-    parked_shade = float(wd.next_level(shade, 0.0, level) - level)
-    driving_sun = float(wd.next_level(sunny, wd.top_speed(), level) - level)
+    east = jnp.asarray([1.0, 0.0])
+    parked_sun = float(wd.next_level(sunny, east, 0.0, level) - level)
+    parked_shade = float(wd.next_level(shade, east, 0.0, level) - level)
+    driving_sun = float(wd.next_level(sunny, east, wd.top_speed(), level) - level)
     assert parked_sun > 0.04  # a good place: a band in about 20 ticks
     assert parked_shade < 0.0  # a poor one: the drain at rest outruns the light
     assert driving_sun < 0.0  # driving drains, even in good sun
     assert float(wd.sun(sunny)) >= np.percentile(wd.SUN, 95)  # the charging place is sunny
+
+
+def test_driving_drains_more_uphill_than_downhill_or_across_and_the_rule_is_smooth():
+    wd = example("survey_world")
+    # a steep point, its uphill direction, and the level point of the field
+    steep = np.unravel_index(np.argmax(wd.SLOPE), wd.SLOPE.shape)
+    xy = jnp.asarray([wd.XS[steep[0]], wd.YS[steep[1]]], jnp.float32)
+    up = jnp.asarray([wd.slope_x(xy), wd.slope_y(xy)])
+    up = up / jnp.linalg.norm(up)
+    across = jnp.asarray([-up[1], up[0]])
+    level = np.unravel_index(np.argmin(wd.SLOPE), wd.SLOPE.shape)
+    flat = jnp.asarray([wd.XS[level[0]], wd.YS[level[1]]], jnp.float32)
+    speed = wd.CRUISE_SPEED
+
+    def drain(at, heading):
+        return float(wd.energy_rates(at, heading, speed)[0])
+
+    assert drain(xy, up) > drain(xy, -up) + 0.5 * wd.SLOPE_DRAIN * wd.SLOPE.max() * speed
+    assert drain(xy, up) > drain(xy, across) + 0.5 * wd.SLOPE_DRAIN * wd.SLOPE.max() * speed
+    # down and across cost what level ground costs (within the ramp's log(2) / sharpness)
+    on_level = drain(flat, jnp.asarray([1.0, 0.0]))
+    tol = np.log(2.0) / wd.CLIMB_SHARPNESS * wd.SLOPE_DRAIN * speed + 1e-6
+    assert abs(drain(xy, -up) - on_level) <= tol
+    assert abs(drain(xy, across) - on_level) <= tol
+    # on level ground the heading does not matter (the field's flattest point: a slope of 0.002)
+    within = wd.SLOPE_DRAIN * speed * float(wd.SLOPE[level]) + 1e-6
+    for h in (0.0, 1.0, 2.5, 4.0):
+        heading = jnp.asarray([np.cos(h), np.sin(h)], jnp.float32)
+        assert drain(flat, heading) == pytest.approx(on_level, abs=within)
+    # the vehicle's step is differentiable at rest and on level ground (the gradient planner)
+    step = wd.VehicleStep()
+    for at in (flat, xy):
+        for s in (0.0, 0.2):
+            x = jnp.asarray([*at, 1.0, 0.0, s, 2.0], jnp.float32)
+            jac = jax.jacobian(lambda x, a: step(x, (a,)), argnums=(0, 1))(
+                x, jnp.asarray([0.5, 0.1])
+            )
+            assert all(bool(jnp.all(jnp.isfinite(j))) for j in jac)
 
 
 def test_a_rover_started_near_empty_stalls_without_losing_its_position():
@@ -211,10 +259,117 @@ def test_the_charge_option_goes_to_sunny_ground_and_parks_there():
     assert np.allclose(visit.sum(axis=0), 1.0)
     trip = np.linalg.norm(centres - site, axis=1) / ss.CHARGE_SPEED
     assert np.all(visit.argmax(axis=0)[trip < ss.SURVEY_TICKS / 2] == cell)
-    # charging there pays, from anywhere a trip of under an option away
-    change = ss.option_changes(centres)[:, sm.CHARGE]
-    near = np.linalg.norm(centres - site, axis=1) < 1.5
-    assert change[near].min() > 0.4  # about a band in two options
+
+
+def test_the_scheduler_s_energy_prior_follows_the_declared_energy_rule_and_its_target_is_terminal():
+    sm = example("survey_model")
+    ss = example("survey_scheduler")
+    from hybrid_aif import Categorical, ConditionalDirichlet, Parameter
+
+    grid, centres = sm.field_grid(GRID)
+    system, params = ss.scheduler(grid, centres)
+    assert params.transition["energy"] == Parameter("energy_table")
+    table = params.parameters["energy_table"]
+    assert isinstance(table, ConditionalDirichlet) and table.parent_ndims == 2
+    assert dict(zip(system.state_names, system.B_deps[:3], strict=True))["energy"] == (1, 3)
+    conc = np.asarray(table.concentration)
+    floor = ss.PRIOR_FLOOR
+    assert conc.shape == (sm.N_BANDS, sm.N_BANDS, sm.N_OPTIONS)
+    np.testing.assert_allclose(conc.sum(axis=0), ss.PRIOR_COUNT + sm.N_BANDS * floor, rtol=1e-5)
+    n, count = sm.N_BANDS, ss.PRIOR_COUNT
+    # from the empty band, under every option: half the same, half one higher
+    for k in range(sm.N_OPTIONS):
+        want = np.full(n, floor)
+        want[:2] += count / 2
+        np.testing.assert_allclose(conc[:, 0, k], want, rtol=1e-5)
+    # elsewhere the declared energy rule over one option: a survey drives at cruise on flat ground
+    # at the median yield, a charge parks on the charging place's yield
+    shifts = ss.option_shifts()
+    wd = example("survey_world")
+    survey = ss.SURVEY_TICKS * wd.net_rate(ss.CRUISE, 0.0, float(np.median(wd.SUN)))
+    assert np.allclose(shifts[: sm.N_SURVEY], survey) and survey == pytest.approx(-0.397, abs=0.005)
+    assert shifts[sm.CHARGE] > 2 * wd.BAND_WIDTH  # parked in full sun: more than two bands
+    change = ss.expected_change(conc - floor)
+    for k in range(sm.N_OPTIONS):
+        for band in range(1, n):
+            p = ss.shift_probabilities(shifts[k], band)
+            np.testing.assert_allclose(conc[:, band, k], floor + count * p, rtol=1e-5)
+            assert np.count_nonzero(p) <= 2  # two neighbouring moves, the level uniform in a band
+            if 0 <= band + np.sign(shifts[k]) * np.ceil(abs(shifts[k]) / wd.BAND_WIDTH) < n:
+                # unfolded: the expected move is the declared shift in bands
+                assert change[band, k] == pytest.approx(shifts[k] / wd.BAND_WIDTH, abs=1e-4)
+    # a survey from 0.5-1 ends in the empty band with probability |shift| / band width
+    assert conc[0, 1, 0] - floor == pytest.approx(count * abs(survey) / wd.BAND_WIDTH, rel=1e-4)
+    # no per-step energy target; a terminal one, the empty band alone lower, by twice the bound
+    assert "energy" not in params.state_targets
+    terminal = params.terminal_targets["energy"]
+    assert isinstance(terminal, Categorical)
+    logits = np.asarray(terminal.logits)
+    assert np.all(logits[1:] == logits[1])
+    penalty = ss.terminal_penalty(system.policy_len)
+    assert logits[1] - logits[0] == pytest.approx(penalty)
+    assert penalty == pytest.approx(2 * ss.novelty_bound(system.policy_len))
+    assert ss.novelty_bound(1) == pytest.approx(ss.SURVEY_READINGS, rel=0.01)  # a nat a reading
+    # the scheduler learns no curiosity about the table
+    assert tuple(system.epistemic) == ("transition:map",)
+
+
+def test_the_band_meter_errs_only_onto_an_adjacent_band_and_world_and_model_share_it():
+    sm = example("survey_model")
+    wd = example("survey_world")
+    table = wd.gauge_table()
+    n = wd.N_BANDS
+    assert table.shape == (n, n) and n == sm.N_BANDS
+    np.testing.assert_allclose(table.sum(axis=0), 1.0)
+    np.testing.assert_allclose(np.diag(table)[1:-1], wd.GAUGE_ACC)
+    far = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :]) > 1
+    assert np.all(table[far] == 0.0)  # no reading two or more bands away
+    for band in range(1, n - 1):  # the error split equally between the two neighbours
+        assert table[band - 1, band] == pytest.approx((1 - wd.GAUGE_ACC) / 2)
+        assert table[band + 1, band] == pytest.approx((1 - wd.GAUGE_ACC) / 2)
+    # at the end bands the missing neighbour's share reads the true band
+    half = (1 - wd.GAUGE_ACC) / 2
+    assert table[0, 0] == pytest.approx(wd.GAUGE_ACC + half) and table[1, 0] == pytest.approx(half)
+    assert table[n - 1, n - 1] == pytest.approx(wd.GAUGE_ACC + half)
+    assert table[n - 2, n - 1] == pytest.approx(half)
+    np.testing.assert_array_equal(sm.gauge_table(), table)
+    # the bands: half a unit each, the empty band under 0.5
+    levels = (0.0, 0.49, 0.5, 2.2, 3.99, 4.0)
+    bands = [0, 0, 1, 4, n - 1, n - 1]
+    assert [int(wd.band_of(jnp.asarray(v))) for v in levels] == bands
+
+
+def test_the_cell_reading_errs_onto_nearby_cells_falling_off_with_distance():
+    sm = example("survey_model")
+    ss = example("survey_scheduler")
+    _, centres = sm.field_grid()
+    table = ss.cell_obs_table(centres)
+    np.testing.assert_allclose(table.sum(axis=0), 1.0, rtol=1e-9)
+    np.testing.assert_allclose(np.diag(table), ss.CELL_ACC)
+    cell = 5 * sm.GRID_SHAPE + 5  # inside the field, away from the walls
+    dist = np.linalg.norm(centres - centres[cell], axis=1)
+    errors = table[:, cell].copy()
+    errors[cell] = np.nan
+    order = np.argsort(dist)[1:]  # the other cells, nearest first
+    assert np.all(np.diff(errors[order]) <= 1e-12)  # never more likely farther away
+    side = ss.CELL_SIDE
+    neighbour = errors[np.isclose(dist, side)]
+    two_away = errors[np.isclose(dist, 2 * side)]
+    assert neighbour.min() / two_away.max() == pytest.approx(np.exp(1.5), rel=1e-6)
+    assert errors[dist > 4 * side].sum() < 1e-3 * (1 - ss.CELL_ACC)
+
+
+def test_a_decision_counts_the_band_change_into_the_case_of_the_option_taken(runs):
+    decisions = [r for r in runs["two-level"] if r["slow"]["decision"]]
+    first = np.asarray(decisions[0]["slow"]["energy_table"]["counts"])
+    assert np.allclose(first, 0.0)  # the first decision has nothing to learn from
+    for before, after in zip(decisions, decisions[1:], strict=False):
+        gained = np.asarray(after["slow"]["energy_table"]["counts"]) - np.asarray(
+            before["slow"]["energy_table"]["counts"]
+        )
+        assert gained.sum() == pytest.approx(1.0, abs=1e-4)  # one transition, one count
+        taken = before["option"]
+        assert gained[:, taken].sum() == pytest.approx(1.0, abs=1e-4)  # in the option taken
 
 
 def _drive(wd, commands, start, key):

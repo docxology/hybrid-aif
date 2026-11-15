@@ -23,17 +23,17 @@ kept in the carry's trace), the rover by ``plan()`` too (the gradient planner wa
 last plan, learning the field, its trace kept; ``rover_plan``), and the world by its hand-written
 step. The page's per-tick records are read from the run's ``Trajectory`` afterwards
 (``rover_record``, ``decision_record``), and the timing of the rover's parts by a separate harness
-(``timing``). The scheduler's params
-declare a duration for every option, so it decides once per option, every ``SLOW_TICKS`` rounds,
-and the rover holds the option between decisions. What the rover learns is written back to the
-shared field each round, so the scheduler's novelty reads the counts gathered so far; the
-scheduler never learns. The order is sequential: the scheduler steps first, the rover as soon as
-the option it reads is realised, the world last on the command just realised; the scheduler's
-cell reading is the rover's emission of the round before, absent in round 0. The two ablations
-of the page: ``--camera none`` (the rover's model without the image) and ``--no-fix`` (the fix
-arrives and is never read); ``--camera look`` has the rover observe the recogniser's reading of
-the terrain instead of the image. The runs are written to one bundle for the launch page, and
-a REPORT.md summarises them.
+(``timing``). The scheduler's params declare a duration for every option, so it decides once per
+option, every ``SLOW_TICKS`` rounds, and the rover holds the option between decisions. What the
+rover learns is written back to the shared field each round, so the scheduler's novelty reads the
+counts gathered so far; the scheduler learns its energy table alone, from its band readings, once
+per decision (``survey_scheduler.learn_rates``). The order is sequential: the scheduler steps first,
+the rover as soon as the option it reads is realised, the world last on the command just realised;
+the scheduler's cell reading is the rover's emission of the round before, absent in round 0. The two
+ablations of the page: ``--camera none`` (the rover's model without the image) and ``--no-fix`` (the
+fix arrives and is never read); ``--camera look`` has the rover observe the recogniser's reading of
+the terrain instead of the image. The runs are written to one bundle for the launch page, and a
+REPORT.md summarises them.
 
     python examples/survey_run.py --out DIR [--settings id,id] [--ticks 200] [--seed 0]
     python examples/survey_run.py --out DIR --assemble     # merge the part files into bundle
@@ -184,9 +184,10 @@ def position_belief(beliefs, pre=""):
 
 
 def band_probabilities(level, sd):
-    """The probability of each energy band (a unit each, the top band open above) under a Gaussian
-    belief over the level, its mass below the first boundary counted in the empty band."""
-    edges = np.arange(1, sm.N_BANDS, dtype=float)
+    """The probability of each energy band (``survey_world.BAND_WIDTH`` each, the top band open
+    above) under a Gaussian belief over the level, its mass below the first boundary counted in the
+    empty band."""
+    edges = np.arange(1, sm.N_BANDS, dtype=float) * wd.BAND_WIDTH
     cdf = 0.5 * (1.0 + np.vectorize(math.erf)((edges - level) / (sd * np.sqrt(2.0))))
     cuts = np.concatenate([[0.0], cdf, [1.0]])
     return [float(p) for p in np.diff(cuts)]
@@ -528,8 +529,10 @@ def settings_grid_l2():
     """The settings of the two-tier comparison: the scheduler over the rover (two levels), and
     the rover alone (one level), the fast tier with its own novelty term and no scheduler, free to
     go where it likes. Both share the rover's epistemic terms, its energy preference and its
-    field; the scheduler's ladder over the energy bands is ``energy_logits``, and its map reading
-    is pooled over an option (``readings``)."""
+    field. The scheduler looks ``horizon`` options ahead, learns its energy table from its band
+    readings (``survey_scheduler.LEARN``), scores a terminal target whose penalty on the empty band
+    is ``terminal_penalty`` (``survey_scheduler.terminal_penalty`` of the horizon), and pools its
+    map reading over an option (``readings``)."""
 
     def setting(sid, label, tiers, **extra):
         out = dict(
@@ -540,7 +543,8 @@ def settings_grid_l2():
             field_lr=FIELD_LR,
             field_strength=FIELD_STRENGTH,
             energy_preference=list(sm.ENERGY_PREFERENCE),
-            energy_logits=list(sm.ENERGY_TARGET),
+            horizon=ss.HORIZON,
+            terminal_penalty=ss.terminal_penalty(ss.HORIZON, FIELD_STRENGTH),
             planning_belief=sm.PLANNING_BELIEF,
             grid=sm.GRID_SHAPE,
             slow_ticks=SLOW_TICKS,
@@ -567,9 +571,12 @@ def agent_system(decoder, setting, confusion=None):
     ms, mp = ss.scheduler(
         grid,
         centres,
-        energy_target=tuple(setting["energy_logits"]),
+        terminal=setting["terminal_penalty"],
         field_strength=setting["field_strength"],
+        #  the rover's horizon, so that the joint planner's leaves agree; the scheduler's step
+        #  plans with its own (``replace`` in ``run_tiered``)
         policy_len=rs.policy_len,
+        energy_counts=setting.get("energy_counts"),
         durations=True,  # the scheduler decides once per option, its duration read off these
         readings=setting.get("readings", False),
     )
@@ -621,9 +628,9 @@ def decision_record(carry, option, reading, seconds, pre="agent.mission.", n_opt
     """The record of one decision of the scheduler for the page, read from the carry its
     ``plan(trace=True)`` step left: the option sequences it scored (``trace.policies``) with
     their term trees, ``G`` and ``q_pi``, the best ``G`` and the probability of each first option,
-    and the posterior over the energy band and the visited cell (``carry.previous``). ``reading``
-    is the cell modality's value that round, ``None`` where it was absent; ``n_options`` the
-    option control node's levels."""
+    the posterior over the energy band and the visited cell (``carry.previous``), and the energy
+    table the decision planned with (``energy_record``). ``reading`` is the cell modality's value
+    that round, ``None`` where it was absent; ``n_options`` the option control node's levels."""
     q_pi, tree, sequences = carry.trace.q_pi, carry.trace.tree, np.asarray(carry.trace.policies)
     g = total(tree)
     records = [
@@ -655,7 +662,23 @@ def decision_record(carry, option, reading, seconds, pre="agent.mission.", n_opt
             energy=[float(p) for p in np.asarray(beliefs[pre + "energy"].probs)],
             visit=[float(p) for p in np.asarray(beliefs[pre + "visit"].probs)],
         ),
+        energy_table=energy_record(carry.trace.parameters[pre + "energy_table"]),
         seconds=seconds,
+    )
+
+
+def energy_record(table):
+    """The scheduler's energy table as the page shows it, from the parameter variable (a
+    ``ConditionalDirichlet`` ``[next, band, option]``): the expected change of band per band and
+    option (``change``, ``[band][option]``), the next band's probabilities (``probs``,
+    ``[band][option][next]``) and the counts each case has gathered beyond its prior (``counts``,
+    ``[band][option]``)."""
+    conc = np.asarray(table.concentration, np.float64)
+    prior = ss.energy_prior()
+    return dict(
+        change=np.round(ss.expected_change(conc), 4).tolist(),
+        probs=np.round(np.transpose(conc / conc.sum(axis=0, keepdims=True), (1, 2, 0)), 4).tolist(),
+        counts=np.round(conc.sum(axis=0) - prior.sum(axis=0), 4).tolist(),
     )
 
 
@@ -676,7 +699,12 @@ def run_tiered(
     every = setting["slow_ticks"]
     start = setting.get("start_energy")
     seconds = []
-    decide = plan(trace=True, selection="deterministic", replace={"policy_len": 2})
+    decide = plan(
+        trace=True,
+        selection="deterministic",
+        replace={"policy_len": setting["horizon"]},
+        learn=ss.learn_rates("agent.mission."),
+    )
     mission = timed(decide, seconds)
     rover_seconds = []
     rover = rover_plan(setting, steps, starts, "agent.rover.", rover_seconds)
@@ -713,10 +741,16 @@ def run_tiered(
         return rover_record(carry, setting, pre, decoder, horizon)
 
     rows = tick_rows(rec, "agent.rover", ticks, record, rover_seconds, extra, recognise=readout)
+    learned = rec.params.parameters["agent.mission.energy_table"]
     return dict(
         ticks=rows,
         planner=dict(steps=steps, starts=starts),
         timing=timing(rec, "agent.rover", setting, decoder, confusion, steps, starts),
+        #  the scheduler's energy table at the run's end (the parameter home after the last
+        #  round): its record, and its counts, which a later mission's setting may start from
+        #  (``energy_counts``)
+        energy_table=energy_record(learned),
+        energy_counts=np.asarray(learned.concentration, np.float64).tolist(),
     )
 
 
@@ -763,14 +797,26 @@ def dynamics_record():
             base_drain=float(wd.BASE_DRAIN),
             move_drain=float(wd.MOVE_DRAIN),
             slope_drain=float(wd.SLOPE_DRAIN),
+            climb_sharpness=float(wd.CLIMB_SHARPNESS),
             charge_rate=float(wd.CHARGE_RATE),
             moving_charge=float(wd.MOVING_CHARGE),
             park_speed=float(wd.PARK_SPEED),
             sun_power=float(wd.SUN_POWER),
             gauge_sd=float(wd.GAUGE_SD),
+            bands=wd.N_BANDS,
+            band_width=float(wd.BAND_WIDTH),
+            band_meter=(
+                "the band meter shows the true band with probability gauge_acc, else one of the "
+                "adjacent bands (the rest split equally between the two; at the bottom and the "
+                "top band the missing neighbour's share reads the true band)"
+            ),
+            gauge_acc=float(wd.GAUGE_ACC),
             rule=(
                 "per tick, before the move: level += charge - drain, drain = base_drain + "
-                "(move_drain + slope_drain * slope) * speed, charge = charge_rate * sun * "
+                "(move_drain + slope_drain * climb) * speed, climb = softplus(climb_sharpness * "
+                "c) / climb_sharpness, c the slope along the heading (the height's directional "
+                "derivative: uphill positive; about zero going down or across, no "
+                "regeneration), charge = charge_rate * sun * "
                 "(moving_charge + (1 - moving_charge) * exp(-(speed / park_speed)^2)), sun the "
                 "map world.sun (the sunlight over its maximum, to sun_power); held in [0, max]"
             ),
@@ -996,7 +1042,7 @@ def run_summary(run_, marks=MARKS):
         float(np.hypot(*(np.asarray(r["belief"]["mean"]) - np.asarray(r["true_x"][:2]))))
         for r in rows
     ]
-    bands = np.bincount([r["true_energy"]["band"] for r in rows], minlength=4)
+    bands = np.bincount([r["true_energy"]["band"] for r in rows], minlength=sm.N_BANDS)
     terrain = np.bincount([r["true_terrain"] for r in rows], minlength=3)
     secs = [r["seconds"] for r in rows[1:]] or [rows[0]["seconds"]]
     coverage = {f"t{k}": rows[min(k, n) - 1]["coverage"] for k in marks}
@@ -1116,8 +1162,8 @@ def report_text(settings, runs, marks=MARKS, mdl=None):
             f"- the composite: {mdl['total']:.0f} nats ({mdl['total_exact']:.0f} exact)",
             f"- the scheduler's known visit table alone (transition:mission.visit): "
             f"{parts.get('transition:mission.visit')} nats",
-            f"- the scheduler's known energy table (transition:mission.energy): "
-            f"{parts.get('transition:mission.energy')} nats",
+            f"- the scheduler's learned energy table (parameter:mission.energy_table): "
+            f"{parts.get('parameter:mission.energy_table')} nats",
             f"- the cell reading (likelihood:mission.cell_obs): "
             f"{parts.get('likelihood:mission.cell_obs')} nats",
             f"- the shared field (parameter:rover.field): "
@@ -1267,6 +1313,9 @@ def assemble(out_dir, camera_report, decoder):
     model = joint_planner(*agent_system(decoder, settings[0], confusion)[0])
     n = ticks.pop()
     meta = meta_record(n, camera_report, grid, camera_mode(settings[0]))
+    seeds = {s.get("seed", 0) for s in settings}
+    meta["seed"] = seeds.pop() if len(seeds) == 1 else None  # the run key the settings share
+    tiered = next((s for s in settings if s.get("tiers") == 2), settings[0])
     meta["tiers"] = dict(
         slow_ticks=settings[0]["slow_ticks"],
         options=ss.OPTION_NAMES,
@@ -1275,6 +1324,45 @@ def assemble(out_dir, camera_report, decoder):
         sector_centres=[[float(c) for c in p] for p in sm.sector_centres()],
         charge_site=[float(c) for c in sm.charge_site()],
         survey_readings=ss.SURVEY_READINGS,
+        charge_readings=ss.CHARGE_READINGS,
+        horizon=tiered.get("horizon", ss.HORIZON),
+        terminal_penalty=tiered.get("terminal_penalty"),
+        energy_model=(
+            "the scheduler's energy transition is the parameter variable energy_table, one "
+            "Dirichlet per band and option over the next band, learned at each decision from its "
+            "band readings (the band posterior against the decision before's, under the option "
+            "taken then); its prior: three pseudo-counts per case, the band probabilities of "
+            "the level shift the rover's declared energy rule gives over one option (a survey: "
+            "cruise speed on flat ground at the median solar yield; charge: parked on the "
+            "charging place's yield), the level uniform within its band; from the empty band, "
+            "under every option, half each on the same and one higher; 0.001 on every entry; "
+            "no information-gain term on it"
+        ),
+        terminal=(
+            "the scheduler's energy term is a terminal target, scored once at the plan's end: "
+            "equal over every band but the empty one, the empty band lower by "
+            "terminal_penalty, twice the most novelty a plan of the horizon could earn at the "
+            "start of a mission (the horizon, times the most readings an option pools, times the "
+            "field's novelty weight under its prior)"
+        ),
+        cell_reading=(
+            "the scheduler's cell reading is right with probability cell_acc, else another cell "
+            "in proportion to a Gaussian of sd cell_error_sd (one cell side) in the distance "
+            "between the cells' centres"
+        ),
+        cell_acc=float(ss.CELL_ACC),
+        cell_error_sd=float(ss.CELL_ERROR_SD),
+        measured=dict(
+            cruise_speed=float(ss.CRUISE),
+            survey_spread=float(ss.SURVEY_SPREAD),
+            charge_speed=float(ss.CHARGE_SPEED),
+            survey_readings=ss.SURVEY_READINGS,
+            charge_readings=ss.CHARGE_READINGS,
+            note=(
+                "the constants of the scheduler's visit table and pooled readings measured on "
+                "earlier runs of the two-tier agent; its energy table holds none"
+            ),
+        ),
         one_level=(
             "the one-level setting is the rover alone: the fast tier with its own objective "
             "(the field's novelty, the fix's information gain, the energy preference and the "

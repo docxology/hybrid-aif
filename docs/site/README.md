@@ -59,7 +59,7 @@ as committed it reproduces `index.html` byte for byte.
 To regenerate the data:
 
 ```bash
-python examples/survey_run.py --ticks 800 --out OUT_DIR            # both settings, one part file each
+python examples/survey_run.py --ticks 800 --seed 4 --out OUT_DIR   # both settings, one part file each (the page shows seed 4)
 python examples/survey_run.py --ticks 800 --out OUT_DIR --assemble # OUT_DIR/bundle.json
 python examples/survey_trim.py OUT_DIR/bundle.json docs/site
 ```
@@ -80,12 +80,23 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   where terrain blocks the sky), `slope`, `terrain` (class index per `meta.names.terrain`) and,
   in bundles with a solar battery, `sun` (the solar yield, where parking charges; the viewer's
   illumination layer shows it when present).
-- `meta.names`: `terrain` (firm, rough, ice) and `energy` (empty, low, medium, full).
+- `meta.seed`: the run key every setting of the bundle was run with (null when they differ).
+- `meta.names`: `terrain` (firm, rough, ice) and `energy` (the band names, empty to full: eight
+  bands of half a unit, `empty`, `0.5-1`, ..., `3-3.5`, `full`; four, empty, low, medium, full,
+  in bundles with bands of a unit). The viewer draws as many bands as this list names.
 - `meta.tiers`: `slow_ticks` (24), `options` (survey sector 1 to 4, charge), `zones`,
   `zone_split` (the field's quadrants are split at these x and y), `sector_centres`,
   `charge_site` (the charging place the charge option drives to and parks at, in bundles whose
   charge option has one fixed place; the viewer marks it in the two-tier settings only),
-  `survey_readings` (the cells a survey's pooled reading counts), `one_level` (a sentence: the
+  `survey_readings` and `charge_readings` (the cells a survey's and a charge's pooled reading
+  counts), `horizon` (the options the scheduler looks ahead; the viewer reads two when it is
+  absent), `terminal_penalty` (the terminal target's penalty on the empty band; absent in bundles
+  whose scheduler scored a per-step target over the bands, which the viewer then calls the energy
+  risk), `energy_model` and `terminal` (sentences: the learned energy table and its prior, the
+  terminal target and how its penalty is set), `cell_reading`, `cell_acc` and `cell_error_sd`
+  (the scheduler's cell reading and its local error model), `measured` (the scheduler's constants measured on
+  earlier runs: `cruise_speed`, `survey_spread`, `charge_speed`, `survey_readings`,
+  `charge_readings`, and a `note`), `one_level` (a sentence: the
   one-level run is the rover alone, with no scheduler and no option). Bundles whose one-level run
   pinned an option carry `pinned_option` instead; the viewer reads either.
 - `meta.image`: `side` (32), `layout` (row 0 is the top of the picture), `view` (what the camera
@@ -104,12 +115,13 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
 - `meta.dynamics`: `kind` ("vehicle"), `dt`, `gain`, `keep`, `turn_max_degrees`, `command_low`
   and `command_high` (the command's box: drive from 0 to 1, a target speed as a share of the top
   speed, and turn from -1 to 1), `state_sd`, `state`, `top_speed`, `cruise_speed` (the measured
-  typical speed the energy tables are built at), `terrain_names` and `rule`, a sentence giving the
+  typical speed the scheduler's visit table is built at), `terrain_names` and `rule`, a sentence giving the
   vehicle's integration rule (position along the heading at the speed, a turn of at most
   `turn_max_degrees`, in place too, the speed moving toward the target). Bundles with a solar
   battery also carry `stall` (`level`, `width`: the drive delivers the share 1 / (1 + exp(-(level
-  - stall.level) / stall.width)) of the command) and `energy` (the drain and charge constants and
-  their `rule`); the energy level is the state's last coordinate. The page rolls each plan of
+  - stall.level) / stall.width)) of the command) and `energy` (`max`, the drain and charge
+  constants and their `rule`; `bands`, `band_width`, `gauge_acc` and `band_meter`, the band
+  meter's error model); the energy level is the state's last coordinate. The page rolls each plan of
   (drive, turn) forward with it from the believed heading and speed (and, with a stall, the drive
   share at the believed level, held over the plan), and while playing moves the rover between
   ticks (unless the reader asks for reduced motion).
@@ -145,11 +157,17 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
 - Per tick of the two-level run, `slow`: `decision` (true every 24th tick), and on a decision
   `option`, `cell` (the scheduler's cell reading: the cell holding most of the rover's position belief), `efe_by_option` (G of the best sequence per first option), `q_by_option`,
   `policies` (the best option sequences, trimmed to keep at least the best one per first option: `options`, `terms` with the `infogain`
-  `transition:mission.map` leaf and the `risk` `mission.energy` leaf, `G`, `q_pi`), `chosen`,
-  `belief` (`energy`, `visit`) and `seconds`. The one-level run has no `slow`.
+  `transition:mission.map` leaf and the `terminal_risk` `mission.energy` leaf, the terminal
+  target scored at the plan's end, or in earlier bundles the `risk` `mission.energy` leaf, `G`,
+  `q_pi`), `chosen`, `belief` (`energy`, `visit`), `energy_table` (the scheduler's learned energy
+  table the decision planned with: `change`, the expected change of band over one option,
+  `[band][option]`; `probs`, the next band's probabilities, `[band][option][next]`; `counts`, the
+  band changes each case has counted beyond its prior, `[band][option]`; the viewer shows it under
+  the decision chart) and `seconds`. The one-level run has no `slow`. The two-level run also
+  carries `energy_table` and `energy_counts` (the table at the run's end).
 - `mdl.components`: one entry per priced component (`name`, `kind`, `nats`, `exact`, `entries`),
-  including `parameter:rover.field`, priced once; the two readers' `transition` entries carry
-  structure only (`entries` 0). The page groups them by tier from the name's prefix.
+  including `parameter:rover.field` and `parameter:mission.energy_table`, each priced once; their
+  readers' `transition` entries carry structure only (`entries` 0). The page groups them by tier from the name's prefix.
 
 The viewer opens on the rover alone (the one-level setting) unless the URL names a setting; in
 bundles whose one-level run pinned an option it opens on the first setting. The field's legend
