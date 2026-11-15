@@ -72,8 +72,6 @@ tuple containers do not load (dict leaves flatten in sorted-name order).
 
 ## Shape rules
 
-> These four cost the probe most of its time. None of them was written down.
->
 > 1. **Every transition table carries a trailing control axis — including an
 >    uncontrolled factor's, where it has size 1.** So for every factor,
 >    `parent_ndims == len(B_deps[f]) + 1`. `make_transition` slices that axis

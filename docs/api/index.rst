@@ -5,8 +5,8 @@ hybrid-aif
 **hybrid-aif** is a JAX library for active inference over models that mix continuous and discrete
 variables. A model is declared as a ``System`` of state factors, observation modalities and control
 nodes, with mixture and switching structure available, and can be inferred, planned, learned and
-composed with other Systems. Planning runs as parallel policy search on accelerators, and objectives
-are assembled from named terms rather than fixed.
+composed with other Systems. Planning runs as parallel policy search, vectorised with JAX over policies and over agents, and
+objectives are assembled from named terms rather than fixed.
 
 .. code-block:: bash
 
@@ -67,4 +67,5 @@ repository.
    :caption: Reference models
 
    reference
+   raif
 

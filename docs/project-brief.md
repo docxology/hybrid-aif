@@ -1,6 +1,6 @@
 # hybrid-aif: project brief
 
-*For team review. Companion docs: `../README.md` (project spec),
+*Companion docs: `../README.md` (project spec),
 `scoping-review.md` (full analysis of reference repos & papers),
 `de-risk-report.md` (deep-dives on the three hardest design items, with
 citations). This brief summarizes where we've landed and what's still open.*
