@@ -176,7 +176,7 @@ reads the camera's image, that the position belief is tighter than their scatter
 camera localises the rover too.
 
 Testing: open `index.html` from a local server (or from disk); the URL hash
-`#hero&t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` opens the viewer's pane
+`#demo&t=150&setting=one-level&tier=rover&view=terms&layer=fix&theme=dark` opens the viewer's pane
 and sets the initial view (without a pane id, settings open the viewer's pane), and
 `window.__app.set({...})` drives it from a script.
 

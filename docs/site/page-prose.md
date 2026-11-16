@@ -49,7 +49,7 @@ nets). Models and objectives can be specified flexibly and come with detailed mo
 and logging tools.
 
 {.demo}
-**Demo:** [Solar rover](#hero)
+**Demo:** [Solar rover](#demo)
 
 **Core features:**
 
@@ -101,7 +101,7 @@ port from research into production code, and also potentially allows one to use 
 specified in this common language (in particular, `pymdp` and `RxInfer` backend support via a thin translation layer
 are on the roadmap).
 
-## Solar rover demo {#hero}
+## Solar rover demo {#demo}
 
 ### Overview
 
@@ -116,10 +116,10 @@ mission planner that provides options to map a given coarse-grained sector, or t
 > **Left:** Contour map, with rover position/heading beliefs, satellite fixes, and patches colored 
 > by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, 
 > alternate plans thinner in the text color. 
-> Plans are rolled forward by the same nonlinear functions the generative process uses:
+> Plans are rolled forward by the same nonlinear functions the generative process uses.
 > The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a
 > turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive
-> as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, 
+> and the turn as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, 
 > and spread $w$. This is near one above the stall level and near zero near empty. Then
 > $$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad
 > \theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad
@@ -132,18 +132,22 @@ mission planner that provides options to map a given coarse-grained sector, or t
 >
 > $$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big]
 > - \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$
-
+>
 > with a solar charge in proportion to the yield $y$ of the ground, mostly when parked, less a drain at
 > rest, per unit of speed, and per unit of uphill climb $c^{+}_t$ (a smooth ramp of the slope along
-> the heading; downhill costs what level ground costs). Gaussian noise of a fixed sd per coordinate
+> the heading; downhill costs what level ground costs): the charge rate $r = 0.07$ per tick on
+> ground of full yield, of which the share $\mu = 0.1$ is collected at speed and the rest fades
+> out over the parking speed $s_{\mathrm{park}} = 0.05$; the drain $\beta = 0.01$ at rest,
+> $\delta = 0.045$ per unit of speed, and $\delta_{\uparrow} = 1.5\,\delta$ more per unit of
+> climb. The level is then held between 0 and 4. Gaussian noise of a fixed sd per coordinate
 > is added, and the world clips the position to the field. A rover that hits a wall stops (the model 
 > does not know the walls; it knows the stall).
 
-> The graph: the model, with the table
+> **Right:** the model, with the table
 > `rover.field` read by `rover.terrain` in the fast tier and by `mission.map` in the slow one. The
 > table is one node because the two tiers share it outright (one learned belief by design), not
 > because one reads a copy of the other. The belief over position is a Gaussian, drawn as its 2σ ellipse 
-> with a minimum size so it stays visible; the camera and the fix together keep it to about a centimeter.
+> with a minimum size so it stays visible; the camera and the fix together keep it small.
 
 ### Model 
 

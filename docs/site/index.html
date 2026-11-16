@@ -22,7 +22,7 @@
   <nav class="toc" aria-label="Contents">
     <ul>
       <li><a href="#intro" data-pane="intro">Intro</a></li>
-      <li><a href="#hero" data-pane="hero">Solar rover demo</a>
+      <li><a href="#demo" data-pane="demo">Solar rover demo</a>
         <ul>
           <li><a href="#overview">Overview</a></li>
           <li><a href="#model">Model</a></li>
@@ -53,8 +53,8 @@
 
 <div class="column">
 <main id="main">
-<div class="demobar" id="demobar" data-panes="hero timescales camera objective mdl" hidden>
-  <a class="demobar-title" href="#hero">Solar rover demo</a>
+<div class="demobar" id="demobar" data-panes="demo timescales camera objective mdl" hidden>
+  <a class="demobar-title" href="#demo">Solar rover demo</a>
   <div class="demobar-controls" role="group" aria-label="Playback">
     <button id="play" type="button" aria-label="Play">Play</button>
     <label class="slider">Tick <input id="tick" type="range" min="0" max="0" value="0"> <output id="tickout">0</output></label>
@@ -70,7 +70,7 @@
   <p class="byline">Noumenal Labs &middot; <span id="version">v0.20.0</span> &middot; MIT &middot; [<a href="https://github.com/noumenal-labs/hybrid-aif">github</a>]</p>
   <div class="tldr">
     <p><code>hybrid-aif</code> is a Python/JAX library for production-grade active inference and probabilistic machine learning. It supports inference, learning, and planning on models with heterogeneous pieces: continuous, discrete, and mixture factors as well as amortized functions (e.g. neural nets). Models and objectives can be specified flexibly and come with detailed model comparison and logging tools.</p>
-    <p class="demo"><strong>Demo:</strong> <a href="#hero">Solar rover</a></p>
+    <p class="demo"><strong>Demo:</strong> <a href="#demo">Solar rover</a></p>
     <p><strong>Core features:</strong></p>
     <ul>
       <li><strong>Factor-graph primitives beyond the exponential family.</strong> Core distributions like conditional categoricals and Gaussians, as well as various types of mixture model (e.g. Gaussian mixtures, switching linear dynamical systems, and mixture dynamics), but also user-defined nonlinear and deterministic functions and amortized neural factors.</li>
@@ -103,7 +103,7 @@
   </div>
 </section>
 
-<section class="pane" id="hero">
+<section class="pane" id="demo">
   <h2>Solar rover demo</h2>
   <h3 id="overview">Overview</h3>
   <p class="lead">In this demo, a solar-powered rover builds a map of a 2.5D environment (a field with continuously varying height), classifying terrain into three kinds (firm, rough, and ice). The rover's battery charges in sunlight, which depends on which slopes are shaded. For navigation it relies on a forward camera and a GPS-like satellite signal whose quality varies over the field. The demo shows two variants: one with just the rover and one a hierarchical model whose second layer is a discrete mission planner that provides options to map a given coarse-grained sector, or to charge the battery.</p>
@@ -124,7 +124,7 @@
       <div class="legend" id="graphlegend"></div>
     </figure>
   </div>
-  <div class="figcap"><p><strong>Left:</strong> Contour map, with rover position/heading beliefs, satellite fixes, and patches colored by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, alternate plans thinner in the text color. Plans are rolled forward by the same nonlinear functions the generative process uses: The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, and spread $w$. This is near one above the stall level and near zero near empty. Then $$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad \theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad s_{t+1} = \kappa \, s_t + a \, g \, d,$$  with position $\mathbf{p}$, heading angle $\theta$, forward speed $s$, battery level $\ell$ (0 to 4), max turn rate $\tau_{\max}$ = 20 degrees per tick, $\kappa = 0.5$ speed damping and $a$ speed gain. The speed closes on $s_{\mathrm{top}} \, g \, d$ with $s_{\mathrm{top}} = a / (1 - \kappa)$, and the rover drives forward only. The energy level is updated as:  $$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big] - \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$</p><p>with a solar charge in proportion to the yield $y$ of the ground, mostly when parked, less a drain at rest, per unit of speed, and per unit of uphill climb $c^{+}_t$ (a smooth ramp of the slope along the heading; downhill costs what level ground costs). Gaussian noise of a fixed sd per coordinate is added, and the world clips the position to the field. A rover that hits a wall stops (the model does not know the walls; it knows the stall).</p><p>The graph: the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The belief over position is a Gaussian, drawn as its 2&sigma; ellipse with a minimum size so it stays visible; the camera and the fix together keep it to about a centimeter.</p></div>
+  <div class="figcap"><p><strong>Left:</strong> Contour map, with rover position/heading beliefs, satellite fixes, and patches colored by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, alternate plans thinner in the text color. Plans are rolled forward by the same nonlinear functions the generative process uses. The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive and the turn as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, and spread $w$. This is near one above the stall level and near zero near empty. Then $$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad \theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad s_{t+1} = \kappa \, s_t + a \, g \, d,$$  with position $\mathbf{p}$, heading angle $\theta$, forward speed $s$, battery level $\ell$ (0 to 4), max turn rate $\tau_{\max}$ = 20 degrees per tick, $\kappa = 0.5$ speed damping and $a$ speed gain. The speed closes on $s_{\mathrm{top}} \, g \, d$ with $s_{\mathrm{top}} = a / (1 - \kappa)$, and the rover drives forward only. The energy level is updated as:  $$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big] - \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$  with a solar charge in proportion to the yield $y$ of the ground, mostly when parked, less a drain at rest, per unit of speed, and per unit of uphill climb $c^{+}_t$ (a smooth ramp of the slope along the heading; downhill costs what level ground costs): the charge rate $r = 0.07$ per tick on ground of full yield, of which the share $\mu = 0.1$ is collected at speed and the rest fades out over the parking speed $s_{\mathrm{park}} = 0.05$; the drain $\beta = 0.01$ at rest, $\delta = 0.045$ per unit of speed, and $\delta_{\uparrow} = 1.5\,\delta$ more per unit of climb. The level is then held between 0 and 4. Gaussian noise of a fixed sd per coordinate is added, and the world clips the position to the field. A rover that hits a wall stops (the model does not know the walls; it knows the stall).</p><p><strong>Right:</strong> the model, with the table <code>rover.field</code> read by <code>rover.terrain</code> in the fast tier and by <code>mission.map</code> in the slow one. The table is one node because the two tiers share it outright (one learned belief by design), not because one reads a copy of the other. The belief over position is a Gaussian, drawn as its 2&sigma; ellipse with a minimum size so it stays visible; the camera and the fix together keep it small.</p></div>
   <h3 id="model">Model</h3>
   <h4 id="rover-tier">Rover tier</h4>
   <ul>
@@ -160,7 +160,7 @@
   </ul>
 </section>
 
-<section class="pane" id="timescales" data-parent="hero">
+<section class="pane" id="timescales" data-parent="demo">
   <h2>Performance comparison</h2>
   <p class="lead">Both runs compared here use the same rover, model and world. In the rover-only condition there is no preferred sector. Coverage is defined as the fraction of cells whose maximum posterior class probability is above 0.6. After a small early lead for the mission-assisted run, both runs end at similar coverage in the run shown (seed 4). The mission tier decides to charge about 1/3 of the time, and spends most time surveying sector 3. Over five seeds the mission planner ends at 0.657 against 0.670 alone, having led at tick 400 on every seed and on the mean at every checkpoint before 800.</p>
   <figure>
@@ -178,7 +178,7 @@
   </div>
 </section>
 
-<section class="pane" id="camera" data-parent="hero">
+<section class="pane" id="camera" data-parent="demo">
   <h2>The camera</h2>
   <p class="lead">The rover's forward camera is a 32 by 32 grayscale image along the current actual heading direction. The panels show it at 6x scale. The rover's model includes a neural likelihood for the camera image, a 4-layer MLP that predicts the picture from the rover's (position, heading) pose and the inferred ground type. Inference inverts the likelihood given the empirical prior over state, linearizing around the belief's mean.</p>
   <figure class="camerafig" id="camerafig">
@@ -187,7 +187,7 @@
   </figure>
 </section>
 
-<section class="pane" id="objective" data-parent="hero">
+<section class="pane" id="objective" data-parent="demo">
   <h2>Term-by-term objectives</h2>
   <p class="lead">The objective depends on the risk + infogain terms described earlier. For intervals, the bar spans the derived lower and upper bounds and the mark is the midpoint, which is what the planner ranks on. Exact terms are points. Switch tiers to compare the rover's gradient planner with the mission's exact enumeration of option sequences.</p>
   <p class="lead">The objective is the sum of the risk and information gain terms described above, and every score is reported as an interval: the bar spans the lower and upper bound and the mark is the midpoint, which the planner ranks on. Exact terms are points. A term over a mixture carries a bracket from closed-form entropy bounds; in this demo that is the wall preference on the fix. The rover's terms are marked approximate because its plans use a first-order approximation of beliefs pushed through the vehicle's nonlinear motion. Below are the rover's gradient planner and the mission tier's exact enumeration of option sequences.</p>
@@ -213,7 +213,7 @@
   <div id="tip" class="tip" role="status" hidden></div>
 </section>
 
-<section class="pane" id="mdl" data-parent="hero">
+<section class="pane" id="mdl" data-parent="demo">
   <h2>Description length</h2>
   <p class="lead">What each part of the model costs to write down, in nats, grouped by tier. The description length is the model's own complexity measure, computed from the same declaration that runs the agent. A component declared as a fixed table, density or network is priced by its family alone and flagged approximate.</p>
   <div class="tablewrap"><table id="mdltable"><thead><tr><th>Component</th><th>Kind</th><th class="num">entries</th><th class="num">nats</th><th>Size (log scale)</th><th>Status</th></tr></thead><tbody></tbody></table></div>
