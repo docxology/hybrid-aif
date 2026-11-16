@@ -112,6 +112,11 @@ camera and a GPS-like satellite signal whose quality varies over the field. The 
 variants: one with just the rover and one a hierarchical model whose second layer is a discrete 
 mission planner that provides options to map a given coarse-grained sector, or to charge the battery.
 
+The page replays one run of the demo, both tiers over both settings:
+`python examples/survey_run.py --ticks 800 --seed 4 --out OUT_DIR`, then the same command with
+`--assemble`, then `python examples/survey_trim.py OUT_DIR/bundle.json docs/site`;
+`docs/site/README.md` says how the page's data is rebuilt from it.
+
 <!-- block: hero-viewer -->
 > **Left:** Contour map, with rover position/heading beliefs, satellite fixes, and patches colored 
 > by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, 
@@ -125,9 +130,9 @@ mission planner that provides options to map a given coarse-grained sector, or t
 > because one reads a copy of the other. The belief over position is a Gaussian, drawn as its 2σ ellipse 
 > with a minimum size so it stays visible; the camera and the fix together keep it small.
 
-### Model 
+### Model \[[code](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/survey_run.py)\]
 
-#### Rover tier
+#### Rover tier \[[code](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/survey_model.py)\]
 
 - **Sensation.** The vehicle's position is inferred via Bayesian fusion of the satellite `fix` with the 
 camera image (`img`), whose neural likelihood is inverted during inference. The camera also informs a heading 
@@ -156,7 +161,7 @@ good charging location and wait.
 - **Planning.** Planning is via gradient descent on the rover level's expected free energy, from
 four starts and over a horizon of 12 discrete time-steps.
 
-#### Mission tier
+#### Mission tier \[[code](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/survey_scheduler.py)\]
 
 - **Sensation.** The mission tier observes a discretized (8-level) `gauge` reading of the rover's 
 `energy`, as well as the rover's believed position, mapped to a 16 x 16 cell grid over the landscape.
@@ -180,7 +185,7 @@ an empty battery. There's no infogain about location or battery level at this ti
 - **Planning.** Planning at the mission tier is "vanilla" expected-free-energy based policy 
 search with the terms just described, with a horizon of 4 options (= 96 lower-tier steps).
 
-### World
+### World \[[code](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/survey_world.py)\]
 
 The generative process of the rover's environment steps the rover's state forward from its current state and command, via the following functions:
 
@@ -227,7 +232,7 @@ at tick 400 on every seed and on the mean at every checkpoint before 800.
 
 <!-- block: decision-figure -->
 
-## The camera {#camera .sub}
+## The camera \[[code](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/survey_camera.py)\] {#camera .sub}
 
 The rover's forward camera is a 32 by 32 grayscale image along the current actual heading direction.
 The panels show it at 6x scale. The rover's model includes a neural likelihood for the camera image,
@@ -272,40 +277,18 @@ approximate.
 
 <!-- block: install-code -->
 
-**The mission tier, as declared.** This is the slow tier from `examples/survey_scheduler.py`: three
-state factors (the cell the rover is in, its energy band and the terrain at that cell) plus the option 
-as a control node, two modalities (the cell reading, which is the cell the rover’s position belief puts
-it in, and the energy gauge), and a novelty term on the map. The `readings` entry says a survey
-pools 11 fast readings of the map for a survey and 6 for a charge.
+**Quickstart: Mountain Car.** Mountain Car in its linear regime: a cart climbing to a hilltop
+it cannot rest on, with three thrust levels, as one declaration. The linear-Gaussian dynamics and
+the position sensor are the model, the hilltop is a target on the state, and the objective prices
+the reading's information gain and the uncertainty a plan injects. The same declaration run forward (`as_env`) is the
+world, so the loop below needs nothing but the package: each tick the agent filters the reading,
+plans over the 81 four-tick thrust sequences, acts and predicts its next prior. It reaches the
+top in about two seconds, printing the lines under the code. The same agent, with plots and the
+objective's term tree, opens the [demo notebook](https://github.com/noumenal-labs/hybrid-aif/blob/main/examples/demo.ipynb).
 
 <!-- block: scheduler-code -->
 
-**Joining the tiers.** From `examples/survey_run.py`: `merge` joins the mission planner and the rover 
-into one `System`. `Identify` merges variables: it declares the mission tier's option as the switch
-over the rover's position preference, and it declares `rover.field` as a single shared parameter variable. 
-The mission also needs the rover's position, which it takes as a sensation: the most probable cell under 
-the position belief, passed in once per decision. The mission and rover views of the composite then 
-run on their own clocks, the rover every tick and the mission once per option (= 24 ticks at the lower 
-level).
-
-<!-- block: merge-code -->
-
-**Running it.** The mission tier alone needs no trained network, so it runs in a few seconds. This
-builds it, feeds it one cell reading and one gauge reading, plans, and prints, for each first
-option, the pooled novelty (nats of information about the field), the terminal-target energy risk
-and the expected free energy G of the best four-option sequence that starts with it. From the 
-`examples` folder:
-
 <!-- block: run-code -->
-
-The whole showcase, both tiers over both settings on this page, is
-`python examples/survey_run.py --ticks 800 --seed 4 --out OUT_DIR`, then the same command with
-`--assemble`, then `python examples/survey_trim.py OUT_DIR/bundle.json docs/site`;
-`docs/site/README.md` says how the page's data is rebuilt from it.
-
-## Citation {#cite}
-
-<!-- block: citation -->
 
 <!-- footer -->
 

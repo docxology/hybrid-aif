@@ -66,6 +66,7 @@ PLACEHOLDER = re.compile(r"<!-- block: ([A-Za-z0-9_-]+) -->")
 BLOCK_OPEN = re.compile(r"^<!-- block: ([A-Za-z0-9_-]+) -->$")
 BLOCK_CLOSE = "<!-- /block -->"
 HEADING_ATTRS = re.compile(r"^(.+?) \{([^{}]*)\}$")
+CODE_LINK = re.compile(r"\s*\\\[\[code\]\(([^)\s]+)\)\\\]$")  # a heading's trailing \[[code](URL)\]
 ATTR_TOKEN = re.compile(r"^([#.])([A-Za-z0-9_-]+)$")
 SECTION_CLASSES = {"sub"}  # .sub: a child section of the nearest top-level section
 ATTR = re.compile(r"^\{\.([A-Za-z0-9_-]+)\}$")
@@ -213,6 +214,15 @@ def slug(text: str) -> str:
 def toc_label(fragment: str) -> str:
     """A heading's HTML without its tags, for the table of contents."""
     return re.sub(r"<[^>]+>", "", fragment)
+
+
+def code_link(text: str) -> tuple[str, str]:
+    """Split a heading's trailing ``\\[[code](URL)\\]`` off: the title, and the link's HTML (a small
+    link after the title, left out of the contents and of the heading's id)."""
+    m = CODE_LINK.search(text)
+    if not m:
+        return text, ""
+    return text[: m.start()], f' <a class="code" href="{m.group(1)}">[code]</a>'
 
 
 def heading_attrs(text: str, allowed: set[str]) -> tuple[str, str | None, set[str]]:
@@ -376,6 +386,7 @@ def build(prose: str, blocks_text: str) -> str:
                 raise PageError("no sections after <!-- footer -->")
             if section_open:
                 out += ["</section>", ""]
+            text, link = code_link(text)
             title = inline(text, blocks)
             if pane_id in ids:
                 raise PageError(f"section id {pane_id!r} is used twice")
@@ -392,10 +403,11 @@ def build(prose: str, blocks_text: str) -> str:
                 panes.append(current)
                 attr = ""
             current.title = title
-            out += [f'<section class="pane" id="{pane_id}"{attr}>', f"  <h2>{title}</h2>"]
+            out += [f'<section class="pane" id="{pane_id}"{attr}>', f"  <h2>{title}{link}</h2>"]
             section_open = True
         elif first.startswith("### "):
             text, sub_id, _ = heading_attrs(first[4:], set())
+            text, link = code_link(text)
             title = inline(text, blocks)
             sub_id = sub_id or slug(title)
             if sub_id in ids:
@@ -403,15 +415,16 @@ def build(prose: str, blocks_text: str) -> str:
             ids.add(sub_id)
             if region == "main":
                 current.subs.append((sub_id, toc_label(title), []))
-            out.append(f'  <h3 id="{sub_id}">{title}</h3>')
+            out.append(f'  <h3 id="{sub_id}">{title}{link}</h3>')
         elif first.startswith("#### "):
             text, minor_id, _ = heading_attrs(first[5:], set())
+            text, link = code_link(text)
             title = inline(text, blocks)
             minor_id = minor_id or slug(title)
             if minor_id in ids:
                 raise PageError(f"heading id {minor_id!r} is used twice; give one '{{#id}}'")
             ids.add(minor_id)
-            out.append(f'  <h4 id="{minor_id}">{title}</h4>')
+            out.append(f'  <h4 id="{minor_id}">{title}{link}</h4>')
             out += [f"  <p>{inline(' '.join(chunk[1:]), blocks)}</p>"] if len(chunk) > 1 else []
         elif first.startswith(" ") and out and out[-1].strip() == "</ul>":
             # an indented paragraph after a list: a second paragraph of the list's last item

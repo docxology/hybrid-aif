@@ -45,15 +45,16 @@ their headings the contents entries, so adding, renaming or reordering a `##` se
 sidebar too; `{#id .sub}` (id and class in either order) nests a section under the one before
 it, and any other class is a build error. A `###` subheading gets an id from its words, or the one
 written as `### Title {#id}`.
+A heading ending in `\[[code](URL)\]` (before any `{...}`) gets a small `[code]` link after its
+title, left out of the contents and of its id.
 The header's `links` block and the `version` block are shown in the sidebar's small print, and the
 TLDR is plain prose. What is not in the markdown lives in `page-blocks.html` as named
 blocks, kept verbatim, which the markdown refers to with `<!-- block: NAME -->` placeholders: the
 page head (title and description come from the markdown's front matter), the header links, the
 viewer panels and their controls and figures, the code listings, the description-length table, the
 noscript fallback with its image alt texts, and the script tag. The version number in the byline
-is the `version` block; the citation's version is inside the `citation` block. Text the viewer
-writes at run time (status line, decision and objective notes and captions, the table footnote)
-is in `app.js`. The build needs only the standard library and is deterministic; with the sources
+is the `version` block. Text the viewer writes at run time (status line, decision and objective
+notes and captions, the table footnote) is in `app.js`. The build needs only the standard library and is deterministic; with the sources
 as committed it reproduces `index.html` byte for byte.
 
 To regenerate the data:

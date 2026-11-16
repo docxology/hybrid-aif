@@ -1,0 +1,29 @@
+# Citation metadata for this repository (Citation File Format 1.2.0). GitHub reads this file
+# for the "Cite this repository" button and generates APA and BibTeX entries from it.
+cff-version: 1.2.0
+message: "If you use hybrid-aif in your work, please cite it as below."
+type: software
+title: "Hybrid-AIF: hybrid continuous-discrete-amortized active inference"
+authors:
+  - family-names: Kiefer
+    given-names: Alex
+    affiliation: Noumenal Labs
+  - family-names: Fox
+    given-names: Jason
+    affiliation: Noumenal Labs
+  - name: Noumenal Labs
+version: 0.20.0
+date-released: 2026-11-15
+license: MIT
+url: "https://noumenal-labs.github.io/hybrid-aif/"
+repository-code: "https://github.com/noumenal-labs/hybrid-aif"
+keywords:
+  - active inference
+  - free energy principle
+  - JAX
+  - probabilistic programming
+  - planning
+abstract: >-
+  A JAX library for active inference over mixed discrete-continuous and amortized (neural)
+  factors, with a declarative model language driving inference, planning, learning, simulation
+  and the model's description length.

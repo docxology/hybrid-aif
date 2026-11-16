@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "hybrid-aif"
 version = "0.20.0"
-description = "Hybrid continuous-discrete active inference & RL in JAX"
+description = "Hybrid continuous-discrete-amortized active inference in JAX"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

@@ -234,9 +234,10 @@ def cell_obs_table(centres):
     return CELL_ACC * np.eye(len(c)) + (1 - CELL_ACC) * near / near.sum(axis=0, keepdims=True)
 
 
-def _cc(table, parent_ndims):
+def table(probs, parent_ndims):
+    """A ``ConditionalCategorical`` from a probability table with ``parent_ndims`` parent axes."""
     return ConditionalCategorical(
-        log_table=jnp.log(jnp.clip(jnp.asarray(table, jnp.float32), 1e-6)),
+        log_table=jnp.log(jnp.clip(jnp.asarray(probs, jnp.float32), 1e-6)),
         parent_ndims=parent_ndims,
     )
 
@@ -292,9 +293,12 @@ def scheduler(
                 concentration=jnp.asarray(counts, jnp.float32), parent_ndims=2
             ),
         },
-        likelihood={"cell_obs": _cc(cell_obs_table(centres), 1), "gauge": _cc(sm.gauge_table(), 1)},
+        likelihood={
+            "cell_obs": table(cell_obs_table(centres), 1),
+            "gauge": table(sm.gauge_table(), 1),
+        },
         transition={
-            "visit": _cc(visit_table(centres), 3),
+            "visit": table(visit_table(centres), 3),
             "energy": Parameter("energy_table"),
             "map": Parameter("field"),
         },
