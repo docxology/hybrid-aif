@@ -26,7 +26,7 @@ Conventions:
 - The `footer` comment ends the sections; the paragraph after it is the page footer.
 - Inline: **strong**, *emphasis*, `code`, [link text](url). Type the typographic apostrophe and
   other special characters directly; the build writes them as HTML entities. A plain `'` stays
-  plain.
+  plain. `\[` and `\]` are literal brackets, for brackets around a link.
 - Line breaks inside a paragraph do not matter; a blank line ends it.
 -->
 
@@ -36,7 +36,7 @@ Conventions:
 Continuous-discrete-amortized active inference in JAX
 
 {.byline}
-Noumenal Labs · <!-- block: version --> · MIT
+Noumenal Labs · <!-- block: version --> · MIT · \[[github](https://github.com/noumenal-labs/hybrid-aif)\]
 
 <!-- block: links -->
 
@@ -46,7 +46,12 @@ Noumenal Labs · <!-- block: version --> · MIT
 machine learning. It supports inference, learning, and planning on models with heterogeneous 
 pieces: continuous, discrete, and mixture factors as well as amortized functions (e.g. neural 
 nets). Models and objectives can be specified flexibly and come with detailed model comparison 
-and logging tools. Core features:
+and logging tools.
+
+{.demo}
+**Demo:** [Solar rover](#hero)
+
+**Core features:**
 
 - **Factor-graph primitives beyond the exponential family.** Core distributions like conditional 
   categoricals and Gaussians, as well as various types of mixture model (e.g. Gaussian mixtures, 

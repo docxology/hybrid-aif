@@ -187,7 +187,7 @@ td.kind{font-family:var(--mono);font-size:.85rem;word-break:break-word}
 .readout .hc .rn.true{font-weight:700}
 .readout .hkey{position:relative;padding-left:16px;font-size:.72rem;color:var(--muted);line-height:1.25}
 .readout .hkey .hdot{left:5px;top:.55em;width:10px;height:10px;margin:-5px 0 0 -5px}
-.tldr p{margin:0 0 .8rem}.tldr ul{margin:0;padding-left:1.2rem}.tldr li{margin:.5rem 0}
+.tldr p{margin:0 0 .8rem}.tldr p.demo{margin-bottom:1.8rem}.tldr ul{margin:0;padding-left:1.2rem}.tldr li{margin:.5rem 0}
 .tldr code{font:.9em var(--mono)}
 .approx{color:var(--c2)}
 .tip .ap{color:var(--c2);font-size:.75rem}

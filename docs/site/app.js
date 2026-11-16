@@ -1181,8 +1181,19 @@
     drawMdl(); fullRedraw();
     var rt; window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(function () { BG = null; render(); }, 100); });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { drawMdl(); fullRedraw(); });
+    // the demo plays itself when the reader arrives from elsewhere on the site (not when moving
+    // between the demo's own panes, and not on a link that names a tick), and pauses on leaving
+    var demoBar = document.getElementById("demobar");
+    var demoPanes = demoBar ? (demoBar.getAttribute("data-panes") || "").split(/\s+/) : [];
+    var currentPane = document.querySelector(".pane.is-current");
+    var inDemo = !!currentPane && demoPanes.indexOf(currentPane.id) >= 0;
+    if (inDemo && hp.t == null && !(MOTION && MOTION.matches)) setPlaying(true);
     // nav.js shows one pane at a time; a hidden pane has no size, so redraw when one is shown
-    document.addEventListener("hybrid-aif:pane", function () {
+    document.addEventListener("hybrid-aif:pane", function (e) {
+      var now = demoPanes.indexOf(e.detail.id) >= 0;
+      if (now && !inDemo && !S.playing && !(MOTION && MOTION.matches)) setPlaying(true);
+      if (!now && S.playing) setPlaying(false);
+      inDemo = now;
       // a chart drawn while its pane was hidden has a fallback width and a wrong height: drop it
       // and its reservation, so the first draw in view measures an empty box
       ["timeline", "decision", "objective-rover", "objective-mission"].forEach(function (id) { var h = $(id); if (h) { h.style.minHeight = ""; h.innerHTML = ""; } });

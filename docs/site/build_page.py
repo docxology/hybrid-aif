@@ -139,9 +139,11 @@ def inline(s: str, blocks: dict[str, str]) -> str:
     s = re.sub(r"`([^`]+)`", code, s)
     s = PLACEHOLDER.sub(block, s)
     s = escape_text(s)
+    s = s.replace("\\[", "\x01").replace("\\]", "\x02")  # \[ and \] are literal brackets
     s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', s)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+    s = s.replace("\x01", "[").replace("\x02", "]")
     return re.sub("\x00([0-9]+)\x00", lambda m: saved[int(m.group(1))], s)
 
 
