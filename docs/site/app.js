@@ -79,6 +79,14 @@
   // of a full battery they divide
   function nBands() { return names("energy").length || 4; }
   function energyMax() { return (B.meta.dynamics && B.meta.dynamics.energy && B.meta.dynamics.energy.max) || 4; }
+  function dashSw(color) {  // the legend's dotted line: the true path's stroke at legend size
+    return "<svg class='lsw' viewBox='0 0 28 10' fill='none' stroke='" + color + "' stroke-width='1.6' stroke-dasharray='2 3'><line x1='1' y1='5' x2='27' y2='5'/></svg>";
+  }
+  function sunSw(color) {  // the legend's sun: the charging place's marker at legend size
+    var rays = "";
+    for (var a = 0; a < 8; a++) { var an = a * Math.PI / 4; rays += "<line x1='" + (7 + 4.6 * Math.cos(an)).toFixed(1) + "' y1='" + (6 + 4.6 * Math.sin(an)).toFixed(1) + "' x2='" + (7 + 6.6 * Math.cos(an)).toFixed(1) + "' y2='" + (6 + 6.6 * Math.sin(an)).toFixed(1) + "'/>"; }
+    return "<svg class='lsw' style='width:14px' viewBox='0 0 14 12' fill='none' stroke='" + color + "' stroke-width='1.5'><circle cx='7' cy='6' r='3.1'/>" + rays + "</svg>";
+  }
   function countWord(n) { return ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"][n - 1] || String(n); }
   function horizonWord() { return ["one", "two", "three", "four", "five", "six"][horizon() - 1] || String(horizon()); }
   // the scheduler's energy term: a target scored once at the plan's end, or at every step
@@ -154,6 +162,10 @@
     // the distance from a node's centre to its outline toward the point `to`
     function rad(n, to) {
       var k = info[n] && info[n].kind;
+      if (k === "parameter" && /energy_table$/.test(n) && to) {  // the wider box: its outline toward `to`
+        var pc = POS[n], pdx = to[0] - pc[0], pdy = to[1] - pc[1], plen = Math.hypot(pdx, pdy) || 1;
+        return Math.min(68 / Math.max(Math.abs(pdx) / plen, 1e-6), 24 / Math.max(Math.abs(pdy) / plen, 1e-6)) + 6;
+      }
       if (k === "parameter") return 34;
       if (k !== "control" || !to) return 27;
       var c = POS[n], dx = to[0] - c[0], dy = to[1] - c[1], len = Math.hypot(dx, dy) || 1;
@@ -385,7 +397,7 @@
     var cs = twoLevel() ? (t.charge_to || fixed) : null;
     if (cs) {
       var cx = m.X(cs[0]), cyy = m.Y(cs[1]), on = hasOpt(t) && sectorOf(t.option) < 0;
-      g.strokeStyle = on ? optColor(t.option) : css("--fg"); g.lineWidth = on ? 2.5 : 1.4; g.globalAlpha = on ? 1 : 0.7;
+      g.strokeStyle = on ? optColor(t.option) : css("--sun"); g.lineWidth = on ? 2.5 : 1.8; g.globalAlpha = 1;
       g.beginPath(); g.arc(cx, cyy, 7, 0, 2 * Math.PI); g.stroke();
       for (var a = 0; a < 8; a++) { var an = a * Math.PI / 4; g.beginPath(); g.moveTo(cx + 9 * Math.cos(an), cyy + 9 * Math.sin(an)); g.lineTo(cx + 13 * Math.cos(an), cyy + 13 * Math.sin(an)); g.stroke(); }
       g.globalAlpha = 1;
@@ -443,15 +455,10 @@
       g.globalAlpha = 1;
     });
   }
-  function localises() {
-    // whether the rover's model reads the camera's image (which localises it as well as the fix)
-    var cm = B.meta.image && B.meta.image.camera_mode;
-    return cm == null || cm === "image" || cm === "fixed";
-  }
   function defaultSetting() {
-    // the rover alone when the bundle has it (a one-level run that pins no option), else the first
-    var alone = B.settings.filter(function (s) { return s.tiers === 1; })[0];
-    return alone && !(B.meta.tiers && B.meta.tiers.pinned_option != null) ? alone.id : B.settings[0].id;
+    // the two-tier run when the bundle has one, else the first setting; the hash's setting= overrides
+    var tiered = B.settings.filter(function (s) { return s.tiers === 2; })[0];
+    return tiered ? tiered.id : B.settings[0].id;
   }
   function hasHeading() { return run().ticks[0].true_heading != null; }  // the world's heading per tick
   function stride() {
@@ -532,7 +539,8 @@
     $("fieldlegend").innerHTML =
       "<span>learned map: " + [0, 1, 2].map(function (c) { return sw(terrColor(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
       "<span>true ground: " + [0, 1, 2].map(function (c) { return sw(terrBg(c)) + esc(nm("terrain", c)); }).join(" ") + "</span>" +
-      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span>&times; the satellite fix's raw reading, one each tick</span>" + (localises() ? "<span>the belief's ellipse is tighter than the crosses' scatter: the camera also localises the rover</span>" : "") + "<span>dotted: true path</span>" +
+      "<span>" + sw(css("--plan")) + "chosen plan (bold), other starts</span><span>" + sw(css("--ell")) + "position belief, 2&sigma; (drawn at least 4 px)" + (t.belief.heading_sd != null ? "; believed heading, wedge &plusmn;2&sigma;" : "") + "</span><span><span style='color:" + css("--c2") + ";font-weight:700'>&times;</span> the satellite fix's raw reading, one each tick</span>" + "<span style='flex-basis:100%'>" + dashSw(css("--fg")) + "true path</span>" +
+      (twoLevel() ? "<span>" + sunSw(css("--sun")) + "charge option target (optimal sun)</span>" : "") +
       (S.layer === "light" ? "<span>" + (B.meta.world.sun ? "brighter: more solar yield (where parking charges)" : "brighter: more sunlight") + "</span>" : S.layer === "fix" ? "<span>purple: noisier fix (terrain blocks the sky)</span>" : "");
   }
 

@@ -169,8 +169,8 @@ Bundle schema notes. Top level: `meta`, `graph`, `settings`, `runs` (`two-level`
   including `parameter:rover.field` and `parameter:mission.energy_table`, each priced once; their
   readers' `transition` entries carry structure only (`entries` 0). The page groups them by tier from the name's prefix.
 
-The viewer opens on the rover alone (the one-level setting) unless the URL names a setting; in
-bundles whose one-level run pinned an option it opens on the first setting. The field's legend
+The viewer opens on the two-tier run (the two-level setting) unless the URL names a setting; in
+bundles without a two-tier run it opens on the first setting. The field's legend
 says that the crosses are the satellite fix's raw readings, one each tick, and, when the rover
 reads the camera's image, that the position belief is tighter than their scatter because the
 camera localises the rover too.

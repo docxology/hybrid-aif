@@ -116,32 +116,8 @@ mission planner that provides options to map a given coarse-grained sector, or t
 > **Left:** Contour map, with rover position/heading beliefs, satellite fixes, and patches colored 
 > by the rover's accumulated certainty about terrain class. The chosen plan's path is drawn in red, 
 > alternate plans thinner in the text color. 
-> Plans are rolled forward by the same nonlinear functions the generative process uses.
-> The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a
-> turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive
-> and the turn as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, 
-> and spread $w$. This is near one above the stall level and near zero near empty. Then
-> $$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad
-> \theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad
-> s_{t+1} = \kappa \, s_t + a \, g \, d,$$
->
-> with position $\mathbf{p}$, heading angle $\theta$, forward speed $s$, battery level $\ell$ (0 to 4),
-> max turn rate $\tau_{\max}$ = 20 degrees per tick, $\kappa = 0.5$ speed damping and $a$ speed gain.
-> The speed closes on $s_{\mathrm{top}} \, g \, d$ with $s_{\mathrm{top}} = a / (1 - \kappa)$,
-> and the rover drives forward only. The energy level is updated as:
->
-> $$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big]
-> - \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$
->
-> with a solar charge in proportion to the yield $y$ of the ground, mostly when parked, less a drain at
-> rest, per unit of speed, and per unit of uphill climb $c^{+}_t$ (a smooth ramp of the slope along
-> the heading; downhill costs what level ground costs): the charge rate $r = 0.07$ per tick on
-> ground of full yield, of which the share $\mu = 0.1$ is collected at speed and the rest fades
-> out over the parking speed $s_{\mathrm{park}} = 0.05$; the drain $\beta = 0.01$ at rest,
-> $\delta = 0.045$ per unit of speed, and $\delta_{\uparrow} = 1.5\,\delta$ more per unit of
-> climb. The level is then held between 0 and 4. Gaussian noise of a fixed sd per coordinate
-> is added, and the world clips the position to the field. A rover that hits a wall stops (the model 
-> does not know the walls; it knows the stall).
+> Plans are rolled forward by the same nonlinear functions the generative process uses
+> (see [World](#world) below).
 
 > **Right:** the model, with the table
 > `rover.field` read by `rover.terrain` in the fast tier and by `mission.map` in the slow one. The
@@ -203,6 +179,37 @@ an empty battery. There's no infogain about location or battery level at this ti
 
 - **Planning.** Planning at the mission tier is "vanilla" expected-free-energy based policy 
 search with the terms just described, with a horizon of 4 options (= 96 lower-tier steps).
+
+### World
+
+The generative process of the rover's environment steps the rover's state forward from its current state and command, via the following functions:
+
+The command is a drive $d \in [0, 1]$ (ratio of target to top speed) and a
+turn $u \in [-1, 1]$. A stall gate $g = \sigma\big((\ell - \ell_{\mathrm{stall}}) / w\big)$ damps the drive
+and the turn as energy reserves begin to run low, with current energy $\ell$, soft stall threshold $\ell_{\mathrm{stall}}$, 
+and spread $w$. This is near one above the stall level and near zero near empty. Then
+$$\mathbf{p}_{t+1} = \mathbf{p}_t + s_t \, (\cos\theta_t, \sin\theta_t), \qquad
+\theta_{t+1} = \theta_t + \tau_{\max} \, g \, u, \qquad
+s_{t+1} = \kappa \, s_t + a \, g \, d,$$
+
+with position $\mathbf{p}$, heading angle $\theta$, forward speed $s$, battery level $\ell$ (0 to 4),
+max turn rate $\tau_{\max}$ = 20 degrees per tick, $\kappa = 0.5$ speed damping and $a$ speed gain.
+Under a constant command the forward speed settles toward $s_{\mathrm{top}} \, g \, d$ with $s_{\mathrm{top}} = a / (1 - \kappa)$. 
+The energy level is updated as:
+
+$$\ell_{t+1} = \ell_t + r \, y(\mathbf{p}_t)\big[\mu + (1 - \mu)\, e^{-(s_t / s_{\mathrm{park}})^2}\big]
+- \big(\beta + (\delta + \delta_{\uparrow} \, c^{+}_t)\, s_t\big),$$
+
+The charge is the solar yield $y$ of the ground under the rover (sun-facing slopes yield several
+times what level ground does, and shade almost nothing), times a rate $r = 0.07$ per tick, collected
+in full at rest and only a tenth of it ($\mu = 0.1$) once the speed passes the parking speed
+$s_{\mathrm{park}} = 0.05$. The drain has three parts: $\beta = 0.01$ per tick whatever the
+rover does, $\delta = 0.045$ per unit of speed, and $\delta_{\uparrow} = 1.5\,\delta$ per unit
+of speed per unit of uphill climb $c^{+}_t$, the slope along the heading smoothed so it is
+about zero going down or across and about the slope going up. The level is capped at 4. 
+Gaussian noise of a fixed sd per coordinate is added, and the world clips the position to the field. 
+Walls prevent the rover from leaving the field. The rover's model doesn't know this but its GPS
+preference keeps it inside the walls. The rover does model stalls due to battery depletion.
 
 ## Performance comparison {#timescales .sub}
 
